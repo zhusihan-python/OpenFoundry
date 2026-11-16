@@ -1,0 +1,36 @@
+# P25 NEW-SERVICE overrides — compose-p25-fixture.yaml
+#
+# ONLY new services are declared here; base5 and the old fixture are
+# untouched. Root addendum rules baked into this file:
+#   * NO depends_on entries AT ALL — a future `docker compose ... up
+#     <svc>` can never recreate/restart base services as dependencies;
+#   * the formal driver must ALWAYS use an explicit service whitelist
+#     plus `--no-deps`, e.g.:
+#       docker compose -f compose.yaml -f compose-p25-fixture.yaml \
+#         --project-name openfoundry-platform-p1-q3v9 \
+#         up -d --no-deps p25fixture
+#   * host ports are NEW (17092 fixture) — nothing collides with the
+#     frozen 17078..17091 plan;
+#   * fixture is read-only mounted, PID1 direct `python3 -I` (same
+#     discipline as the frozen P1 fixture).
+#
+# NOT RELEASED for deployment: this file exists for review; bringing
+# any service up requires the runtime release from root.
+
+services:
+  p25fixture:
+    networks:
+      p1net: {}
+    image: python:3.14-slim
+    volumes:
+      - /Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/fixtures/rest_source_p25.py:/srv/rest_source_p25.py:ro
+    command: ["python3", "-I", "/srv/rest_source_p25.py", "0.0.0.0", "8090"]
+    healthcheck:
+      test: ["CMD", "python3", "-I", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+    ports:
+      - "127.0.0.1:17092:8090"
+    restart: "no"

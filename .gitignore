@@ -90,3 +90,25 @@ infra/argocd/notifications/slack-secret.yaml
 
 # Smoke acceptance run archives (large local evidence)
 /tools/smoke/**/results/
+
+# P2.x smoke run records and machine-local material (kept on disk, not for Git)
+/tools/smoke/business-platform-p2-5/.formal_run_p25.exec-*.sh
+/tools/smoke/business-platform-p2-5/.prepare_owned_quiesce_p25.exec-*.py
+/tools/smoke/business-platform-p2-5/build-candidate-bindings-r18.json
+/tools/smoke/business-platform-p2-5/pg-candidate-bindings-r17.json
+/tools/smoke/business-platform-p2-6/archive/*.candidate.json
+/tools/smoke/business-platform-p2-6/archive/*.draft.json
+/tools/smoke/business-platform-p2-6/archive/*.supplement.json
+/tools/smoke/business-platform-p2-6/archive/p26_S2_partial-unit-history.json
+/tools/smoke/business-platform-p2-6/archive/p26_history_snapshot11.config.json
+/tools/smoke/business-platform-p2-6/archive/p26_source402_allowlist.oldS.history.json
+/tools/smoke/business-platform-p2-6/archive/p26_private_exclusions.Root-approved.json
+/tools/smoke/business-platform-p2-6/archive/p26_formal_roster.json
+/tools/smoke/business-platform-p2-6/archive/historical-tool-blobs/
+/tools/smoke/business-platform-p2-6/deployment/artifact_vendor/p21-data/
+/tools/smoke/business-platform-p2-6/deployment/artifact_vendor/sealed-comparison/
+/tools/smoke/business-platform-p2-6/deployment/artifact_vendor/copy-ledger.json
+/tools/smoke/business-platform-p2-6/deployment/final-restart-readability-plan.json
+/tools/smoke/business-platform-p2-6/deployment/legacy-stage/complete-*.json
+/tools/smoke/business-platform-p2-6/deployment/legacy-stage/plan.json
+/tools/smoke/business-platform-p2-6/deployment/legacy-stage/compose.yaml

@@ -1,0 +1,46 @@
+# P25 AUX overrides — compose-p25-aux.yaml (fault-proxy aux connector)
+#
+# Same discipline as compose-p25-fixture.yaml: ONLY new services, NO
+# depends_on (whitelist + `--no-deps` at up time — root addendum), new
+# host ports (17093 proxy, 17094 aux connector).
+#
+# The aux connector is the P22 connector3 pattern: DATASET_SERVICE_URL
+# points at p25-proxy so publish faults are DETERMINISTICALLY injected
+# on this replica only; its egress additionally allows p25fixture for
+# incremental pulls. The proxy reaches the real dataset service inside
+# the compose network.
+#
+# NOT RELEASED for deployment — file exists for review only.
+
+services:
+  p25-proxy:
+    networks:
+      p1net: {}
+    image: python:3.14-slim
+    volumes:
+      - /Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/fixtures/dataset_fault_proxy_p25.py:/srv/dataset_fault_proxy_p25.py:ro
+    command: ["python3", "-I", "/srv/dataset_fault_proxy_p25.py", "0.0.0.0", "80", "http://dataset:50078"]
+    ports:
+      - "127.0.0.1:17093:80"
+    restart: "no"
+
+  p25connector:
+    networks:
+      p1net: {}
+    build:
+      context: "/Volumes/ExternalSD/projects/OpenFoundry"
+      dockerfile: /Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p1/service.Dockerfile
+      args:
+        SERVICE_NAME: connector-management-service
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50088
+      DATABASE_URL: postgres://openfoundry:${OF_P1_PG_PASSWORD:?}@postgres:5432/connectors
+      JWT_SECRET: ${OF_P1_JWT_SECRET:?}
+      DATASET_SERVICE_URL: http://p25-proxy:80
+      CREDENTIAL_ENCRYPTION_KEY: ${OF_P1_CREDENTIAL_KEY:?}
+      ALLOW_PRIVATE_NETWORK_EGRESS: "true"
+      ALLOWED_EGRESS_HOSTS: p25fixture
+    ports:
+      - "127.0.0.1:17094:50088"
+    restart: "no"

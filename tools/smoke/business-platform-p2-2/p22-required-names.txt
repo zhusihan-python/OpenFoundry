@@ -1,0 +1,30 @@
+# p22-required-names.txt — ROOT-PINNED 2026-11-14.
+#
+# First 10 names: FINALIZED and PASSED in the first candidate's raw log
+# (root read the original: 10 RUN / 10 PASS; the earlier "9" was a
+# miscount and is not adopted). That 50-name raw stays untouched as the
+# FIRST-CANDIDATE evidence.
+#
+# Final 2 names (root-pinned, migration-concurrency writer in
+# migration_concurrency_integration_test.go; serialization landed by the
+# primary as one whole-batch Tx + PG16 transaction-level advisory lock,
+# MigrationsAdvisoryLockKey = 0x4F46434F4E4E4D47 / 5712327185261284679):
+# NOT yet PASS at pinning time — the final candidate's log must show
+# them RUN+PASS before the guard can bless a run.
+#
+# Total mandatory = P1 26 + P2.1 14 + P2.2 12 = 52. P1/P2.1 guards stay
+# frozen. Counting rule: DISTINCT real top-level names, top-level RUN +
+# PASS each, SKIP/FAIL priority, no required SKIP.
+TestPGCancelPendingVsClaimBothOrders
+TestPGCancelRunningRequestDurableIdempotent
+TestPGCancelVsPublishGateDeterministicOrder
+TestPGPublishGateFencingMatrix
+TestPGPublishGateLockWaitExpiryRegression
+TestPGPublishGateTTLAnchoredPostLock
+TestPGCancelControlledTerminalStageMatrix
+TestPGCancelLegacyUnsupportedSemantics
+TestPGCancelBindingMatrix
+TestPGCancelPreP22UpgradeReplaySafety
+TestPGConcurrentMigrateSerialized
+TestPGMigrateLockWaitCancellation
+

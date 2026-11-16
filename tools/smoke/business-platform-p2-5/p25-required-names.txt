@@ -1,0 +1,32 @@
+# DRAFT — NOT FROZEN (tools/smoke/business-platform-p2-5/, PG track).
+# P25 PG required names: exactly 15 active below (14 in the repo file +
+# 1 in the PG-owned handlers file) — the unified required total is
+# old72 + new15 = 87 (review-pg-code-round2 #7; no name is dropped to
+# match stale prose). Honest pinning discipline identical to P23/P24:
+# a name is listed as ACTIVE only when its test function exists AND a
+# real isolated-PG log shows it 1 RUN / 1 PASS / 0 SKIP / 0 FAIL with
+# actual rc 0 — which no run has produced yet (compile-only phase; real
+# PG waits for root's release). All 15 names are COMPILE-VERIFIED
+# against contract v1.1 + the landed layers (go1.26.3 normal + go1.25.14
+# race; vet + test -c over ./internal/repo/ AND ./internal/handlers/,
+# rc 0 — evidence /private/tmp/openfoundry-p25-repair-evidence/pg/).
+# Every test carries full behavioral assertions (no Skip/TODO/skeleton);
+# runtime green is a separate claim that only a real log can make.
+# TestPGCheckpointNoDBLockAcrossPublish lives in the PG-owned
+# internal/handlers/checkpoint_integration_test.go (root supplement
+# 2026-11-14: repo-package tests cannot import handlers — cycle).
+TestPGCheckpointLegacyMutationFenceBaseline
+TestPGCheckpointMigrationEmptyOldRerunConcurrent
+TestPGCheckpointAdmissionOwnerInTxOrder
+TestPGCheckpointSameDefTwoPoolOwnerUniqueness
+TestPGCheckpointSiblingDefIndependentNoLockHeld
+TestPGCheckpointAdvanceAllOrNothingRollback
+TestPGCheckpointLeaseExpiryUnderLockWaitNatural
+TestPGCheckpointAdvanceExpiryUnderLockWaitNatural
+TestPGCheckpointFencingMatrixZeroWrite
+TestPGCheckpointPrepublishCancelReleaseOrdered
+TestPGCheckpointUnknownOwnerRetainedAcrossMutations
+TestPGCheckpointNoDBLockAcrossPublish
+TestPGCheckpointScheduledBusyLogicalVsContention
+TestPGCheckpointCandidateValidationTransitions
+TestPGCheckpointLegacySnapshotAndOld6Compat

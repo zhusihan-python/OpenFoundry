@@ -1,0 +1,17 @@
+# p23-required-names.txt.example — format rules ONLY (the real names file
+# ships alongside; this file documents the format and never feeds a guard).
+#
+# Format:
+#   - one top-level Go test name per line
+#   - `#` starts a comment; blank lines are ignored
+#   - duplicates collapse to the FIRST occurrence (distinct-name counting)
+#   - a missing or empty (comments-only) names file makes `integration`
+#     mode REFUSE to bless any run (fail closed — an empty guard must
+#     never pass a run)
+#
+# Honesty rule: the header of the real file records whether each name has
+# actually RUN+PASSed in a real log at pinning time. Synthetic selftest
+# logs (selftest_guard_p23.sh) never count as execution evidence.
+#
+# Example line (NOT a real test — do not add to the real file):
+# TestPGExampleNameOnly

@@ -1,0 +1,34 @@
+# FROZEN 2026-11-15 r2 (W6) — connector-management-service P26-new PG
+# required names, RE-PINNED per Root instruction from the LATEST W2
+# interface (W2-REPO-INTERFACE.md §8, 17 组) after W2 attempt7 narrow
+# fixture fixes (SOURCE-MANIFEST.txt v2.1; auto-recovery seam landed).
+# Every name below was verified as a REAL `func Test…` in landed source
+# on 2026-11-15 (grep, read-only):
+#   internal/repo/recovery_integration_test.go     → names 1-14
+#   internal/repo/auto_recovery_integration_test.go → names 15-17
+#   internal/repo/recovery_commit_ackloss_integration_test.go
+#     (sha256 4587306371ffb8d76e351e2f3e4c21e02916bf8e0dea1dc83ba0579fd5
+#      9caba1, Root-accepted W2 attempt13) → name 18
+# The P25 15 frozen checkpoint names stay P25-owned evidence — NOT
+# re-pinned here. Runner contract: each name exactly 1 RUN / 1 PASS /
+# 0 SKIP / 0 FAIL + package ok + real rc 0; a missing name FAILS; all
+# raw attempts (incl. failures) preserved. Future wire-ACK-loss tests
+# will be APPENDED as a new cohort revision per Root instruction.
+TestPGP26AdmissionFreezesBothModes
+TestPGP26GateIntentAtomicRollback
+TestPGP26GateRefusalLeavesNoIntent
+TestPGP26ClaimRecoveryContentionAndShapes
+TestPGP26TakeoverAndCompleteBypassRefused
+TestPGP26BudgetsAcrossClaimsTotalCaps
+TestPGP26ReceiptMismatchZeroWrite
+TestPGP26FinalizeAtomicRollback
+TestPGP26LaterBatchDuplicateFinalizeZeroWrite
+TestPGP26CredentialFileGlobFenceAndLegacy
+TestPGP26MigrationEmptyLegacyReplay
+TestPGP26OldPublicEntriesRefuseV1
+TestPGP26ClaimTerminalShapes
+TestPGP26GateMaterialParentMismatchZeroWrite
+TestPGP26AutoRecoveryScanKeysetAndFilters
+TestPGP26ClaimAutomaticRecoveryGrantMatrix
+TestPGP26AutoRecoveryBlockedThenRevoke
+TestPGP26FinalizeWireCommitAckLossOnce

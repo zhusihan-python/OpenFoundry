@@ -1,0 +1,12 @@
+# FORMAT EXAMPLE ONLY — the REAL root-finalized list now lives in
+# p22-required-names.txt (10 names, 2026-11-14). This file stays as
+# documentation of the format rules only:
+#
+#   * one top-level Go test name per line (no leading ./)
+#   * `#` starts a comment; blank lines are ignored
+#   * duplicate lines collapse to the FIRST occurrence (distinct count)
+#   * run_tests_p22.sh integration enforces: top-level `=== RUN <name>`
+#     AND top-level `--- PASS: <name>`, SKIP/FAIL priority, exact-name
+#     boundary match (prefix traps rejected), no required SKIP
+#   * a missing or empty names file FAILS CLOSED — no P2.2 PG blessing.
+

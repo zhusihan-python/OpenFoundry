@@ -1,0 +1,10 @@
+# P26 image-only candidate override (W6-prepared; use with BASE q3 compose + private env, unchanged)
+services:
+  dataset:
+    image: sha256:4217c40275b9fb7b28f8ef872a6b64870876ce6e6c599ff4714531dd919ef75b
+  connector:
+    image: sha256:f23f69161c6f86f7402a18dbd14e24fdcad581ecbd9968e7b964ef1baf11df34
+# NOTHING else overridden: named-files volume /home/nonroot,
+# old PG volumes, network/bindings/security config all come
+# from the BASE compose; candidate AUTO_RECOVERY default OFF,
+# cron/sweeper 0 remain old cfg.

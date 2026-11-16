@@ -1,0 +1,13 @@
+{
+  "services": {
+    "p26connectorc": {
+      "image": "sha256:ea8244f03a3b07e72b77bd7539e13ae1d39cf91bf90a26d01675f008c64685d6"
+    },
+    "p26connectora": {
+      "image": "sha256:ea8244f03a3b07e72b77bd7539e13ae1d39cf91bf90a26d01675f008c64685d6"
+    },
+    "p26connectorb": {
+      "image": "sha256:ea8244f03a3b07e72b77bd7539e13ae1d39cf91bf90a26d01675f008c64685d6"
+    }
+  }
+}

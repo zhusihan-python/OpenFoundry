@@ -1,0 +1,78 @@
+{
+ "basis": "Root pg-three-stage-raw-review.json raw/meta; immutable r17 selected artifact paths",
+ "files": {
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-normal_20261114T141338Z.cmd": {
+   "bytes": 573,
+   "sha256": "a1622c92c73653e4a0d23fee975f3b9bd721caafcaddce2ade4bae3a9fc238c6"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-normal_20261114T141338Z.meta": {
+   "bytes": 808,
+   "sha256": "d54eadca3a1f34851e7373561c3ce86cc77fecf91f6659474384caef7392bb3d"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-normal_20261114T141338Z.raw": {
+   "bytes": 12946,
+   "sha256": "680efce375c4e949dbfe87d35b34a60dcb9cfbf7cefc9737445d3ef436a4ada6"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-normal_20261114T141338Z.rc": {
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-normal_20261114T141338Z.source-gate.rc": {
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-normal_20261114T141338Z.version-gate.rc": {
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-race_20261114T141638Z.cmd": {
+   "bytes": 566,
+   "sha256": "0a34de45007796df336309ef1590de134ef56df8b6827b6d8a6e1cf86986387d"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-race_20261114T141638Z.meta": {
+   "bytes": 801,
+   "sha256": "b28a365fc3362b457f1e6e87eb5f725eb0f5e17eb194e9c156da09a3bfea8fea"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-race_20261114T141638Z.raw": {
+   "bytes": 12948,
+   "sha256": "8564aef36479c5a8cfc41ab088d050a71b16942ffd5c4e1757a9e8931e1c3383"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-race_20261114T141638Z.rc": {
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-race_20261114T141638Z.source-gate.rc": {
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/new-race_20261114T141638Z.version-gate.rc": {
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/unified_20261114T141737Z.cmd": {
+   "bytes": 561,
+   "sha256": "ef7855b5d1e96cf7ad05b8c34eb74bb13843e6500a70be7cda2bedcfcbd1f837"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/unified_20261114T141737Z.meta": {
+   "bytes": 811,
+   "sha256": "52d87b15d2d6a72d2df53ec01867ea9a556e3350000b7ce1806a722e7ea5f017"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/unified_20261114T141737Z.raw": {
+   "bytes": 309366,
+   "sha256": "28c34cc6b5e7de65685598cfb51ab10f51af2a73b0f90658faa7d75daed8cd12"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/unified_20261114T141737Z.rc": {
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/unified_20261114T141737Z.source-gate.rc": {
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "/private/tmp/openfoundry-p25-repair-evidence/pg/unified_20261114T141737Z.version-gate.rc": {
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  }
+ },
+ "schema": "p25-archive-pg-inputs-v1"
+}

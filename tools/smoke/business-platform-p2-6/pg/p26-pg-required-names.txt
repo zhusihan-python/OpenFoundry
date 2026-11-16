@@ -1,0 +1,7 @@
+# SUPERSEDED 2026-11-15 (root round-1 #5) — do NOT add names here.
+# Live per-service frozen name lists (W1/W2 landed integration sources):
+#   dataset:   p26-dataset-pg-names.txt   (8 names, W1 keyed receipts)
+#   connector: p26-connector-pg-names.txt (10 names, TestPGP26* family)
+# This file's earlier "zero P26 PG names exist" fact became stale the
+# same day (recovery_integration_test.go + W1 receipt tests landed) and
+# is corrected by the two lists above.

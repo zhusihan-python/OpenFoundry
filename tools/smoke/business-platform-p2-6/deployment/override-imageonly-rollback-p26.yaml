@@ -1,0 +1,6 @@
+# Prepared only. Root must separately authorize any rollback execution.
+services:
+  dataset:
+    image: sha256:dc4eca36295110f253af382f4cc89d2263cfff4b36671e87a9156a5f577c9264
+  connector:
+    image: sha256:6b556702b34ba399f4ee434963c798faf86b12af294657ec3b144309c0097592

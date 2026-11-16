@@ -1,0 +1,4 @@
+services:
+  p26connectorc:
+    environment:
+      OPENFOUNDRY_SYNC_SCHEDULER_INTERVAL_SECS: "1"

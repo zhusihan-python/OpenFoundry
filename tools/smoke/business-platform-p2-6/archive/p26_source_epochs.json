@@ -1,0 +1,39 @@
+{
+  "active_final_source": "ff9cf1dfcdfdf275005687a4edbc0da3ae88a036335b1b3a236f857d59eecf0e",
+  "publication_status": "NOTREADY for final publication; S2 frozen, PG/unit/build evidence ready; upgrade/HTTP/legacy/final scopes pending",
+  "historical_sources": [
+    {
+      "source": "b94e6b2f33afe91187a569982a2763c27d04bbd8502fa92c3b5e186fe18ff14c",
+      "classification": "historical-only for future S2 formal verification",
+      "original_outcomes_preserved": true,
+      "source_snapshot": "tools/smoke/business-platform-p2-6/results/w10/business-S-before-legacy-compat",
+      "manifest_sha256": "1682e49206b9491296194304c6eea078f4248f020928d9e1ca10dffa770bae4c"
+    }
+  ],
+  "required_same_future_source": [
+    "new27 normal",
+    "new27 race",
+    "unified114",
+    "h12 targeted",
+    "unit3",
+    "build2",
+    "HTTP10",
+    "P1pre9",
+    "legacy suites",
+    "final restart/replay",
+    "typed whole ABC",
+    "cleanup"
+  ],
+  "forbidden_shortcuts": [
+    "relabel old S passes as S2",
+    "infer S2 before Root freezes",
+    "use old-S main/aux images as S2 proof",
+    "change old L assertion",
+    "overwrite old raw rc or failed history"
+  ],
+  "updating_source_allowlist_requires": "S2 Root freeze verified; current new404 file pins active; old404 allowlist backup remains history-only",
+  "active_source_snapshot": {
+    "path": "tools/smoke/business-platform-p2-6/results/w10/legacy-jwt-compat/S2-source-frozen",
+    "manifest_sha256": "6f3b492fe5aef361379faeb53fd57dbc248a1fd3862cabfe158f7db49a108c96"
+  }
+}

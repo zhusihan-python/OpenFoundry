@@ -1,0 +1,307 @@
+# Active Sol executable config; valid JSON is YAML 1.2. Prior draft retained in results/w10/sol-executable-attempt1/scenarios-prior-draft.yaml
+{
+  "schema": "p26-w11-configmap-v1",
+  "status": "code-pure; no live release",
+  "source_S": "b94e6b2f33afe91187a569982a2763c27d04bbd8502fa92c3b5e186fe18ff14c",
+  "suite_entrypoints": {
+    "p1": {
+      "new_path": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p1/smoke/smoke.py",
+      "source_sha256": "939d0ccf89b4873865c4b3f169be0c393247548f3f9aaaaf4807ee2f1fc9a406",
+      "cases": [
+        {
+          "id": "dataset_isolation",
+          "name": "dataset_isolation"
+        },
+        {
+          "id": "pipeline_isolation",
+          "name": "pipeline_isolation"
+        },
+        {
+          "id": "connector_isolation",
+          "name": "connector_isolation"
+        },
+        {
+          "id": "legacy_regression",
+          "name": "legacy_regression"
+        },
+        {
+          "id": "sync_real_rest",
+          "name": "sync_real_rest"
+        },
+        {
+          "id": "hash_change",
+          "name": "hash_change"
+        },
+        {
+          "id": "sync_failures",
+          "name": "sync_failures"
+        },
+        {
+          "id": "build_positive",
+          "name": "build_positive"
+        },
+        {
+          "id": "build_isolation",
+          "name": "build_isolation"
+        }
+      ],
+      "count": 9
+    },
+    "p21": {
+      "new_path": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-1/smoke_p21.py",
+      "source_sha256": "11aaf9a0553ef8d2430db178f3d0db70dda8dd196173d918fb173d31fcebe6d3",
+      "cases": [
+        {
+          "id": "A",
+          "name": "heartbeat_progress"
+        },
+        {
+          "id": "B",
+          "name": "lease_loss_fencing"
+        },
+        {
+          "id": "C",
+          "name": "terminal_commit_fault"
+        }
+      ],
+      "count": 3
+    },
+    "p22": {
+      "new_path": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-2/smoke_p22.py",
+      "source_sha256": "751ef54eb851cc757b278973d0bbb3592f32691b7d540930177dfd7ce956fb70",
+      "cases": [
+        {
+          "id": "D",
+          "name": "async_admission_and_completion"
+        },
+        {
+          "id": "E",
+          "name": "running_cancel_cross_process"
+        },
+        {
+          "id": "F",
+          "name": "queue_pending_cancel_and_queuefull"
+        },
+        {
+          "id": "G",
+          "name": "gate_wins_too_late_via_proxy"
+        },
+        {
+          "id": "H",
+          "name": "tenant_and_binding_denials"
+        },
+        {
+          "id": "I",
+          "name": "sigterm_shutdown_no_redispatch"
+        },
+        {
+          "id": "J",
+          "name": "deadline_bounds"
+        },
+        {
+          "id": "K",
+          "name": "sync_disconnect_compat"
+        },
+        {
+          "id": "L",
+          "name": "jwt_expiry_no_fallback"
+        },
+        {
+          "id": "M",
+          "name": "restart_state_preserved"
+        },
+        {
+          "id": "N",
+          "name": "legacy_cancel_unsupported"
+        }
+      ],
+      "count": 11
+    },
+    "p23": {
+      "new_path": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-3/smoke_p23.py",
+      "source_sha256": "63cc6de1cbbb188e2e4f435e46fdb554fe944da993a1f958658f64528c82d810",
+      "cases": [
+        {
+          "id": "O",
+          "name": "admission_capacity_shared"
+        },
+        {
+          "id": "P",
+          "name": "admission_release_matrix"
+        },
+        {
+          "id": "Q",
+          "name": "admission_min_interval"
+        },
+        {
+          "id": "R",
+          "name": "denial_precede_throttle"
+        },
+        {
+          "id": "S",
+          "name": "admission_config_validation"
+        },
+        {
+          "id": "T",
+          "name": "contention_real_db_lock"
+        },
+        {
+          "id": "U",
+          "name": "public_private_field_sweep"
+        },
+        {
+          "id": "V",
+          "name": "concurrent_inflight_invariant"
+        }
+      ],
+      "count": 8
+    },
+    "p24": {
+      "new_path": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-4/smoke_p24.py",
+      "source_sha256": "f5b583d92372db086ec4b98f0a17dff6adaf72dddeecd0db0fe8b4e21d468a83",
+      "cases": [
+        {
+          "id": "g1",
+          "name": "g1"
+        },
+        {
+          "id": "g2",
+          "name": "g2"
+        },
+        {
+          "id": "g3",
+          "name": "g3"
+        },
+        {
+          "id": "g4",
+          "name": "g4"
+        },
+        {
+          "id": "g5",
+          "name": "g5"
+        },
+        {
+          "id": "g6",
+          "name": "g6"
+        },
+        {
+          "id": "g7",
+          "name": "g7"
+        }
+      ],
+      "count": 7
+    },
+    "p25": {
+      "new_path": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-5/smoke_p25.py",
+      "source_sha256": "de6eb2bcbc6be34b57f6f7ab4da3be535fec9b140c2646bcbfcc9214395259a1",
+      "cases": [
+        {
+          "id": "h1",
+          "phase": "healthy",
+          "name": "baseline A->B->C cross-run incremental"
+        },
+        {
+          "id": "h2",
+          "phase": "healthy",
+          "name": "per-batch independent SNAPSHOT"
+        },
+        {
+          "id": "h3",
+          "phase": "healthy",
+          "name": "empty batch (exhausted position + initial empty)"
+        },
+        {
+          "id": "h4",
+          "phase": "healthy",
+          "name": "invalid terminal candidates on a NON-EMPTY window"
+        },
+        {
+          "id": "h5",
+          "phase": "healthy",
+          "name": "legacy snapshot compatibility"
+        },
+        {
+          "id": "h6",
+          "phase": "healthy",
+          "name": "overlapping sibling defs + same-def busy rejection"
+        },
+        {
+          "id": "h7",
+          "phase": "healthy",
+          "name": "config/target/credential fences + tenant visibility"
+        },
+        {
+          "id": "h8",
+          "phase": "healthy",
+          "name": "pull/paging failures; limits; retry integrity"
+        },
+        {
+          "id": "h9",
+          "phase": "healthy",
+          "name": "pre-publish cancel"
+        },
+        {
+          "id": "h10",
+          "phase": "healthy",
+          "name": "driver-coordinated CRASH probes (two-stage)"
+        },
+        {
+          "id": "h11",
+          "phase": "tail",
+          "name": "strict-ACK single-predicate negatives"
+        },
+        {
+          "id": "h12",
+          "phase": "healthy",
+          "name": "same-tx advance+terminal rollback (isolated PG)"
+        },
+        {
+          "id": "h13",
+          "phase": "healthy",
+          "name": "scheduled batches; REAL busy tick with SQL facts; quiet"
+        },
+        {
+          "id": "h14",
+          "phase": "tail",
+          "name": "lost-ACK unknown (controlled tail)"
+        },
+        {
+          "id": "h15",
+          "phase": "healthy",
+          "name": "busy manual trigger + ONE real async success"
+        }
+      ],
+      "count": 15
+    }
+  },
+  "ports": {
+    "A": 17097,
+    "B": 17098,
+    "C_proposed_review": 17100,
+    "p22proxy_proposed_review": 17099,
+    "p25fixture_stage_replacement": 17095,
+    "p25proxy_stage_replacement": 17096
+  },
+  "never_restart_fixture_port": 17090,
+  "configs": {
+    "p22p23": {
+      "CONNECTOR_SYNC_ASYNC_WORKERS": 1,
+      "CONNECTOR_SYNC_ASYNC_QUEUE": 64,
+      "CONNECTOR_SYNC_ASYNC_TASK_TTL_SECS": 300,
+      "CONNECTOR_SYNC_ASYNC_AUTH_TTL_SECS": 300,
+      "OF_P1_CONNECTOR_BASE": "http://127.0.0.1:17100"
+    },
+    "p22J": {
+      "only": "NEW A",
+      "CONNECTOR_SYNC_ASYNC_TASK_TTL_SECS": 7,
+      "CONNECTOR_SYNC_ASYNC_AUTH_TTL_SECS": 300,
+      "source_request_timeout_ms": 60000,
+      "finally_restore_taskTTL": 300
+    },
+    "p24": {
+      "scheduler_only": "NEW C",
+      "OPENFOUNDRY_SYNC_SCHEDULER_INTERVAL_SECS": 1,
+      "OF_P24_CONNECTOR2_BASE": "http://127.0.0.1:17097"
+    }
+  }
+}

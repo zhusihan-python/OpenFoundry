@@ -1,0 +1,24 @@
+# p23-required-names.txt — ROOT-PINNED 2026-11-14 (P2.3 source admission).
+#
+# HONEST STATUS AT PINNING TIME: these 7 top-level PG test names are pinned
+# from the root-approved P2.3 contract; the dedicated writer lives in
+# source_admission_integration_test.go (the ONLY new PG integration-test
+# file). As of this file's creation NONE of them has RUN or PASSED in any
+# real log — the integration guard must REFUSE to bless any run until a
+# genuine migrate-tests log shows each name with a top-level `=== RUN`
+# AND `--- PASS`. Nobody may claim "7/7 executed" before that.
+#
+# Final mandatory total once these really pass = P1 26 + P2.1 14 + P2.2 12
+# + P2.3 7 = 59. The three OLD guards (P1 runner-internal 26, P2.1 14,
+# P2.2 12) stay FROZEN and untouched; this file only ADDS the new names.
+#
+# Counting rule (same as the frozen P2.2 guard): DISTINCT real names,
+# top-level RUN + PASS each, child-only `name/sub` does not count,
+# SKIP > FAIL priority, no required SKIP tolerated.
+TestPGSourceAdmissionConcurrentCapacity
+TestPGSourceAdmissionIndependentSourcesAndContention
+TestPGSourceAdmissionIntervalPostLockClock
+TestPGSourceAdmissionReleaseStateMatrix
+TestPGSourceAdmissionTenantBindingAndLegacy
+TestPGSourceAdmissionMutationAndDelete
+TestPGSourceAdmissionRollbackAndMigrationReplay

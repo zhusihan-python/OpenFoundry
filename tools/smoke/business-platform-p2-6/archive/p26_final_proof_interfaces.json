@@ -1,0 +1,289 @@
+{
+  "status": "NOTREADY; Root original schemas and phase release required; never satisfied by IDs or Root verdict alone",
+  "interfaces": {
+    "legacy": {
+      "kind": "unsupported-final-legacy",
+      "required": [
+        "exact P1 pre9/post9",
+        "P22 full11",
+        "P23 full8",
+        "P24 full7",
+        "P25 full15 + explicit supplements",
+        "per-chain original commands/raw/process rc/business assertions, historical/current tool distinction"
+      ]
+    },
+    "final_restart_and_receipt": {
+      "kind": "unsupported-final-restart",
+      "required": [
+        "typed exact restart target CID/image/boot pre/post originals",
+        "postrestart old cohort readability and owned current receipt exact replay",
+        "receipt whole byte/hash/txn/file content and no new version/CP/source effects"
+      ]
+    },
+    "final_ABC": {
+      "kind": "unsupported-final-typed-whole",
+      "required": [
+        "old9 safe27+parents unchanged",
+        "old8 full CP/Run+parents unchanged",
+        "explicit typed new-owned ledger and expected safe states",
+        "entire controlled and owner sets equal old+explicit new without filtering unknown",
+        "last business writes before ABC, then only reads/seal"
+      ]
+    },
+    "cleanup": {
+      "kind": "unsupported-final-cleanup",
+      "required": [
+        "exact newly owned auxiliary CIDs and labels released by Root",
+        "before/after original safe inspect and original remove rc",
+        "old PG/files volume/main images preserved; original fixture boot PID unchanged",
+        "base3 default loops0/current grants0"
+      ]
+    },
+    "actual_secret_scan": {
+      "kind": "unsupported-final-actual-secret",
+      "required": [
+        "approved values in memory/anonymous pipe only",
+        "all regular bytes actual match scan, zero actual hits",
+        "pattern dispositions/opaque candidates reviewed, private files absent",
+        "redacted path/kind/count only; no values/snippets/argv/commandfile"
+      ]
+    },
+    "offline_copy": {
+      "kind": "unsupported-final-independent-proof",
+      "required": [
+        "independent new directory exact manifest/copy ledger hash/size",
+        "original workspace and private roots inaccessible with explicit safe sentinel deny probes",
+        "no Docker/PG/HTTP dependency; network and external executable probes denied",
+        "isolated original Unix process rc/stdout/stderr + all probe results",
+        "external report, not recursively hashed inside package"
+      ]
+    }
+  },
+  "runtime_S2": {
+    "kind": "s2-runtime-upgrade",
+    "reader": "p26_runtime_aggregate.aggregate",
+    "aggregate_required_services": [
+      "dataset",
+      "connector",
+      "p26connectorc",
+      "p26connectora",
+      "p26connectorb"
+    ],
+    "distinct_aux2_creation_required": true,
+    "Dataset_original_steps": 55,
+    "Dataset_kinds": {
+      "argv": 36,
+      "http": 19
+    },
+    "Connector_original_steps": 32,
+    "Connector_original_outer_rc": 1,
+    "Connector_original_kinds": {
+      "argv": 23,
+      "http": 9
+    },
+    "Connector_completion_steps": 25,
+    "Connector_completion_kinds": {
+      "argv": 15,
+      "http": 10
+    },
+    "Connector_completion_outer_rc": 0,
+    "original_http_child_rc": null,
+    "http_status": 200,
+    "transport_outcome": 0,
+    "scope": "stage reader only; all steps/meta/raw/command exact closure; final runtime aggregate awaits C/A/B and aux2 actual originals",
+    "historical_tool_warning": "completion used ed5a57b6 helper saved at results/w6/S2-readiness/C-safe-config-fix-attempt1/s2_image_upgrade-before-fix.py; never current 7fd261 replacement",
+    "aggregate_kind": "s2-runtime-aggregate",
+    "formal_satisfier": "q3-S2-runtime-aggregate",
+    "status": "actual five upgrades and aux2 bound; candidate Root static review pending"
+  },
+  "http_S2": {
+    "epoch_schema": "S2",
+    "outer_after": "case.meta.json",
+    "inner_binding": "case.meta.json inner_attempts exact1",
+    "source_before": "pins.json actual_candidate_hash_before",
+    "source_after": "case.meta.json actual_candidate_hash_after",
+    "deps": 10,
+    "wrapper": 1,
+    "semantic_selection": "strip global numeric prefix only; final run-poll is last original poll in sorted sequence; other semantic inputs unique",
+    "status": "actual all10 complete; 4906 original cases +434 owned original Unix0 +139 postguard +40 boot observations and separate CURRENT; candidate Root static review pending",
+    "tools_checkpoint": "results/w7/S2-http-ready-attempt1/READY-INDEX.json original11 tool entries",
+    "mandatory_completion_reader": "archive/p26_s2_http_aggregate.py"
+  },
+  "next_final_original_producers": {
+    "legacy": [
+      "regressions/adapters/w10_suite_adapter.py",
+      "regressions/p1/p26_p1_outer.py",
+      "regressions/p25"
+    ],
+    "restart": [
+      "deployment/final_main_restart.py",
+      "deployment/final_old_artifact_readonly.py",
+      "deployment/final_dataset_receipt_replay.py"
+    ],
+    "cleanup": [
+      "deployment/final_quiesce_new_owned.py",
+      "deployment/final_owned_aux_cleanup.py"
+    ],
+    "secret": [
+      "archive/p26_secret_scan.py"
+    ],
+    "offline": [
+      "archive/p26_offline_runner.py",
+      "archive/p26_offline_probe.py"
+    ]
+  },
+  "binding_rule": "Reader implementation and mandatory full business scope are completed against each actual producer originals before final acceptance; no Root bool, pending ID, generic files hash or fixture result can satisfy them. Current unsupported final kinds remain blocked until that review.",
+  "prepared_final_readers": {
+    "module": "archive/p26_final_proofs.py",
+    "original_dispatch": [
+      "final-typed-whole",
+      "final-restart",
+      "final-receipt",
+      "final-old-artifacts",
+      "final-restart-receipt",
+      "final-quiesce",
+      "final-cleanup",
+      "final-actual-secret"
+    ],
+    "status": "CODE-PURE-INTERFACES ONLY; not formal scope approval",
+    "common_originals": [
+      "actual source snapshots before/after; inline observation or real outer output allowed",
+      "original outer rc and exact complete per-step command/meta/raw/rc scope",
+      "immutable historical used-tool blobs",
+      "complete business originals by dedicated role"
+    ],
+    "typed_whole": [
+      "old9 fullsafe27",
+      "oldCP8 whole owners",
+      "typed fullsafe27/protocol/legacy population/complete parent union",
+      "whole controlled predicate unfiltered by registered UUID",
+      "whole owner exact sets; duplicate and unknown extras rejected",
+      "all old+typed Def public CP/Run bodies",
+      "whole grants zero and main3 default config originals"
+    ],
+    "restart": [
+      "Dataset/Pipeline/Connector exact order",
+      "same CID/image, distinct boot, exact restart argv and before/after raw facts",
+      "mounts/ports preserved; env unique sets same",
+      "PG+oldfixture observed after each of three restarts",
+      "original full typed guard before/after"
+    ],
+    "receipt": {
+      "scope": "ordinary snapshot Dataset restart idempotent replay; not incremental epoch or Source-no-reread",
+      "producer_sha256_code_only": "420134b3c7bd02db62ec1b990328f25614c6340152f0c24419433cf6cac28a2d",
+      "snapshots": [
+        "baseline",
+        "pre_replay",
+        "post_replay"
+      ],
+      "checkpoint": "404 transport0 original HTTP body unchanged and bound to public_snapshot.checkpoint",
+      "bindings": [
+        "same original private body SHA/length from two successful private-projection SELECTs",
+        "POST200 exact original ACK byte SHA",
+        "same head, one version, exact file/download bytes/rows/hash",
+        "full Run unchanged"
+      ],
+      "Source_repull_proof": "separate S2HTTP+PG; historical p26snap1 counter not required because P25 fixture changes stage"
+    },
+    "cleanup": [
+      "new exact owned CID/labels ledger",
+      "quiesce source/Def creation proofs, disarm+schedulefalse, wholegrants0, stoppedABC and full typed guards",
+      "exact original stop/rm command and disappearance inventory",
+      "main5 full identities before/after unchanged"
+    ],
+    "secret": {
+      "scanner_option": "--values-stdin --audit-json",
+      "schema": "p26-secret-allbyte-audit-v1",
+      "records": [
+        "actual_value_count",
+        "all regular member SHA/size",
+        "zero actual_hit_count",
+        "suspect count and redacted findings",
+        "no values or value hashes persisted"
+      ],
+      "actual_phase_pending": true
+    },
+    "legacy_stage_reader": "p26_legacy_proofs.actual_stage: p1/p21/p22/p23/p24; does not accept P25 or whole legacy/ABC-last aggregate",
+    "still_requires_actual_aggregate_work": [
+      "runtime five upgrades plus separate aux2 creation",
+      "full legacy P25 original summaries/H10/h12/h13/tail supplements",
+      "ABC3 actual LAST business writes with final typed-whole linked chronologically",
+      "whole failed-history final cutoff and reader",
+      "independent real package proof"
+    ]
+  },
+  "actual_legacy_stages": {
+    "reader": "p26_legacy_proofs.actual_stage",
+    "bound": [
+      "S2 P1pre9 full9 original512",
+      "S2 P22 full11 original1578",
+      "S2 P23 full8 original1896 including3snapshotcopies",
+      "S2 P24retry2 full7 original826+audit metadata; failed first2/5 and retry1 5/2 remain history"
+    ],
+    "holder_semantics": "acquire/stream rc unavailable + original_rc null preserved; real PID/NOWAIT55P03/reapedROLLBACK terminal0 proved independently",
+    "full_legacy_complete": false
+  },
+  "secret_provider_CODE": {
+    "module": "archive/p26_secret_values_memory.py",
+    "release_schema": "p26-secret-provider-release-v1",
+    "phase": "p26-final-secret-values-memory",
+    "registered_inputs": [
+      "id",
+      "path",
+      "key",
+      "role",
+      "projection=exact|bearer-token|url-password"
+    ],
+    "member_manifest_schema": "p26-secret-scan-members-v1 external to scanned package",
+    "audit_schema": "p26-secret-input-registry-v1",
+    "normalization": "explicit per registered entry; no shell sourcing",
+    "values": "memory only, anonymous subprocess stdin pipe, no values or value hashes in output/private source hashes",
+    "actual_phase_performed": false,
+    "pure_fixture_only": "02-provider-pure.json"
+  },
+  "P25_CODE_reader": {
+    "module": "archive/p26_p25_proofs.py",
+    "kind": "p25-actual-full",
+    "status": "prepared healthy/h10/tail original interfaces; supplements deliberately failclosed until actual originals",
+    "sidecars": [
+      17103,
+      17104
+    ],
+    "full_legacy_scope_still_closed": true
+  },
+  "current_parent_collection_CODE": {
+    "module": "archive/p26_collect_owned_parents.py",
+    "phase": "p26-current-owned-parent-readonly",
+    "release_schema": "p26-owned-parent-current-release-v1",
+    "input_plan": "attempt15/exact-current-parent-plan.CANDIDATE.json",
+    "current_count": 266,
+    "safe_SQL_columns": [
+      "def_id",
+      "org_id",
+      "source_id",
+      "output_dataset_id",
+      "conn_id",
+      "conn_org_id",
+      "conn_owner_id",
+      "source_name",
+      "connector_type"
+    ],
+    "actual_execution": false,
+    "cutoffs": {
+      "initial_quiesce": "ALL NEW actual through P25, not future P1post/ABC; P25 still pending",
+      "final_readonly_union": "initial cutoff + P1post/ABC actual provenance/finally receipts; prove quiet after ABC without writes"
+    },
+    "historical_body_gap": "four early Defs combined original case-owned UUID + exact POST request/status201 marker + explicit current parent check; never fabricate historical body",
+    "normalization_ledger": "p26-current-parent-normalization-ledger-v1, separate CURRENT derived fragments and original SELECT/rc/plan references",
+    "mode": "Root-reviewed fixed9-column exact-known-ID CURRENT parent JOIN in BEGIN READ ONLY; subprocess timeout120s; no statement_timeout claim",
+    "expected4gap_actor": "1c0e238a-3657-4978-98dc-d71a342c3fa1",
+    "expected4gap_tenant": "a792b91e-dab5-4739-9344-2848c1e83487"
+  },
+  "failed_history_intake_CODE": {
+    "reader": "p26_failed_history_proofs.p24_retry1",
+    "retry1": "actual5pass2fail826+index; suite originalrc1 retained",
+    "first_failure": "426 original members retained as failed-history-only",
+    "read_only_cleanup": "170 members; no suite-success claim",
+    "final_whole_history_cutoff": "not yet frozen; deployment/new P25 events append later"
+  }
+}

@@ -1,0 +1,5 @@
+services:
+  p26connectora:
+    environment:
+      CONNECTOR_SYNC_ASYNC_TASK_TTL_SECS: "7"
+      CONNECTOR_SYNC_ASYNC_AUTH_TTL_SECS: "300"

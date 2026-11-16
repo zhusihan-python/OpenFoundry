@@ -1,0 +1,2028 @@
+{
+  "source_sha256": "ff9cf1dfcdfdf275005687a4edbc0da3ae88a036335b1b3a236f857d59eecf0e",
+  "paths": [
+    "go.mod",
+    "go.sum",
+    "libs/scheduling-cron/cron_doc_examples_test.go",
+    "libs/scheduling-cron/cron_dst_backward_test.go",
+    "libs/scheduling-cron/cron_dst_forward_test.go",
+    "libs/scheduling-cron/cron_test.go",
+    "libs/scheduling-cron/doc.go",
+    "libs/scheduling-cron/evaluator.go",
+    "libs/scheduling-cron/parser.go",
+    "libs/scheduling-cron/schedule.go",
+    "services/connector-management-service/cmd/connector-management-service/main.go",
+    "services/connector-management-service/cmd/connector-management-service/main_p24_test.go",
+    "services/connector-management-service/cmd/connector-management-service/main_test.go",
+    "services/connector-management-service/internal/adapters/adapter.go",
+    "services/connector-management-service/internal/adapters/azure_blob/adapter.go",
+    "services/connector-management-service/internal/adapters/azure_blob/adapter_test.go",
+    "services/connector-management-service/internal/adapters/bigquery/adapter.go",
+    "services/connector-management-service/internal/adapters/bigquery/adapter_test.go",
+    "services/connector-management-service/internal/adapters/catalogbridge/bridge.go",
+    "services/connector-management-service/internal/adapters/catalogbridge/bridge_test.go",
+    "services/connector-management-service/internal/adapters/csv/adapter.go",
+    "services/connector-management-service/internal/adapters/csv/adapter_test.go",
+    "services/connector-management-service/internal/adapters/databricks/adapter.go",
+    "services/connector-management-service/internal/adapters/databricks/adapter_test.go",
+    "services/connector-management-service/internal/adapters/errors.go",
+    "services/connector-management-service/internal/adapters/excel/adapter.go",
+    "services/connector-management-service/internal/adapters/gcs/adapter.go",
+    "services/connector-management-service/internal/adapters/gcs/adapter_test.go",
+    "services/connector-management-service/internal/adapters/generic/adapter.go",
+    "services/connector-management-service/internal/adapters/generic/adapter_test.go",
+    "services/connector-management-service/internal/adapters/graphql/adapter.go",
+    "services/connector-management-service/internal/adapters/graphql/adapter_test.go",
+    "services/connector-management-service/internal/adapters/httpruntime/egress.go",
+    "services/connector-management-service/internal/adapters/httpruntime/egress_test.go",
+    "services/connector-management-service/internal/adapters/httpruntime/runtime.go",
+    "services/connector-management-service/internal/adapters/httpruntime/runtime_test.go",
+    "services/connector-management-service/internal/adapters/iot/adapter.go",
+    "services/connector-management-service/internal/adapters/iot/adapter_test.go",
+    "services/connector-management-service/internal/adapters/jdbc/adapter.go",
+    "services/connector-management-service/internal/adapters/jdbc/adapter_test.go",
+    "services/connector-management-service/internal/adapters/json/adapter.go",
+    "services/connector-management-service/internal/adapters/json/adapter_test.go",
+    "services/connector-management-service/internal/adapters/kafka/adapter.go",
+    "services/connector-management-service/internal/adapters/kafka/adapter_test.go",
+    "services/connector-management-service/internal/adapters/kinesis/adapter.go",
+    "services/connector-management-service/internal/adapters/kinesis/adapter_test.go",
+    "services/connector-management-service/internal/adapters/kinesis/sigv4.go",
+    "services/connector-management-service/internal/adapters/ldap/adapter.go",
+    "services/connector-management-service/internal/adapters/mssql/adapter.go",
+    "services/connector-management-service/internal/adapters/mssql/adapter_test.go",
+    "services/connector-management-service/internal/adapters/mysql/adapter.go",
+    "services/connector-management-service/internal/adapters/mysql/adapter_test.go",
+    "services/connector-management-service/internal/adapters/odbc/adapter.go",
+    "services/connector-management-service/internal/adapters/odbc/adapter_test.go",
+    "services/connector-management-service/internal/adapters/onelake/adapter.go",
+    "services/connector-management-service/internal/adapters/onelake/adapter_test.go",
+    "services/connector-management-service/internal/adapters/opentable/catalog.go",
+    "services/connector-management-service/internal/adapters/opentable/catalog_test.go",
+    "services/connector-management-service/internal/adapters/oracle/adapter.go",
+    "services/connector-management-service/internal/adapters/oracle/adapter_test.go",
+    "services/connector-management-service/internal/adapters/parquet/adapter.go",
+    "services/connector-management-service/internal/adapters/parquet/adapter_test.go",
+    "services/connector-management-service/internal/adapters/power_bi/adapter.go",
+    "services/connector-management-service/internal/adapters/power_bi/adapter_test.go",
+    "services/connector-management-service/internal/adapters/registry.go",
+    "services/connector-management-service/internal/adapters/registry_test.go",
+    "services/connector-management-service/internal/adapters/rest_api/adapter.go",
+    "services/connector-management-service/internal/adapters/rest_api/adapter_test.go",
+    "services/connector-management-service/internal/adapters/s3/adapter.go",
+    "services/connector-management-service/internal/adapters/s3/adapter_test.go",
+    "services/connector-management-service/internal/adapters/salesforce/adapter.go",
+    "services/connector-management-service/internal/adapters/salesforce/adapter_test.go",
+    "services/connector-management-service/internal/adapters/sap/adapter.go",
+    "services/connector-management-service/internal/adapters/sap/adapter_test.go",
+    "services/connector-management-service/internal/adapters/sftp/adapter.go",
+    "services/connector-management-service/internal/adapters/skeleton_stubs_test.go",
+    "services/connector-management-service/internal/adapters/snowflake/adapter.go",
+    "services/connector-management-service/internal/adapters/snowflake/adapter_test.go",
+    "services/connector-management-service/internal/adapters/tableau/adapter.go",
+    "services/connector-management-service/internal/adapters/tableau/adapter_test.go",
+    "services/connector-management-service/internal/config/config.go",
+    "services/connector-management-service/internal/config/config_test.go",
+    "services/connector-management-service/internal/domain/agent_registry.go",
+    "services/connector-management-service/internal/domain/agent_registry_test.go",
+    "services/connector-management-service/internal/domain/catalog_bridge/bridge.go",
+    "services/connector-management-service/internal/domain/credential_vending.go",
+    "services/connector-management-service/internal/domain/credential_vending_test.go",
+    "services/connector-management-service/internal/domain/credentials.go",
+    "services/connector-management-service/internal/domain/credentials_test.go",
+    "services/connector-management-service/internal/domain/egress/egress.go",
+    "services/connector-management-service/internal/domain/egress/egress_test.go",
+    "services/connector-management-service/internal/domain/http_runtime/egress.go",
+    "services/connector-management-service/internal/domain/http_runtime/runtime.go",
+    "services/connector-management-service/internal/domain/open_table_catalog/catalog.go",
+    "services/connector-management-service/internal/domain/registrations.go",
+    "services/connector-management-service/internal/domain/sync/status.go",
+    "services/connector-management-service/internal/domain/update_detection.go",
+    "services/connector-management-service/internal/handlers/async_worker_test.go",
+    "services/connector-management-service/internal/handlers/auto_recovery.go",
+    "services/connector-management-service/internal/handlers/checkpoint_integration_test.go",
+    "services/connector-management-service/internal/handlers/coordinator.go",
+    "services/connector-management-service/internal/handlers/coordinator_internal_test.go",
+    "services/connector-management-service/internal/handlers/dataset_precheck_test.go",
+    "services/connector-management-service/internal/handlers/handlers.go",
+    "services/connector-management-service/internal/handlers/handlers_test.go",
+    "services/connector-management-service/internal/handlers/lease_test.go",
+    "services/connector-management-service/internal/handlers/media_runtime.go",
+    "services/connector-management-service/internal/handlers/real_disconnect_test.go",
+    "services/connector-management-service/internal/handlers/registrations.go",
+    "services/connector-management-service/internal/handlers/schedule_auth.go",
+    "services/connector-management-service/internal/handlers/schedule_auth_internal_test.go",
+    "services/connector-management-service/internal/handlers/schedule_http_p24_test.go",
+    "services/connector-management-service/internal/handlers/schedule_loop.go",
+    "services/connector-management-service/internal/handlers/schedule_loop_test.go",
+    "services/connector-management-service/internal/handlers/sync_admission_test.go",
+    "services/connector-management-service/internal/handlers/sync_recovery.go",
+    "services/connector-management-service/internal/handlers/sync_recovery_http_test.go",
+    "services/connector-management-service/internal/handlers/sync_recovery_test.go",
+    "services/connector-management-service/internal/handlers/sync_run_test.go",
+    "services/connector-management-service/internal/handlers/tenant_isolation_test.go",
+    "services/connector-management-service/internal/models/catalog.go",
+    "services/connector-management-service/internal/models/contract_fixtures_test.go",
+    "services/connector-management-service/internal/models/models.go",
+    "services/connector-management-service/internal/models/recovery_config_test.go",
+    "services/connector-management-service/internal/models/rest_api_source.go",
+    "services/connector-management-service/internal/models/rest_api_source_test.go",
+    "services/connector-management-service/internal/models/rest_api_sync.go",
+    "services/connector-management-service/internal/models/rest_api_sync_incremental_test.go",
+    "services/connector-management-service/internal/models/schedule.go",
+    "services/connector-management-service/internal/models/schedule_spec_test.go",
+    "services/connector-management-service/internal/models/sync_admission.go",
+    "services/connector-management-service/internal/models/sync_admission_test.go",
+    "services/connector-management-service/internal/models/webhook_definition.go",
+    "services/connector-management-service/internal/models/webhook_definition_test.go",
+    "services/connector-management-service/internal/repo/admission.go",
+    "services/connector-management-service/internal/repo/auto_recovery.go",
+    "services/connector-management-service/internal/repo/auto_recovery_integration_test.go",
+    "services/connector-management-service/internal/repo/cancel.go",
+    "services/connector-management-service/internal/repo/cancel_integration_test.go",
+    "services/connector-management-service/internal/repo/checkpoint.go",
+    "services/connector-management-service/internal/repo/checkpoint_integration_test.go",
+    "services/connector-management-service/internal/repo/connwrap_ackloss_test.go",
+    "services/connector-management-service/internal/repo/lease.go",
+    "services/connector-management-service/internal/repo/lease_integration_test.go",
+    "services/connector-management-service/internal/repo/migration_concurrency_integration_test.go",
+    "services/connector-management-service/internal/repo/migrations/20260419100002_initial_connectors.sql",
+    "services/connector-management-service/internal/repo/migrations/20260424201000_sync_jobs_runtime.sql",
+    "services/connector-management-service/internal/repo/migrations/20260425153000_enterprise_connectivity.sql",
+    "services/connector-management-service/internal/repo/migrations/20260430120000_data_connection_mvp.sql",
+    "services/connector-management-service/internal/repo/migrations/20260430140000_sync_runs_ingest_job_id.sql",
+    "services/connector-management-service/internal/repo/migrations/20260501100000_sync_runs_dataset_version.sql",
+    "services/connector-management-service/internal/repo/migrations/20260503010000_outbox.sql",
+    "services/connector-management-service/internal/repo/migrations/20260503120000_drop_sync_jobs_runtime.sql",
+    "services/connector-management-service/internal/repo/migrations/20260504000120_virtual_tables_init.sql",
+    "services/connector-management-service/internal/repo/migrations/20260504000121_auto_registration.sql",
+    "services/connector-management-service/internal/repo/migrations/20260504000122_update_detection.sql",
+    "services/connector-management-service/internal/repo/migrations/20260505100000_media_set_syncs.sql",
+    "services/connector-management-service/internal/repo/migrations/20260511103000_webhook_invocation_history.sql",
+    "services/connector-management-service/internal/repo/migrations/20260511104500_inbound_listener_events.sql",
+    "services/connector-management-service/internal/repo/migrations/20261113000000_tenant_org_rest_sync.sql",
+    "services/connector-management-service/internal/repo/migrations/20261113100000_sync_run_lease.sql",
+    "services/connector-management-service/internal/repo/migrations/20261113110000_sync_run_cancel_gate.sql",
+    "services/connector-management-service/internal/repo/migrations/20261114100000_source_sync_admission.sql",
+    "services/connector-management-service/internal/repo/migrations/20261115120000_sync_schedule_observability.sql",
+    "services/connector-management-service/internal/repo/migrations/20261116100000_sync_incremental_checkpoints.sql",
+    "services/connector-management-service/internal/repo/migrations/20261117100000_sync_recovery_intents.sql",
+    "services/connector-management-service/internal/repo/publish_intent.go",
+    "services/connector-management-service/internal/repo/publish_intent_test.go",
+    "services/connector-management-service/internal/repo/recovery.go",
+    "services/connector-management-service/internal/repo/recovery_commit_ackloss_integration_test.go",
+    "services/connector-management-service/internal/repo/recovery_integration_test.go",
+    "services/connector-management-service/internal/repo/repo.go",
+    "services/connector-management-service/internal/repo/repo_integration_test.go",
+    "services/connector-management-service/internal/repo/schedule.go",
+    "services/connector-management-service/internal/repo/schedule_integration_test.go",
+    "services/connector-management-service/internal/repo/source_admission_integration_test.go",
+    "services/connector-management-service/internal/runtime/dataset_client_test.go",
+    "services/connector-management-service/internal/runtime/dataset_recovery.go",
+    "services/connector-management-service/internal/runtime/dataset_recovery_test.go",
+    "services/connector-management-service/internal/runtime/rest_snapshot.go",
+    "services/connector-management-service/internal/runtime/rest_snapshot_incremental_test.go",
+    "services/connector-management-service/internal/runtime/rest_snapshot_test.go",
+    "services/connector-management-service/internal/runtime/sanitize.go",
+    "services/connector-management-service/internal/runtime/sync.go",
+    "services/connector-management-service/internal/runtime/sync_ack_test.go",
+    "services/connector-management-service/internal/server/route_smoke_test.go",
+    "services/connector-management-service/internal/server/server.go",
+    "services/connector-management-service/internal/server/server_test.go",
+    "services/connector-management-service/internal/workers/auto_registration.go",
+    "services/connector-management-service/internal/workers/auto_registration_test.go",
+    "services/connector-management-service/internal/workers/workers.go",
+    "services/dataset-versioning-service/cmd/dataset-versioning-service/main.go",
+    "services/dataset-versioning-service/internal/backingfs/local.go",
+    "services/dataset-versioning-service/internal/backingfs/local_test.go",
+    "services/dataset-versioning-service/internal/config/config.go",
+    "services/dataset-versioning-service/internal/domain/parameterized_view.go",
+    "services/dataset-versioning-service/internal/domain/parameterized_view_test.go",
+    "services/dataset-versioning-service/internal/domain/retention/retention.go",
+    "services/dataset-versioning-service/internal/domain/retention/retention_test.go",
+    "services/dataset-versioning-service/internal/domain/views.go",
+    "services/dataset-versioning-service/internal/domain/views_test.go",
+    "services/dataset-versioning-service/internal/handlers/audit.go",
+    "services/dataset-versioning-service/internal/handlers/backing_files.go",
+    "services/dataset-versioning-service/internal/handlers/branch_lifecycle.go",
+    "services/dataset-versioning-service/internal/handlers/branch_lifecycle_internal_test.go",
+    "services/dataset-versioning-service/internal/handlers/catalog_facets_metadata.go",
+    "services/dataset-versioning-service/internal/handlers/catalog_parity.go",
+    "services/dataset-versioning-service/internal/handlers/catalog_resolver_test.go",
+    "services/dataset-versioning-service/internal/handlers/cross_resource_refs_test.go",
+    "services/dataset-versioning-service/internal/handlers/file_rows.go",
+    "services/dataset-versioning-service/internal/handlers/file_rows_internal_test.go",
+    "services/dataset-versioning-service/internal/handlers/file_rows_test.go",
+    "services/dataset-versioning-service/internal/handlers/handlers.go",
+    "services/dataset-versioning-service/internal/handlers/handlers_test.go",
+    "services/dataset-versioning-service/internal/handlers/output_commit.go",
+    "services/dataset-versioning-service/internal/handlers/output_commit_content_test.go",
+    "services/dataset-versioning-service/internal/handlers/output_commit_keyed_test.go",
+    "services/dataset-versioning-service/internal/handlers/output_commit_objects.go",
+    "services/dataset-versioning-service/internal/handlers/output_commit_objects_internal_test.go",
+    "services/dataset-versioning-service/internal/handlers/parity_placeholders.go",
+    "services/dataset-versioning-service/internal/handlers/publish_atomicity_test.go",
+    "services/dataset-versioning-service/internal/handlers/quality_lint_health.go",
+    "services/dataset-versioning-service/internal/handlers/tenant.go",
+    "services/dataset-versioning-service/internal/handlers/tenant_isolation_test.go",
+    "services/dataset-versioning-service/internal/handlers/transactions.go",
+    "services/dataset-versioning-service/internal/handlers/views_schema_preview.go",
+    "services/dataset-versioning-service/internal/models/branch_test.go",
+    "services/dataset-versioning-service/internal/models/catalog.go",
+    "services/dataset-versioning-service/internal/models/contract_fixtures_test.go",
+    "services/dataset-versioning-service/internal/models/models.go",
+    "services/dataset-versioning-service/internal/models/rust_wire_fixtures_test.go",
+    "services/dataset-versioning-service/internal/repo/migrations/20260419100001_initial_datasets.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260419100002_reserved_compatibility_slot.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260421103000_data_catalog_quality.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260421174000_dataset_branches.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260424213000_dataset_branch_merge_metadata.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260425173000_dataset_views_transactions.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260501000000_dataset_views_runtime_compat.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260501000001_versioning_init.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260501000002_transaction_invariants.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260501120000_dataset_rid_compat.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260502000001_dataset_branches_v2.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260502120000_dataset_markings.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260503000001_schema_per_view.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260503000002_dataset_files.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260503000004_dataset_health.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260503130000_dataset_foundry_model.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260504000010_branches_unify.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260504000030_branch_retention.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20260504000091_parameterized_view.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20261113000000_dataset_org_tenancy.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20261113100000_dataset_view_schemas_ownership.sql",
+    "services/dataset-versioning-service/internal/repo/migrations/20261115100000_dataset_output_commit_receipts.sql",
+    "services/dataset-versioning-service/internal/repo/migrations_compat_integration_test.go",
+    "services/dataset-versioning-service/internal/repo/output_commit_ackloss_integration_test.go",
+    "services/dataset-versioning-service/internal/repo/output_commit_ackloss_wire_test.go",
+    "services/dataset-versioning-service/internal/repo/output_commit_receipts.go",
+    "services/dataset-versioning-service/internal/repo/output_commit_receipts_integration_test.go",
+    "services/dataset-versioning-service/internal/repo/output_commit_receipts_w1_integration_test.go",
+    "services/dataset-versioning-service/internal/repo/parity.go",
+    "services/dataset-versioning-service/internal/repo/parity_test.go",
+    "services/dataset-versioning-service/internal/repo/publish.go",
+    "services/dataset-versioning-service/internal/repo/publish_fault_injection_integration_test.go",
+    "services/dataset-versioning-service/internal/repo/repo.go",
+    "services/dataset-versioning-service/internal/repo/repo_test.go",
+    "services/dataset-versioning-service/internal/repo/schema_branch_http_integration_test.go",
+    "services/dataset-versioning-service/internal/repo/tenant.go",
+    "services/dataset-versioning-service/internal/repo/tenant_isolation_integration_test.go",
+    "services/dataset-versioning-service/internal/repo/transaction_invariants_test.go",
+    "services/dataset-versioning-service/internal/runtime/retention/repo_adapter.go",
+    "services/dataset-versioning-service/internal/runtime/retention/worker.go",
+    "services/dataset-versioning-service/internal/runtime/retention/worker_test.go",
+    "services/dataset-versioning-service/internal/server/server.go",
+    "services/dataset-versioning-service/internal/server/server_test.go",
+    "services/pipeline-build-service/cmd/pipeline-build-service/main.go",
+    "services/pipeline-build-service/internal/config/config.go",
+    "services/pipeline-build-service/internal/config/config_test.go",
+    "services/pipeline-build-service/internal/domain/engine/dag.go",
+    "services/pipeline-build-service/internal/domain/engine/dag_executor.go",
+    "services/pipeline-build-service/internal/domain/engine/engine.go",
+    "services/pipeline-build-service/internal/domain/engine/engine_test.go",
+    "services/pipeline-build-service/internal/domain/engine/runtime.go",
+    "services/pipeline-build-service/internal/domain/engine/types.go",
+    "services/pipeline-build-service/internal/domain/executor/executor.go",
+    "services/pipeline-build-service/internal/domain/executor/executor_test.go",
+    "services/pipeline-build-service/internal/domain/joblifecycle/joblifecycle.go",
+    "services/pipeline-build-service/internal/domain/joblifecycle/joblifecycle_test.go",
+    "services/pipeline-build-service/internal/domain/lineage/lineage.go",
+    "services/pipeline-build-service/internal/domain/lineage/lineage_test.go",
+    "services/pipeline-build-service/internal/domain/markings/markings.go",
+    "services/pipeline-build-service/internal/domain/resolver/branch.go",
+    "services/pipeline-build-service/internal/domain/resolver/resolver.go",
+    "services/pipeline-build-service/internal/domain/resolver/resolver_test.go",
+    "services/pipeline-build-service/internal/domain/runners/runners.go",
+    "services/pipeline-build-service/internal/domain/runners/runners_test.go",
+    "services/pipeline-build-service/internal/domain/schedule/nextrun.go",
+    "services/pipeline-build-service/internal/domain/schedule/nextrun_test.go",
+    "services/pipeline-build-service/internal/domain/schedule/schedule.go",
+    "services/pipeline-build-service/internal/domain/schedule/schedule_test.go",
+    "services/pipeline-build-service/internal/handler/abort.go",
+    "services/pipeline-build-service/internal/handler/abort_test.go",
+    "services/pipeline-build-service/internal/handler/aip_generation.go",
+    "services/pipeline-build-service/internal/handler/aip_generation_test.go",
+    "services/pipeline-build-service/internal/handler/build_resolution.go",
+    "services/pipeline-build-service/internal/handler/build_resolution_test.go",
+    "services/pipeline-build-service/internal/handler/builds_v1_test.go",
+    "services/pipeline-build-service/internal/handler/config_gates_test.go",
+    "services/pipeline-build-service/internal/handler/data_integration.go",
+    "services/pipeline-build-service/internal/handler/data_integration_test.go",
+    "services/pipeline-build-service/internal/handler/dataset_http_versioning.go",
+    "services/pipeline-build-service/internal/handler/dataset_http_versioning_test.go",
+    "services/pipeline-build-service/internal/handler/dataset_input_loader.go",
+    "services/pipeline-build-service/internal/handler/dataset_input_runtime_test.go",
+    "services/pipeline-build-service/internal/handler/dataset_output_committer.go",
+    "services/pipeline-build-service/internal/handler/dataset_output_committer_test.go",
+    "services/pipeline-build-service/internal/handler/distributed_runtime.go",
+    "services/pipeline-build-service/internal/handler/distributed_runtime_test.go",
+    "services/pipeline-build-service/internal/handler/execution.go",
+    "services/pipeline-build-service/internal/handler/execution_test.go",
+    "services/pipeline-build-service/internal/handler/function_registry.go",
+    "services/pipeline-build-service/internal/handler/geo_join_runtime.go",
+    "services/pipeline-build-service/internal/handler/geo_join_runtime_test.go",
+    "services/pipeline-build-service/internal/handler/gpx_runtime.go",
+    "services/pipeline-build-service/internal/handler/gpx_runtime_test.go",
+    "services/pipeline-build-service/internal/handler/gpx_schema.go",
+    "services/pipeline-build-service/internal/handler/gpx_upload.go",
+    "services/pipeline-build-service/internal/handler/gpx_upload_test.go",
+    "services/pipeline-build-service/internal/handler/handlers.go",
+    "services/pipeline-build-service/internal/handler/haversine_runtime.go",
+    "services/pipeline-build-service/internal/handler/haversine_runtime_test.go",
+    "services/pipeline-build-service/internal/handler/haversine_schema.go",
+    "services/pipeline-build-service/internal/handler/job_logs_test.go",
+    "services/pipeline-build-service/internal/handler/lightweight_runtime.go",
+    "services/pipeline-build-service/internal/handler/llm_runtime.go",
+    "services/pipeline-build-service/internal/handler/llm_runtime_test.go",
+    "services/pipeline-build-service/internal/handler/ontology_object_output_committer.go",
+    "services/pipeline-build-service/internal/handler/ontology_object_output_committer_test.go",
+    "services/pipeline-build-service/internal/handler/pipeline_crud_test.go",
+    "services/pipeline-build-service/internal/handler/pipeline_function_test.go",
+    "services/pipeline-build-service/internal/handler/preview.go",
+    "services/pipeline-build-service/internal/handler/preview_test.go",
+    "services/pipeline-build-service/internal/handler/python_transform.go",
+    "services/pipeline-build-service/internal/handler/schema_guidance.go",
+    "services/pipeline-build-service/internal/handler/schema_guidance_test.go",
+    "services/pipeline-build-service/internal/handler/schema_validation.go",
+    "services/pipeline-build-service/internal/handler/schema_validation_test.go",
+    "services/pipeline-build-service/internal/handler/spark_runs_test.go",
+    "services/pipeline-build-service/internal/handler/tenancy.go",
+    "services/pipeline-build-service/internal/handler/tenancy_test.go",
+    "services/pipeline-build-service/internal/handler/tenant_boundary_gate_test.go",
+    "services/pipeline-build-service/internal/handler/transform_catalog.go",
+    "services/pipeline-build-service/internal/handler/transform_catalog_test.go",
+    "services/pipeline-build-service/internal/iceberg/client.go",
+    "services/pipeline-build-service/internal/iceberg/client_test.go",
+    "services/pipeline-build-service/internal/logs/logs.go",
+    "services/pipeline-build-service/internal/models/build.go",
+    "services/pipeline-build-service/internal/models/contract_fixtures_test.go",
+    "services/pipeline-build-service/internal/models/job.go",
+    "services/pipeline-build-service/internal/models/pipeline.go",
+    "services/pipeline-build-service/internal/models/pipeline_ir.go",
+    "services/pipeline-build-service/internal/models/pipeline_ir_test.go",
+    "services/pipeline-build-service/internal/models/pipeline_type_test.go",
+    "services/pipeline-build-service/internal/models/resolver.go",
+    "services/pipeline-build-service/internal/models/run.go",
+    "services/pipeline-build-service/internal/postgres/migrations.go",
+    "services/pipeline-build-service/internal/postgres/pipelines.go",
+    "services/pipeline-build-service/internal/postgres/repository.go",
+    "services/pipeline-build-service/internal/postgres/repository_test.go",
+    "services/pipeline-build-service/internal/postgres/tenancy.go",
+    "services/pipeline-build-service/internal/postgres/tenant_build_lifecycle_integration_test.go",
+    "services/pipeline-build-service/internal/postgres/tenant_isolation_integration_test.go",
+    "services/pipeline-build-service/internal/postgres/tenant_isolation_test.go",
+    "services/pipeline-build-service/internal/runtime/python.go",
+    "services/pipeline-build-service/internal/runtime/python_test.go",
+    "services/pipeline-build-service/internal/runtime/sidecar_integration_test.go",
+    "services/pipeline-build-service/internal/server/route_auth_audit_test.go",
+    "services/pipeline-build-service/internal/server/route_smoke_test.go",
+    "services/pipeline-build-service/internal/server/server.go",
+    "services/pipeline-build-service/internal/spark/spark.go",
+    "services/pipeline-build-service/internal/spark/spark_test.go",
+    "services/pipeline-build-service/migrations/20260419100005_initial_pipelines.sql",
+    "services/pipeline-build-service/migrations/20260421170000_pipeline_enhancements.sql",
+    "services/pipeline-build-service/migrations/20260425190000_generalized_lineage.sql",
+    "services/pipeline-build-service/migrations/20260427070600_16_compute_modules_foundation.sql",
+    "services/pipeline-build-service/migrations/20260427070600_17_compute_module_runs_foundation.sql",
+    "services/pipeline-build-service/migrations/20260504000020_job_specs.sql",
+    "services/pipeline-build-service/migrations/20260504000050_builds_init.sql",
+    "services/pipeline-build-service/migrations/20260504000051_multi_output.sql",
+    "services/pipeline-build-service/migrations/20260504000060_input_view_filter.sql",
+    "services/pipeline-build-service/migrations/20260504000070_job_logs.sql",
+    "services/pipeline-build-service/migrations/20260504000080_pipeline_run_submissions.sql",
+    "services/pipeline-build-service/migrations/20260504000080_schedules_init.sql",
+    "services/pipeline-build-service/migrations/20260504000081_schedule_runs.sql",
+    "services/pipeline-build-service/migrations/20260504000082_schedule_scope.sql",
+    "services/pipeline-build-service/migrations/20260504000083_schedules_definitions.sql",
+    "services/pipeline-build-service/migrations/20260504000090_parameterized.sql",
+    "services/pipeline-build-service/migrations/20260505000010_pipeline_type_lifecycle.sql",
+    "services/pipeline-build-service/migrations/20260511000000_pipeline_authoring_lifecycle.sql",
+    "services/pipeline-build-service/migrations/20260511001000_pipeline_run_orchestration_lifecycle.sql",
+    "services/pipeline-build-service/migrations/20260511002000_distributed_pipeline_type.sql",
+    "services/pipeline-build-service/migrations/20261113100000_tenant_isolation.sql",
+    "services/pipeline-build-service/migrations/20261113110000_job_spec_canonical_rid.sql",
+    "services/pipeline-build-service/migrations/20261113110001_build_pending_output_txns.sql",
+    "services/pipeline-build-service/migrations/embed.go"
+  ],
+  "files": {
+    "go.mod": {
+      "sha256": "1e78d8c358ccf84c5aa8413e3eccea8501fbed9e20337b9d3b50f9e5b4dd109f",
+      "size": 6580
+    },
+    "go.sum": {
+      "sha256": "0f9e29cb0febfcd167682ff82d7ae1431910a71fa48f25b93a18ac3fb6935965",
+      "size": 39221
+    },
+    "libs/scheduling-cron/cron_doc_examples_test.go": {
+      "sha256": "3bb3b7c8ad5b5db904c7981567cb016e1ca876ca0be667ff96daaeddbe71727c",
+      "size": 14538
+    },
+    "libs/scheduling-cron/cron_dst_backward_test.go": {
+      "sha256": "3eab8c43383605e90dfda9ddd9b9552530582ccf07601ae3b3034e91175d3c8e",
+      "size": 2627
+    },
+    "libs/scheduling-cron/cron_dst_forward_test.go": {
+      "sha256": "182c0b5c4ea633a8187095275298a952d3c2b37dc0fc52a5f9c0f831ce32be79",
+      "size": 2796
+    },
+    "libs/scheduling-cron/cron_test.go": {
+      "sha256": "e9064e55c8b629a4ad805731db00d8839adbacdba62bad0e2a05138499db186a",
+      "size": 8176
+    },
+    "libs/scheduling-cron/doc.go": {
+      "sha256": "101c3a9da7d6539812c1016ca03ff91cde9e72943222df70cd7713c779b8c239",
+      "size": 1070
+    },
+    "libs/scheduling-cron/evaluator.go": {
+      "sha256": "8225478d31b2bc6ca0cbbd04508cc9d615e8a3aea28e63c00dd16ea039c93474",
+      "size": 10103
+    },
+    "libs/scheduling-cron/parser.go": {
+      "sha256": "818cd87a39e8ec4aa513c42b5b47fca568fd287082833693a73978d1d8ca3900",
+      "size": 9311
+    },
+    "libs/scheduling-cron/schedule.go": {
+      "sha256": "1dc79d1a256a17c3b5f111ec97e2bd234a260030f39ed60b26cee2f51bc1fc19",
+      "size": 5075
+    },
+    "services/connector-management-service/cmd/connector-management-service/main.go": {
+      "sha256": "2f245937a36535241b91a8947fe6b21d34b7e39e00bbb35d1a7e76b084b1610e",
+      "size": 13262
+    },
+    "services/connector-management-service/cmd/connector-management-service/main_p24_test.go": {
+      "sha256": "046a91e304e9f96496782a5eb96a6c14c3a44de52282ae7b147cb71d2ccf125b",
+      "size": 1983
+    },
+    "services/connector-management-service/cmd/connector-management-service/main_test.go": {
+      "sha256": "ce87f37348abe07f9c2a0ce59b72fbf72871a715de15e7c668cee044de00b9fc",
+      "size": 7193
+    },
+    "services/connector-management-service/internal/adapters/adapter.go": {
+      "sha256": "3fb028d95b15af8a23e00ccd50df782b7b37c87f75347747eaec7b42f469bd1e",
+      "size": 8505
+    },
+    "services/connector-management-service/internal/adapters/azure_blob/adapter.go": {
+      "sha256": "a1a06aa247bd59a5c6e512b03cb1e73a949ff134491d69414b499886a484d7f5",
+      "size": 5990
+    },
+    "services/connector-management-service/internal/adapters/azure_blob/adapter_test.go": {
+      "sha256": "89c5b60204236fed5799b40bbae5cde6dbcf14bb66dfcf5deb78419b8a3084ec",
+      "size": 3624
+    },
+    "services/connector-management-service/internal/adapters/bigquery/adapter.go": {
+      "sha256": "432669b7d779ef4acc2489ba4e3034e78833b05230fda1e5bf04fa6c9b328b55",
+      "size": 24881
+    },
+    "services/connector-management-service/internal/adapters/bigquery/adapter_test.go": {
+      "sha256": "e98fb5b19667bacbb8191a229dab7af8ea7fa5be8b9deb7cf053bd60ebbc65cd",
+      "size": 15264
+    },
+    "services/connector-management-service/internal/adapters/catalogbridge/bridge.go": {
+      "sha256": "1d38ffc0d129c85fcaae691cafe4bbcb8a5349ea0620510e08e623a4482f5e09",
+      "size": 19711
+    },
+    "services/connector-management-service/internal/adapters/catalogbridge/bridge_test.go": {
+      "sha256": "e9fa6980b8726d143584cd59d8f7f6bdcafd2d39ac507f9255b44a73fbc8e9a6",
+      "size": 8278
+    },
+    "services/connector-management-service/internal/adapters/csv/adapter.go": {
+      "sha256": "30f4ccfb5ed3ca0b48f536209ad66df68e0001d2d37edb5c9ed42d9eb9d90807",
+      "size": 12457
+    },
+    "services/connector-management-service/internal/adapters/csv/adapter_test.go": {
+      "sha256": "7572a2d1d0982c151a2778109387f41f6a580cdbf3e1092d5483e5d2e5c416cd",
+      "size": 7360
+    },
+    "services/connector-management-service/internal/adapters/databricks/adapter.go": {
+      "sha256": "c26ed088967fc2d556e5f58c918b89a636604601ae137d741341b04eae829cb1",
+      "size": 4710
+    },
+    "services/connector-management-service/internal/adapters/databricks/adapter_test.go": {
+      "sha256": "08422f3dcd4d728d538b3e7986d90b7bb3df38848cfb9ec8c02cbe00f3a1594b",
+      "size": 3452
+    },
+    "services/connector-management-service/internal/adapters/errors.go": {
+      "sha256": "452d86197391100c938ab87fcf31b17ea817835b7e75abe559bcd63ba9b6dea0",
+      "size": 2546
+    },
+    "services/connector-management-service/internal/adapters/excel/adapter.go": {
+      "sha256": "307a787c4d6a52175113bb5a59bfac8e4a999f477ff2c191f6b1e53c83d51b7d",
+      "size": 2559
+    },
+    "services/connector-management-service/internal/adapters/gcs/adapter.go": {
+      "sha256": "82fe410ea77d9cdb08274e0b01006436e3896fe9f9e41df95942e05e664c97f1",
+      "size": 10768
+    },
+    "services/connector-management-service/internal/adapters/gcs/adapter_test.go": {
+      "sha256": "b37da7b1b859d4e087e17a533cdb5bb19d8222e0bdd48d78980a99799fb2c792",
+      "size": 7531
+    },
+    "services/connector-management-service/internal/adapters/generic/adapter.go": {
+      "sha256": "46534f08a782ea206c52d4dd2bd73fac9e15ebabc0bcb7fb97c2e21e8ceeb31a",
+      "size": 4791
+    },
+    "services/connector-management-service/internal/adapters/generic/adapter_test.go": {
+      "sha256": "df1b2893aee6e15bbe54fed9ad1619339db171e6c16101c9daf1a575e3bafddb",
+      "size": 2991
+    },
+    "services/connector-management-service/internal/adapters/graphql/adapter.go": {
+      "sha256": "c9434d1bf187aeac99188144474d51c5fb9cf97e4c5acbcfde28e2cb0eb29a6f",
+      "size": 2500
+    },
+    "services/connector-management-service/internal/adapters/graphql/adapter_test.go": {
+      "sha256": "b972b3f54bef6af60654b8160ffdb3682a52b1879254d585880cd50f1aec4d7c",
+      "size": 1098
+    },
+    "services/connector-management-service/internal/adapters/httpruntime/egress.go": {
+      "sha256": "abff4e2cbb2d2a36791b483f41ba368e56aa2262d9d52441ec9ca842ff450097",
+      "size": 5355
+    },
+    "services/connector-management-service/internal/adapters/httpruntime/egress_test.go": {
+      "sha256": "b9718ae59a7c4e4f7856b1215c5a083ab2145666b3cf13a39d1ca1778ac0de16",
+      "size": 3313
+    },
+    "services/connector-management-service/internal/adapters/httpruntime/runtime.go": {
+      "sha256": "57d56cf49591dc2da5f869d940e15a870fcb5db2c065d75c92de48c5499f8364",
+      "size": 10700
+    },
+    "services/connector-management-service/internal/adapters/httpruntime/runtime_test.go": {
+      "sha256": "b1b296ccc5057202a83135aba5b26fac072b54a132974f5cead53ab10b6878f4",
+      "size": 5550
+    },
+    "services/connector-management-service/internal/adapters/iot/adapter.go": {
+      "sha256": "f69e8f1212c09832ec122453242ae0126ad10258822a171d4ef1e61409e87fab",
+      "size": 14772
+    },
+    "services/connector-management-service/internal/adapters/iot/adapter_test.go": {
+      "sha256": "dcb55de14f96c089d23db9233b5e91d1f78f5ee5415c4700ee41867c83e88458",
+      "size": 8251
+    },
+    "services/connector-management-service/internal/adapters/jdbc/adapter.go": {
+      "sha256": "6b4ea68998caa91e3e8d6885730250f99c59b86cc11f299d5907f91f927b2360",
+      "size": 5429
+    },
+    "services/connector-management-service/internal/adapters/jdbc/adapter_test.go": {
+      "sha256": "3029eb56ae07e4652ad61fb69d4cf0934354a9946c28469b4625296d6bb66790",
+      "size": 3650
+    },
+    "services/connector-management-service/internal/adapters/json/adapter.go": {
+      "sha256": "ac2aa208d6c325ee3404bfdf462a3b77ebe58d890b40de0e6552c274012d61a6",
+      "size": 14111
+    },
+    "services/connector-management-service/internal/adapters/json/adapter_test.go": {
+      "sha256": "c5fd8faec2bcc87ac2a9cfaf60aab94939156c2b5f23d31fcddfd926b470def9",
+      "size": 9334
+    },
+    "services/connector-management-service/internal/adapters/kafka/adapter.go": {
+      "sha256": "4405c95f1278eb67e53f367d7377b030b8a886b4490591cc35bd15b16f6e88c6",
+      "size": 15616
+    },
+    "services/connector-management-service/internal/adapters/kafka/adapter_test.go": {
+      "sha256": "926a3557dc98b3b86813b57cb9a38af28a23827bb7fcd2b9ba9806512fb47b77",
+      "size": 12587
+    },
+    "services/connector-management-service/internal/adapters/kinesis/adapter.go": {
+      "sha256": "c209359e01881bd2a65a1c5459489692165a0ad920d5f78b67a8d5c374c17fb8",
+      "size": 22179
+    },
+    "services/connector-management-service/internal/adapters/kinesis/adapter_test.go": {
+      "sha256": "7ce19bc329a28c1f7b71a856f54de3f6724b762e58150bb3bc4410c95f108a58",
+      "size": 9344
+    },
+    "services/connector-management-service/internal/adapters/kinesis/sigv4.go": {
+      "sha256": "3b25721887007b784214359174a588b4695be5fd4e3376991bf4a9fd13bdbfdd",
+      "size": 3621
+    },
+    "services/connector-management-service/internal/adapters/ldap/adapter.go": {
+      "sha256": "3654c93364ea3c3392a26d1e6831877f453a5d73355528585166177a789b0989",
+      "size": 2476
+    },
+    "services/connector-management-service/internal/adapters/mssql/adapter.go": {
+      "sha256": "43f333f3681ee1e3bedcf9126cf4fd3fdf2e2f2374cb8f5571ffcbb81aef1261",
+      "size": 3896
+    },
+    "services/connector-management-service/internal/adapters/mssql/adapter_test.go": {
+      "sha256": "081df776e1e797f2d6753988ca1c755bf80480b2c2fdae5528cb7ba14de80bbc",
+      "size": 3492
+    },
+    "services/connector-management-service/internal/adapters/mysql/adapter.go": {
+      "sha256": "efa4d7a3f647cdf6b27b67545cfba445880d884c2e041bf98d5b418e7542e9a8",
+      "size": 5061
+    },
+    "services/connector-management-service/internal/adapters/mysql/adapter_test.go": {
+      "sha256": "ee358c483d7bd58f8adf5f3bed2580658f7c493d4a0c5c6b8f856b5d337699bf",
+      "size": 3885
+    },
+    "services/connector-management-service/internal/adapters/odbc/adapter.go": {
+      "sha256": "3a6dd75a17400cf71cce5d38e0cf094c00dc5a9a02d3b99c6f28c899c802f193",
+      "size": 4777
+    },
+    "services/connector-management-service/internal/adapters/odbc/adapter_test.go": {
+      "sha256": "b110c7df01a794bb420eca29952e8d751fef6879bf7bf8dc5652abe9594eed61",
+      "size": 3497
+    },
+    "services/connector-management-service/internal/adapters/onelake/adapter.go": {
+      "sha256": "7f295bf7db828c8e529ef57bd39700e3b40c03c787a559c4afc46735bd277aa5",
+      "size": 11416
+    },
+    "services/connector-management-service/internal/adapters/onelake/adapter_test.go": {
+      "sha256": "81378ca884e391f7416e619b78486c8ca68e043579bb1183e132ba776a6c5562",
+      "size": 7668
+    },
+    "services/connector-management-service/internal/adapters/opentable/catalog.go": {
+      "sha256": "78b5019e7e68cb29844d9172afacbde2d3af67f039f32a4cdb9f916943141fc9",
+      "size": 4895
+    },
+    "services/connector-management-service/internal/adapters/opentable/catalog_test.go": {
+      "sha256": "f955ee11836766651cdcb4e32bbd4cc57ff127b86e2fc70ec73ce320d269c186",
+      "size": 3475
+    },
+    "services/connector-management-service/internal/adapters/oracle/adapter.go": {
+      "sha256": "7b1b02a988fa416510f0ac7f212d5bdee5f5a51023827c2a7dd63b999a66d73b",
+      "size": 3870
+    },
+    "services/connector-management-service/internal/adapters/oracle/adapter_test.go": {
+      "sha256": "29bb20e03998b57db522df9d1f34bcc313d5f515fd2910973afc2edec443ab07",
+      "size": 3578
+    },
+    "services/connector-management-service/internal/adapters/parquet/adapter.go": {
+      "sha256": "2a078a1868a27112a8699fdc2e3b4ba374bcfb3ee3e2403cc81c0e0a9b2d3e40",
+      "size": 12890
+    },
+    "services/connector-management-service/internal/adapters/parquet/adapter_test.go": {
+      "sha256": "006f7d214884ed9b0115c9520615a4f5073f9a4b6865d58d11f09913f3407944",
+      "size": 10078
+    },
+    "services/connector-management-service/internal/adapters/power_bi/adapter.go": {
+      "sha256": "03c3c0a05019c51beef73bcb5bb26be08ab0610991945d1d1e94f6f1772ae7d4",
+      "size": 4175
+    },
+    "services/connector-management-service/internal/adapters/power_bi/adapter_test.go": {
+      "sha256": "31f4ad7baf3abfba670cc8fc5d89791faae144634e3117b5267ef26d858ecc11",
+      "size": 4887
+    },
+    "services/connector-management-service/internal/adapters/registry.go": {
+      "sha256": "4d8a6c88cecd32ad55114a85bbc348862c968ad41f6bae16c3cd775fce1818d5",
+      "size": 4535
+    },
+    "services/connector-management-service/internal/adapters/registry_test.go": {
+      "sha256": "4df6b75438eafeaf67315e7e63105f16e3a676f80c2016002cba1dca592e8f82",
+      "size": 5015
+    },
+    "services/connector-management-service/internal/adapters/rest_api/adapter.go": {
+      "sha256": "912b68182a1ef80daf6064e9b45c41b44fed24dc3d610db3b37d630ac76129fc",
+      "size": 15663
+    },
+    "services/connector-management-service/internal/adapters/rest_api/adapter_test.go": {
+      "sha256": "c388cf8a25e24921749113c043bfb0c9e0a60291fd5d2e8f4d5f24a972b3deca",
+      "size": 8066
+    },
+    "services/connector-management-service/internal/adapters/s3/adapter.go": {
+      "sha256": "ba883cce01f7e5ac4e77ecff808c99a51e5a37a2b8656de29d06832bb7ffb526",
+      "size": 7375
+    },
+    "services/connector-management-service/internal/adapters/s3/adapter_test.go": {
+      "sha256": "b7adc1ea7464e177198dd828105f205cb845981f8ba67b2ec3185e1539dabd2e",
+      "size": 5270
+    },
+    "services/connector-management-service/internal/adapters/salesforce/adapter.go": {
+      "sha256": "30bb3303524708b393760e82d0b9ad81ff3f5f8d465394b9f0ef5ae223c31f0b",
+      "size": 16529
+    },
+    "services/connector-management-service/internal/adapters/salesforce/adapter_test.go": {
+      "sha256": "57ac768aba12061151714c6228f8738227057acc94fabe21054f28a0df291cd8",
+      "size": 15193
+    },
+    "services/connector-management-service/internal/adapters/sap/adapter.go": {
+      "sha256": "89c402a14ccaa9b18f62dbc432c308f0648948d8c42af9b2a2a4874c322376f6",
+      "size": 12684
+    },
+    "services/connector-management-service/internal/adapters/sap/adapter_test.go": {
+      "sha256": "ce7500835c7a4e8414061f4bcc2293198361a55cda73cd76eaa171e941fad9c1",
+      "size": 5292
+    },
+    "services/connector-management-service/internal/adapters/sftp/adapter.go": {
+      "sha256": "fbc47bf0c9bb727f7617224c28bb497704eb0efd9436ed3d5847e3c71ad7b3b0",
+      "size": 2476
+    },
+    "services/connector-management-service/internal/adapters/skeleton_stubs_test.go": {
+      "sha256": "76b3d07e3c371ee639e7ad02e5347ba911d8eae29b7cac501fcba15b75265704",
+      "size": 2533
+    },
+    "services/connector-management-service/internal/adapters/snowflake/adapter.go": {
+      "sha256": "d84ba26c929a900e4ce09e5bdc5cc3513bc5fde5c7e0f386b774b4deaf952fc1",
+      "size": 25656
+    },
+    "services/connector-management-service/internal/adapters/snowflake/adapter_test.go": {
+      "sha256": "72d6654e9928f4cb8e7cb97765adf48ce23f1782cda0ec2d396f7aeb8c1778c3",
+      "size": 15557
+    },
+    "services/connector-management-service/internal/adapters/tableau/adapter.go": {
+      "sha256": "cb2e4fa096943bc1483418a382005534d5f8208158c4e3e7b3cec549d88c459a",
+      "size": 4530
+    },
+    "services/connector-management-service/internal/adapters/tableau/adapter_test.go": {
+      "sha256": "610094494f001e14444ad3fd3bca19db3cba1fcf2268bafae66a68caefb247aa",
+      "size": 4976
+    },
+    "services/connector-management-service/internal/config/config.go": {
+      "sha256": "211bd78a13c0dc01a47f68bbee8d133d125cf2bef307487b3e02845abcb38652",
+      "size": 12026
+    },
+    "services/connector-management-service/internal/config/config_test.go": {
+      "sha256": "3cb53ebb335fe0a0e80279c1df183c7e3b24cf6f3e2b978999a37cdb2d4780ad",
+      "size": 8105
+    },
+    "services/connector-management-service/internal/domain/agent_registry.go": {
+      "sha256": "db500b61c34d55aaadf87fdf9f9642aeac752110b67922a308236ab280ebeded",
+      "size": 1789
+    },
+    "services/connector-management-service/internal/domain/agent_registry_test.go": {
+      "sha256": "90fd6a4f3c5818d234ddabaa58e3796f7c97df48d79a89d7935f109e86a76ad5",
+      "size": 1873
+    },
+    "services/connector-management-service/internal/domain/catalog_bridge/bridge.go": {
+      "sha256": "96190b85ab0df72476b58097b7c336997dbcd7b3d74364e3a6141ece39f45162",
+      "size": 25006
+    },
+    "services/connector-management-service/internal/domain/credential_vending.go": {
+      "sha256": "5ab6b7922fa8ae61c9232d4806445139a063da2932d1eb2918ef8f143e34d351",
+      "size": 5395
+    },
+    "services/connector-management-service/internal/domain/credential_vending_test.go": {
+      "sha256": "971dbb68580d8ec63ef42dc5fb83f8940ab71e7fa0692aa9702cab76ab027586",
+      "size": 2736
+    },
+    "services/connector-management-service/internal/domain/credentials.go": {
+      "sha256": "64c638c9f96fdc789e0cc954ed20bfa6fba9eb91e7969f63f95b79fec2b3a1ab",
+      "size": 2971
+    },
+    "services/connector-management-service/internal/domain/credentials_test.go": {
+      "sha256": "7e6b948de88d0c9265cb3f389178983ce843a1c7eaf4aafc571a713bd2829ae8",
+      "size": 2046
+    },
+    "services/connector-management-service/internal/domain/egress/egress.go": {
+      "sha256": "c057e77b14ea8361e74d3d6a40d2de8b359b88536c13ce710954c8815e3b7f82",
+      "size": 5191
+    },
+    "services/connector-management-service/internal/domain/egress/egress_test.go": {
+      "sha256": "f22b8efd3e2c93b7f2eb0d80c470b47edfca6a5a77f5f239d49e0a91a5ac8048",
+      "size": 3836
+    },
+    "services/connector-management-service/internal/domain/http_runtime/egress.go": {
+      "sha256": "10c0bd339b8f73ceb8e163e30d763468b1399752668dfdad0b6da65ac93d22bf",
+      "size": 5283
+    },
+    "services/connector-management-service/internal/domain/http_runtime/runtime.go": {
+      "sha256": "1fc9c69dcb869e9471bac5f6da8ed40c7f13cc117230f6af2742831361bca605",
+      "size": 10672
+    },
+    "services/connector-management-service/internal/domain/open_table_catalog/catalog.go": {
+      "sha256": "994242b3b0b6a4254902949ad56fb2b8cf04125c23ac2e4d29dd260d6461d176",
+      "size": 6346
+    },
+    "services/connector-management-service/internal/domain/registrations.go": {
+      "sha256": "7cc449419ffbf1972f5b3aa2ba3e73ac77d3322c658c9dd73f2f6191138a8fda",
+      "size": 4401
+    },
+    "services/connector-management-service/internal/domain/sync/status.go": {
+      "sha256": "6db08eea4b0e64b9efdbdaaccd6b444e9a1ef48e08d0fcec6e3faeafad7944ab",
+      "size": 264
+    },
+    "services/connector-management-service/internal/domain/update_detection.go": {
+      "sha256": "b7ecad37f8ebc2da3fab130a0bb2d00a952ca5796cf36114ba279e1ca38bdfdf",
+      "size": 980
+    },
+    "services/connector-management-service/internal/handlers/async_worker_test.go": {
+      "sha256": "e7f6bc2489a4bea4b050f9a7aa74a994eb351b5f01ca9c775cb8a79148f8f4ea",
+      "size": 37749
+    },
+    "services/connector-management-service/internal/handlers/auto_recovery.go": {
+      "sha256": "8c69a3e915c39ed5b965e224a2036ca395d15c1da9dcfd2583fb6230b424cda9",
+      "size": 13952
+    },
+    "services/connector-management-service/internal/handlers/checkpoint_integration_test.go": {
+      "sha256": "414c201537a2e8f29893d560eaacc5f9a691a66888d0065ec28567adaf8d66d7",
+      "size": 19375
+    },
+    "services/connector-management-service/internal/handlers/coordinator.go": {
+      "sha256": "ebbe9552317a2650da0a6e7d2a38cedc0062cacc9eb2b8dd5b7606ad14905235",
+      "size": 37374
+    },
+    "services/connector-management-service/internal/handlers/coordinator_internal_test.go": {
+      "sha256": "5d719042ae68fe29d389b181148e64dd210baddc586590e9e2d3c3bd9f35bb33",
+      "size": 781
+    },
+    "services/connector-management-service/internal/handlers/dataset_precheck_test.go": {
+      "sha256": "12993ed42754705ba5bd5941f3551d4678fe801745be283bbf814197eddcf896",
+      "size": 10871
+    },
+    "services/connector-management-service/internal/handlers/handlers.go": {
+      "sha256": "1ebdeea6d48b42f0846e4ff23bad54db77f394b48075d1ae102c8975bd196873",
+      "size": 108005
+    },
+    "services/connector-management-service/internal/handlers/handlers_test.go": {
+      "sha256": "5b3fc4bf58cd2b242b19882bce676ddd77a1798e45e3cb118c3d5ed1d0208860",
+      "size": 91269
+    },
+    "services/connector-management-service/internal/handlers/lease_test.go": {
+      "sha256": "6e3c9afeb39d3586f86636cf612e7f6a10696e82fef944609fa8b736fbf8ca7c",
+      "size": 18598
+    },
+    "services/connector-management-service/internal/handlers/media_runtime.go": {
+      "sha256": "926eba61317241c97e53c1fe1d2d05acf866bb17fb149a8516e36a7a23938e5f",
+      "size": 5648
+    },
+    "services/connector-management-service/internal/handlers/real_disconnect_test.go": {
+      "sha256": "daf584e0b7bb515721bdcc9214623f05971f41e2de9a56da8fe21cb3520446a2",
+      "size": 22294
+    },
+    "services/connector-management-service/internal/handlers/registrations.go": {
+      "sha256": "c934ff5bf05e1ade8586fc113a3d3a2a50060487eceaf9ba2524db2396913097",
+      "size": 51181
+    },
+    "services/connector-management-service/internal/handlers/schedule_auth.go": {
+      "sha256": "cf8f79398d5d4dad1e05032d635d5d42278e6bc7603a7ae9ef991601f6412f6b",
+      "size": 31663
+    },
+    "services/connector-management-service/internal/handlers/schedule_auth_internal_test.go": {
+      "sha256": "c0e712af125d719731945d5727e8c73d7215b642ba99fd444f1df64d1ef1b0e7",
+      "size": 23533
+    },
+    "services/connector-management-service/internal/handlers/schedule_http_p24_test.go": {
+      "sha256": "f289d41a258aefe8668eb1184890235f921d5cfbbaa5ad3d02f25bbfb3171837",
+      "size": 21686
+    },
+    "services/connector-management-service/internal/handlers/schedule_loop.go": {
+      "sha256": "7d2f534c91b333663dfb44997bb00e5592e231ae090b70db481490f66fea0c79",
+      "size": 10567
+    },
+    "services/connector-management-service/internal/handlers/schedule_loop_test.go": {
+      "sha256": "92cc89d58ee729754f323ccb571d69c0f508745d86082f1d0e44c6d4237c5ec9",
+      "size": 10276
+    },
+    "services/connector-management-service/internal/handlers/sync_admission_test.go": {
+      "sha256": "889f2b99e617b1666805f73241311ed4680ad864b9d52884018fa2a9d10e678c",
+      "size": 8921
+    },
+    "services/connector-management-service/internal/handlers/sync_recovery.go": {
+      "sha256": "9f975a6332ef489d78e9532c2d5ce5fae1fefc9244f730dd073e08daf7694494",
+      "size": 42636
+    },
+    "services/connector-management-service/internal/handlers/sync_recovery_http_test.go": {
+      "sha256": "e5ee4f8e90228381f12251f4e74d9030a4b0a79c4d2c09537b4995abdb29b5f2",
+      "size": 28695
+    },
+    "services/connector-management-service/internal/handlers/sync_recovery_test.go": {
+      "sha256": "1e12a63ca49b947f315462a10f04c9729f2d2c35d00308c99a0d9c984e3d0c74",
+      "size": 72729
+    },
+    "services/connector-management-service/internal/handlers/sync_run_test.go": {
+      "sha256": "8287f11bcc3170ba2d75746b433dcc7d707e8f535f1b4ba9cf926145635a7aad",
+      "size": 20945
+    },
+    "services/connector-management-service/internal/handlers/tenant_isolation_test.go": {
+      "sha256": "e22b6a1e9b4c814f2bc1e353fe3dcdb8618b0aba6d39d349f6c25412cad0709d",
+      "size": 12490
+    },
+    "services/connector-management-service/internal/models/catalog.go": {
+      "sha256": "4278ec29aea1f09b38cc53f3e9f430e9f7a39a86ff1e66712c75dc50b1847d8f",
+      "size": 23119
+    },
+    "services/connector-management-service/internal/models/contract_fixtures_test.go": {
+      "sha256": "d75f19d646439452e6715978b48abf9a1fc8f0c293d716a5e92f9a6dd8e2fe0d",
+      "size": 2488
+    },
+    "services/connector-management-service/internal/models/models.go": {
+      "sha256": "21437e1711c0b72aafd4c3fe5de37ed0746843ac0271d8e575a567e40dbd9809",
+      "size": 49971
+    },
+    "services/connector-management-service/internal/models/recovery_config_test.go": {
+      "sha256": "058cca5f4087d9c6b8fe8a09dab16a61501f62ce46fcfbfbdd77031f93bb509a",
+      "size": 5305
+    },
+    "services/connector-management-service/internal/models/rest_api_source.go": {
+      "sha256": "499f339ce7b3ef5322eac23c7ee4803d5c5753b2f3713db38bc901c0d5df9945",
+      "size": 13686
+    },
+    "services/connector-management-service/internal/models/rest_api_source_test.go": {
+      "sha256": "d7b1b5db26fe0aa94c5a6c343d15b814ac4046ee3498e7e1bacb47ee80b80a60",
+      "size": 3082
+    },
+    "services/connector-management-service/internal/models/rest_api_sync.go": {
+      "sha256": "5b7dd7e01a15834dccc74eb75e271556146d95c21fc58b25619e7852a47bece2",
+      "size": 24408
+    },
+    "services/connector-management-service/internal/models/rest_api_sync_incremental_test.go": {
+      "sha256": "5f9e8128ae325bc0df9378a793cf5d939d269aedbda4933f436d0c6263421d64",
+      "size": 8388
+    },
+    "services/connector-management-service/internal/models/schedule.go": {
+      "sha256": "5143eccdce1080d20d730f1e154f6a85d18e179efad14a3056261555acb143c6",
+      "size": 8579
+    },
+    "services/connector-management-service/internal/models/schedule_spec_test.go": {
+      "sha256": "0b2d931192f2ae0403f46784f522d6af68af5bc569540a8ac81acf27bdf39556",
+      "size": 3742
+    },
+    "services/connector-management-service/internal/models/sync_admission.go": {
+      "sha256": "26e17c08a0f00724c2d45973cec0c32bd9533f88a4de55c092793d20bd15f01f",
+      "size": 5246
+    },
+    "services/connector-management-service/internal/models/sync_admission_test.go": {
+      "sha256": "9f1a3bea06ef143e70509496a528c99be0d426df57b1d8b0ea38524426d1c0eb",
+      "size": 6482
+    },
+    "services/connector-management-service/internal/models/webhook_definition.go": {
+      "sha256": "55fdd765a18b885516185de1dac1e1097bf9d7950b169af3b51446156afc757d",
+      "size": 23048
+    },
+    "services/connector-management-service/internal/models/webhook_definition_test.go": {
+      "sha256": "45b6536ddf21ae0d0d9289b0e9a246003df823eccb88ea13bdf943020ded0624",
+      "size": 5544
+    },
+    "services/connector-management-service/internal/repo/admission.go": {
+      "sha256": "802f5958114001c355581bff3fb7f59e79ef9774a6423c3925bf25a34a06b3b0",
+      "size": 14583
+    },
+    "services/connector-management-service/internal/repo/auto_recovery.go": {
+      "sha256": "260dd47fa2d4b029712a6d0407029d74a1d32beec9823ff737281e2fe5105dce",
+      "size": 11045
+    },
+    "services/connector-management-service/internal/repo/auto_recovery_integration_test.go": {
+      "sha256": "d30643b9f05c00542569ed004baab56087cea99bf9e249ea1968af0363247751",
+      "size": 16960
+    },
+    "services/connector-management-service/internal/repo/cancel.go": {
+      "sha256": "f78251721b037480902e528d0426d847462468553ae3bf88f2f6a9e0e1bf51b3",
+      "size": 16963
+    },
+    "services/connector-management-service/internal/repo/cancel_integration_test.go": {
+      "sha256": "799fbcadc5d5fe29a548104b33375af5f24ce2bf4d765c419ee3ea51957e499d",
+      "size": 59465
+    },
+    "services/connector-management-service/internal/repo/checkpoint.go": {
+      "sha256": "7df797c7826ec638b8386e2f9c5ef72f737de5899606b96525f2c6413e91d42a",
+      "size": 65346
+    },
+    "services/connector-management-service/internal/repo/checkpoint_integration_test.go": {
+      "sha256": "f5391f323a518eb6e5232b286d5818e436cb4d243c2d227ea15e94a54a9b2fa0",
+      "size": 102382
+    },
+    "services/connector-management-service/internal/repo/connwrap_ackloss_test.go": {
+      "sha256": "8e4052a59106c858533cf84a8d5c51c18d1ae48a45e5037106abfa86f841b25f",
+      "size": 18482
+    },
+    "services/connector-management-service/internal/repo/lease.go": {
+      "sha256": "849e5cc04f0a3ca407763e849c8e505e6c13f35741f7f00b1a5070d945dd0efa",
+      "size": 26808
+    },
+    "services/connector-management-service/internal/repo/lease_integration_test.go": {
+      "sha256": "95a5713813f4bacdac1913fffcf248c7357212352eaa19752bb66f406f96f722",
+      "size": 41978
+    },
+    "services/connector-management-service/internal/repo/migration_concurrency_integration_test.go": {
+      "sha256": "58424ac3e4c875a60616d32b676f5c0b479aed5b8d3d3a307432a5016af6926b",
+      "size": 27406
+    },
+    "services/connector-management-service/internal/repo/migrations/20260419100002_initial_connectors.sql": {
+      "sha256": "39024cdc6b7a309b1d45da3e58419fca1bdb696186ae02deac54bf27dccce89d",
+      "size": 1181
+    },
+    "services/connector-management-service/internal/repo/migrations/20260424201000_sync_jobs_runtime.sql": {
+      "sha256": "3c725674bec49eb374a26e739a3fd4861bdc433828292e9bf1bccb212fa07b0d",
+      "size": 624
+    },
+    "services/connector-management-service/internal/repo/migrations/20260425153000_enterprise_connectivity.sql": {
+      "sha256": "109865e316a54dd20dc091e770e687da68fc19732c0f874e6737c6c393ed5e15",
+      "size": 1501
+    },
+    "services/connector-management-service/internal/repo/migrations/20260430120000_data_connection_mvp.sql": {
+      "sha256": "d342d7f32b46dca6a1b6ff4ffb8b95507f88b2bb5bc32db862b1a2dfe57fbe45",
+      "size": 2646
+    },
+    "services/connector-management-service/internal/repo/migrations/20260430140000_sync_runs_ingest_job_id.sql": {
+      "sha256": "a8373c1f1412ca59c03c976583b745789d420cfba0225cbdacef42f53f5da870",
+      "size": 298
+    },
+    "services/connector-management-service/internal/repo/migrations/20260501100000_sync_runs_dataset_version.sql": {
+      "sha256": "a2a94bba358c9f098d0d62042e61585ee486ac1064cb3eb21b4d5b96f48938d7",
+      "size": 730
+    },
+    "services/connector-management-service/internal/repo/migrations/20260503010000_outbox.sql": {
+      "sha256": "3efbf372612e18db684cecc1af60d314e2dd21f8672f270b6a369eb1f1025660",
+      "size": 869
+    },
+    "services/connector-management-service/internal/repo/migrations/20260503120000_drop_sync_jobs_runtime.sql": {
+      "sha256": "a3b082f4d1f88dfbb555d09c642c081f3aa51c6c542edd987f4a70d3fc780d3e",
+      "size": 241
+    },
+    "services/connector-management-service/internal/repo/migrations/20260504000120_virtual_tables_init.sql": {
+      "sha256": "2fa3b3282bdfd2da5922de65f86a22c1d2a72d18af128f512e473ea1f06c2f5a",
+      "size": 5924
+    },
+    "services/connector-management-service/internal/repo/migrations/20260504000121_auto_registration.sql": {
+      "sha256": "91cedc7bc1228e107209c54f0bae7daeab6018a6f87ede9b610bfe1d7c158d7c",
+      "size": 2113
+    },
+    "services/connector-management-service/internal/repo/migrations/20260504000122_update_detection.sql": {
+      "sha256": "a6959b5e4e055d204004747ce59ef47728b1669d3023af181352aebdf073dca6",
+      "size": 2421
+    },
+    "services/connector-management-service/internal/repo/migrations/20260505100000_media_set_syncs.sql": {
+      "sha256": "3351ca096567cd487dade03a4665c492fcfa50c285dd2fd0b689fda7e8d11a4c",
+      "size": 2265
+    },
+    "services/connector-management-service/internal/repo/migrations/20260511103000_webhook_invocation_history.sql": {
+      "sha256": "f3204ab029b72c7a69196ce6dbf43e72bc6d28dc52ff35bd9892c58d71a16792",
+      "size": 1100
+    },
+    "services/connector-management-service/internal/repo/migrations/20260511104500_inbound_listener_events.sql": {
+      "sha256": "4f8b6c815a6451c25bd2de9620de04c7ba21eff267a76b9b3516caf34818f2fd",
+      "size": 748
+    },
+    "services/connector-management-service/internal/repo/migrations/20261113000000_tenant_org_rest_sync.sql": {
+      "sha256": "1cc31c8901b6a1bd20f6b40c0f09e134a1d68ec2798f22c1ff9d25753b138948",
+      "size": 955
+    },
+    "services/connector-management-service/internal/repo/migrations/20261113100000_sync_run_lease.sql": {
+      "sha256": "db432aaa40db7f59c3bb47271b2c81748ec052885b0ac95c53de21092b66ed78",
+      "size": 2442
+    },
+    "services/connector-management-service/internal/repo/migrations/20261113110000_sync_run_cancel_gate.sql": {
+      "sha256": "b4bd278696deb3d745d74e71277087c3e431b94a8525f60fc7d99c5990bada90",
+      "size": 1871
+    },
+    "services/connector-management-service/internal/repo/migrations/20261114100000_source_sync_admission.sql": {
+      "sha256": "fae0735ce50a6c72f584b2854f8206a882e4eaa248247afc0aefaea464d150b2",
+      "size": 1472
+    },
+    "services/connector-management-service/internal/repo/migrations/20261115120000_sync_schedule_observability.sql": {
+      "sha256": "d9c89b6d6fe1f6547c7e3ebaa936e6fe05b74217b4ad54dbd56e81df793bf605",
+      "size": 4262
+    },
+    "services/connector-management-service/internal/repo/migrations/20261116100000_sync_incremental_checkpoints.sql": {
+      "sha256": "dd0c5f9eaad5af821466092181542396061997335eae8457786fa44511d0fa89",
+      "size": 3572
+    },
+    "services/connector-management-service/internal/repo/migrations/20261117100000_sync_recovery_intents.sql": {
+      "sha256": "1b4249c67175e36414af5c3cbab198ebf320a7cb13c218c2a1593f242bd914f9",
+      "size": 7153
+    },
+    "services/connector-management-service/internal/repo/publish_intent.go": {
+      "sha256": "854a6bd2b4911721f23952efda0b3d74f760eac56ff9a1e23a62f668ea3e9f9e",
+      "size": 16399
+    },
+    "services/connector-management-service/internal/repo/publish_intent_test.go": {
+      "sha256": "780cb2f74fc23ae0aaf060ae324e00952329ab591ff2d6f8d5f2d81dc57cbd87",
+      "size": 15455
+    },
+    "services/connector-management-service/internal/repo/recovery.go": {
+      "sha256": "823b7128b92d054bb5f372d20cede0c7ffd6c7cf28fc14ff9c3c3a0eb66210ab",
+      "size": 68422
+    },
+    "services/connector-management-service/internal/repo/recovery_commit_ackloss_integration_test.go": {
+      "sha256": "4587306371ffb8d76e351e2f3e4c21e02916bf8e0dea1dc83ba0579fd59caba1",
+      "size": 16739
+    },
+    "services/connector-management-service/internal/repo/recovery_integration_test.go": {
+      "sha256": "0e044aee58c849be6ca5addefd4ce40508f5b4ce451c0d18d57ff0beb72415fd",
+      "size": 71531
+    },
+    "services/connector-management-service/internal/repo/repo.go": {
+      "sha256": "6f4c47045646f8d48eb46afe41ee756483a5a38e483e1a5a3020f243f2604de0",
+      "size": 68262
+    },
+    "services/connector-management-service/internal/repo/repo_integration_test.go": {
+      "sha256": "eadf5b4f261b6a0efa8458a78035140b3f7b1e88ed264b3fa6557ebf4db74de9",
+      "size": 12575
+    },
+    "services/connector-management-service/internal/repo/schedule.go": {
+      "sha256": "f8c17566e03d8fa1b5006dc3678f37962924b0ce47f645d0d0724f5adcb61eda",
+      "size": 44619
+    },
+    "services/connector-management-service/internal/repo/schedule_integration_test.go": {
+      "sha256": "ce50ee55e5addb96bf890af5792bf96475b583ea5744cabadbb6839e6a0faa51",
+      "size": 117960
+    },
+    "services/connector-management-service/internal/repo/source_admission_integration_test.go": {
+      "sha256": "efc994ccfbd243c3c99d77a370c6619969ead44e6adc786099600669184f09ec",
+      "size": 92184
+    },
+    "services/connector-management-service/internal/runtime/dataset_client_test.go": {
+      "sha256": "73b3afb672dc24c173f75d43e5f5fc094eec37287fd2b9bb5edcb6d5bcefc395",
+      "size": 6542
+    },
+    "services/connector-management-service/internal/runtime/dataset_recovery.go": {
+      "sha256": "6852301ccae2544e428f6bf0e1f9ed7294abcd24c50e0e3e45d283414dcbd1f4",
+      "size": 32145
+    },
+    "services/connector-management-service/internal/runtime/dataset_recovery_test.go": {
+      "sha256": "43d9228bae11e751db5d1fee50a81abbd03072006dfad8e232bad1acf18051fc",
+      "size": 38292
+    },
+    "services/connector-management-service/internal/runtime/rest_snapshot.go": {
+      "sha256": "009e12a78c093696d231b5a1887f2050cade42a52fb8836898265075dcfb72f5",
+      "size": 19762
+    },
+    "services/connector-management-service/internal/runtime/rest_snapshot_incremental_test.go": {
+      "sha256": "3669c0a38da3bcb9597c50e8daa3efff5e8ac051285935c4199408834df2bfc4",
+      "size": 9674
+    },
+    "services/connector-management-service/internal/runtime/rest_snapshot_test.go": {
+      "sha256": "f9fa5399ec7ab779fddaba5d69c46db07fde968c765c1fe9afe58539e2e74bb4",
+      "size": 17019
+    },
+    "services/connector-management-service/internal/runtime/sanitize.go": {
+      "sha256": "66a1a9c5466f22e82d6a192682810a1e43abdee30e55e3411c44da6e1aa166a9",
+      "size": 921
+    },
+    "services/connector-management-service/internal/runtime/sync.go": {
+      "sha256": "42f78a882afe5c6f4d949c0b785f053724a8014065db5cdfa277181247d3ae04",
+      "size": 12937
+    },
+    "services/connector-management-service/internal/runtime/sync_ack_test.go": {
+      "sha256": "fcbc55961df44a2cf7aecc577de171d64920ee0477a9fa99e0b6d38af9fad7c5",
+      "size": 2245
+    },
+    "services/connector-management-service/internal/server/route_smoke_test.go": {
+      "sha256": "3cb60f3f691dab8131e6c8910d9596da4e18e3b4b85808a5d66ffc867bdafbcc",
+      "size": 1542
+    },
+    "services/connector-management-service/internal/server/server.go": {
+      "sha256": "4885ac59ef21486bd860ffe06f588050776a451872e7196efb45facf4ac7fdf3",
+      "size": 11085
+    },
+    "services/connector-management-service/internal/server/server_test.go": {
+      "sha256": "a174100a19dcc54513d6d2aa6df26c8cb90f8ed2b56f336543fa54eafeaf6c16",
+      "size": 22070
+    },
+    "services/connector-management-service/internal/workers/auto_registration.go": {
+      "sha256": "2a31e96404c36970c56010e095eb36f71470f70503dd3729b10edb2584856a0c",
+      "size": 7870
+    },
+    "services/connector-management-service/internal/workers/auto_registration_test.go": {
+      "sha256": "05b11357af3c9e03c4afd70e1044e34f63a85a1ce94f70b287bcdcad660d9dba",
+      "size": 4449
+    },
+    "services/connector-management-service/internal/workers/workers.go": {
+      "sha256": "c9c1b911c3286ae12637373e66e1e07632867b0398099d260b5814ce31d9c059",
+      "size": 832
+    },
+    "services/dataset-versioning-service/cmd/dataset-versioning-service/main.go": {
+      "sha256": "2918703533675a5ba75a8cc5927e904534f5752ee9d4bb53dd6c950f2ddfda6d",
+      "size": 3430
+    },
+    "services/dataset-versioning-service/internal/backingfs/local.go": {
+      "sha256": "0dff2f4aa74af19eac9cb54c767b8da7dbb7d2c9a244532bca0559d9a06f6de5",
+      "size": 7769
+    },
+    "services/dataset-versioning-service/internal/backingfs/local_test.go": {
+      "sha256": "43581dc372e39368685ba98f7aae42a2eaa70269688954e15fdcf669a2ffd111",
+      "size": 3485
+    },
+    "services/dataset-versioning-service/internal/config/config.go": {
+      "sha256": "c0ba4dc6f5a4a488c5259ba029f18802ac66cfa52efd8f7f01003983535a7818",
+      "size": 2432
+    },
+    "services/dataset-versioning-service/internal/domain/parameterized_view.go": {
+      "sha256": "e4b239752e72d548183b7cc5b0783dc229e6dcf470a8961aaf01c770ff3c149b",
+      "size": 2583
+    },
+    "services/dataset-versioning-service/internal/domain/parameterized_view_test.go": {
+      "sha256": "5bdeebe64fa18180ff6926a5485993ded418934e61a59936c04d30ebd40f0059",
+      "size": 2467
+    },
+    "services/dataset-versioning-service/internal/domain/retention/retention.go": {
+      "sha256": "06caf1564214bacbd7020c0102a1f6bcb6d4106571248489c366697415188245",
+      "size": 4876
+    },
+    "services/dataset-versioning-service/internal/domain/retention/retention_test.go": {
+      "sha256": "4fdf439a860b69988890a7d6d728729d689618fd7b7dba8a34a538da379a3297",
+      "size": 7349
+    },
+    "services/dataset-versioning-service/internal/domain/views.go": {
+      "sha256": "7b9f0f7882fdbde6ca4bddc546f10024ad0bf6d202a42bb56399fd132e8a8c3e",
+      "size": 4721
+    },
+    "services/dataset-versioning-service/internal/domain/views_test.go": {
+      "sha256": "24d5c9ca2568f8256807cbc4266cfb7c2581f96fa0ab3ca3ef464f2e98c12b02",
+      "size": 5645
+    },
+    "services/dataset-versioning-service/internal/handlers/audit.go": {
+      "sha256": "0fb9312da96c4e15365463ec02395bc3ec4b04eff8dd68f78b5b851fc3fd3227",
+      "size": 933
+    },
+    "services/dataset-versioning-service/internal/handlers/backing_files.go": {
+      "sha256": "4050829f12daa62690beef4c9765280cb736fcc3f9ce2ac9c53f54f01b091099",
+      "size": 7340
+    },
+    "services/dataset-versioning-service/internal/handlers/branch_lifecycle.go": {
+      "sha256": "9b1e4c1e3a085a044682329ac2870740530bb3fce585dcc700cdb799fbae8cbd",
+      "size": 7610
+    },
+    "services/dataset-versioning-service/internal/handlers/branch_lifecycle_internal_test.go": {
+      "sha256": "7505887aea5fe094a7053dd51e7fc1b10fe5b978b371222339cca228bf1f6024",
+      "size": 511
+    },
+    "services/dataset-versioning-service/internal/handlers/catalog_facets_metadata.go": {
+      "sha256": "49f053fd9a60e105b3573609910a25611c2c662f0379e7525aac5f9d68175117",
+      "size": 1930
+    },
+    "services/dataset-versioning-service/internal/handlers/catalog_parity.go": {
+      "sha256": "e3168d98c6e90a0cfca2cae217b0842c68d1f03a6f31a75c9008cb8c89eba22b",
+      "size": 27289
+    },
+    "services/dataset-versioning-service/internal/handlers/catalog_resolver_test.go": {
+      "sha256": "d81b19bfaaca97ded826a12e04bb37ad7f4b8d0dd1d6adeb1d26849186906bc7",
+      "size": 8937
+    },
+    "services/dataset-versioning-service/internal/handlers/cross_resource_refs_test.go": {
+      "sha256": "f71d6727da24aadac174a58e3e8e62ac0f0db668e8f5cbaff4717db5e298fa78",
+      "size": 9955
+    },
+    "services/dataset-versioning-service/internal/handlers/file_rows.go": {
+      "sha256": "5562090e1f43385037c683c8634b70b0a953874ba37b3331af7562cc5efbfb6a",
+      "size": 18783
+    },
+    "services/dataset-versioning-service/internal/handlers/file_rows_internal_test.go": {
+      "sha256": "438b342bb180e58565a9cdcc3ee4b7ac2cf19fd2d1011a42c2b2cb367d68ede9",
+      "size": 4140
+    },
+    "services/dataset-versioning-service/internal/handlers/file_rows_test.go": {
+      "sha256": "2b4f40e3246e31da4a338b7c3d2801d667304b44651f5750ed8cbe91c13e65ef",
+      "size": 14439
+    },
+    "services/dataset-versioning-service/internal/handlers/handlers.go": {
+      "sha256": "b1c7a5777e904ce805dd61092f6ea85abd44e0e026b16a744deb33d8e7eac6fd",
+      "size": 34069
+    },
+    "services/dataset-versioning-service/internal/handlers/handlers_test.go": {
+      "sha256": "80f6522f769c7460320bbabb093611da86649eba81f0f3a7a0e22df0506dc819",
+      "size": 95054
+    },
+    "services/dataset-versioning-service/internal/handlers/output_commit.go": {
+      "sha256": "f9585cbbab3e88e4a57fa49e25f756d7aa1416ad0165caec93f73c31b2c5e1f1",
+      "size": 28910
+    },
+    "services/dataset-versioning-service/internal/handlers/output_commit_content_test.go": {
+      "sha256": "151d6794a14e03c8693fa62334a846ee5d68050a33e386e995017cf41fe421e4",
+      "size": 14886
+    },
+    "services/dataset-versioning-service/internal/handlers/output_commit_keyed_test.go": {
+      "sha256": "bb61f99eee599aad0d88ac7e752f05d9a4d13e564dbb2c39cc3dd23794d5d4d0",
+      "size": 28144
+    },
+    "services/dataset-versioning-service/internal/handlers/output_commit_objects.go": {
+      "sha256": "b6a402a713f1fea97f1352fd63464c863c9dd7cc22349fab331c6027569ecd3d",
+      "size": 4964
+    },
+    "services/dataset-versioning-service/internal/handlers/output_commit_objects_internal_test.go": {
+      "sha256": "f570b63293843a7fdd543c870b3c4938263f23c7f6855874f118bbbc2964ac45",
+      "size": 4286
+    },
+    "services/dataset-versioning-service/internal/handlers/parity_placeholders.go": {
+      "sha256": "9523f241526fedb11e5b687b02a5f7a66df12a7a521434561ff65e85b68433cc",
+      "size": 249
+    },
+    "services/dataset-versioning-service/internal/handlers/publish_atomicity_test.go": {
+      "sha256": "4b93c712c9111f649de274a5d18be5e1236167790c9364c09d3281b3cdedff6d",
+      "size": 9741
+    },
+    "services/dataset-versioning-service/internal/handlers/quality_lint_health.go": {
+      "sha256": "246b583416ac872ea105604537f7b7b9274e23110265a2495863017139ba7cc5",
+      "size": 8876
+    },
+    "services/dataset-versioning-service/internal/handlers/tenant.go": {
+      "sha256": "2a8e07d83eb9b84dd41c8a1c1bb94f450881f94d6eeeba3aa7d023f5744096fd",
+      "size": 7205
+    },
+    "services/dataset-versioning-service/internal/handlers/tenant_isolation_test.go": {
+      "sha256": "83be006291293751b19a49754d5cbd603286eaf14249b29df82ce83121bd4ff8",
+      "size": 20720
+    },
+    "services/dataset-versioning-service/internal/handlers/transactions.go": {
+      "sha256": "f255019e48d7f3abf1e54e6b38c01e709a1ac8e0663c874a184d46da7c72dfd1",
+      "size": 7693
+    },
+    "services/dataset-versioning-service/internal/handlers/views_schema_preview.go": {
+      "sha256": "768c9ab5ebc19b1835d596f8983af3a25b75a7029b3b874334401b10cbdf9376",
+      "size": 11476
+    },
+    "services/dataset-versioning-service/internal/models/branch_test.go": {
+      "sha256": "6b34acf51e6cc6d9f555b8cfd8e8206c7c6d57bc9d87a5e5bcf28b5c0f09d8e3",
+      "size": 6036
+    },
+    "services/dataset-versioning-service/internal/models/catalog.go": {
+      "sha256": "30a6e745e58170927e77e5b803a737514c8fd4efa2d7ca7cee63dd2aa742437f",
+      "size": 12979
+    },
+    "services/dataset-versioning-service/internal/models/contract_fixtures_test.go": {
+      "sha256": "83ca941e36f5de4fcfd9aa08cb451d4a180de9c7001daab7e111b234be605945",
+      "size": 1159
+    },
+    "services/dataset-versioning-service/internal/models/models.go": {
+      "sha256": "2ad0133b973b984f48c1abbfd8282072e5ef3bae52d8493e3b3b9058d57f7dec",
+      "size": 52825
+    },
+    "services/dataset-versioning-service/internal/models/rust_wire_fixtures_test.go": {
+      "sha256": "8d16c9ccc0f9f13808d99fb03fd972a06ae09271f62bf2a38e66b470b1e04642",
+      "size": 3330
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260419100001_initial_datasets.sql": {
+      "sha256": "2face4830b3f0b41818211bd34ba06188415256ad4ea5ad06536a96f9d79b29e",
+      "size": 2018
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260419100002_reserved_compatibility_slot.sql": {
+      "sha256": "13d16482ea83c5ea2ebf935dbef281847d6e5622763a379d072f724560e77296",
+      "size": 323
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260421103000_data_catalog_quality.sql": {
+      "sha256": "8a0965f4321671f21248f057db3e6c83bee3872311b75240146918b06e46b39a",
+      "size": 2162
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260421174000_dataset_branches.sql": {
+      "sha256": "f26d5497f61c97ea611feaff35df8a5783be6c9f3e29586e03a19cca190f35c3",
+      "size": 898
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260424213000_dataset_branch_merge_metadata.sql": {
+      "sha256": "37d68fc5be24874ab20e3e123a208d61eab0a132e8f577a03cc21b07c3d9802d",
+      "size": 196
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260425173000_dataset_views_transactions.sql": {
+      "sha256": "a8482571442cbac39b2e3cfff8550526a93bf6eaab9e0db91590561ed36ed9ff",
+      "size": 2096
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260501000000_dataset_views_runtime_compat.sql": {
+      "sha256": "aa49d0b4a3e7fba4b50880fa4fc3a0278cedb4f8cdda7d1559987d500ad3385a",
+      "size": 5705
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260501000001_versioning_init.sql": {
+      "sha256": "2842462bca1d670bf9a212b55ae00249c13fb3d1f4d20532d9c2b9f3b04f2697",
+      "size": 8825
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260501000002_transaction_invariants.sql": {
+      "sha256": "dec5c37df589a5bdc2ce71d800e5d41b59c4b23c1d35a5ed3d6a0394e1be1813",
+      "size": 1473
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260501120000_dataset_rid_compat.sql": {
+      "sha256": "fd976b8e545ac9ca7c229cd77dbec1ad8b368d42ea0064cb2790730b10011e9d",
+      "size": 564
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260502000001_dataset_branches_v2.sql": {
+      "sha256": "2c4a264c8ecae0f777265d9f41a6c1c1503446e0b7eff8262dede18c620a4204",
+      "size": 4796
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260502120000_dataset_markings.sql": {
+      "sha256": "3bea1c04155e3c5bc9b3d4ac45cb9d0615c10cbf8bd8369a198aea8aaef1f985",
+      "size": 2329
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260503000001_schema_per_view.sql": {
+      "sha256": "1e65b24f911535e97a4beef8e568981c28fca7fa3c8000ce75412a30159f50f8",
+      "size": 6159
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260503000002_dataset_files.sql": {
+      "sha256": "e9d6b956ba22903ecc9d8ffb3dee821c5b87b6c17f4302d78884b8d0c839ca02",
+      "size": 6253
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260503000004_dataset_health.sql": {
+      "sha256": "295a714aee1389d080b30940b7eea115934a68cc5f50b0ac22bcf0d6d35af190",
+      "size": 3692
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260503130000_dataset_foundry_model.sql": {
+      "sha256": "438660b0a643f6ae2d7c09a05a4a00da7a76ff1750f09483c4881c1da1afe13f",
+      "size": 4402
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260504000010_branches_unify.sql": {
+      "sha256": "d30279e3bec28060c2a1269a1874794ec201bccef90007c0c94961e4ff3c63ca",
+      "size": 4268
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260504000030_branch_retention.sql": {
+      "sha256": "2034fa86b88644dc5a839f2f39628620ec2c974154c52aa90e79b296bec42e98",
+      "size": 4960
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20260504000091_parameterized_view.sql": {
+      "sha256": "0601b6fe7e5e992e143b944fc0bd479c7701647148a2e23400f77beda4a4e9df",
+      "size": 1839
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20261113000000_dataset_org_tenancy.sql": {
+      "sha256": "a9ac4fe4e1ed882e12ab06f79a330b48c8c016add4d24d972b8dd1033f359717",
+      "size": 1440
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20261113100000_dataset_view_schemas_ownership.sql": {
+      "sha256": "ac9de5b7dea0ff47fcf8d4bd459d458e25392459bb1280166c1fa040838a0c78",
+      "size": 4944
+    },
+    "services/dataset-versioning-service/internal/repo/migrations/20261115100000_dataset_output_commit_receipts.sql": {
+      "sha256": "7f9a3602a73148f5bc0241f481521a044f79cd1d4193409dcfb8aa853d0478e4",
+      "size": 2611
+    },
+    "services/dataset-versioning-service/internal/repo/migrations_compat_integration_test.go": {
+      "sha256": "8688493e988cae90bd4a4ba827d594cd76414ca8b6a50036b67eefcf196da539",
+      "size": 5790
+    },
+    "services/dataset-versioning-service/internal/repo/output_commit_ackloss_integration_test.go": {
+      "sha256": "4d0f7d35141307174c95cbe8eca73eaa0d42211fd736fca88868b03458dd2ffb",
+      "size": 17328
+    },
+    "services/dataset-versioning-service/internal/repo/output_commit_ackloss_wire_test.go": {
+      "sha256": "9245137402e7a271aec04e1b1f09845fa4648fb1f359f334641e937bd64752c5",
+      "size": 22750
+    },
+    "services/dataset-versioning-service/internal/repo/output_commit_receipts.go": {
+      "sha256": "f717ed3e9a98d104ead480318d7ccdb4718f96ea0ad46f8e3d310ce29fc5a0f6",
+      "size": 12022
+    },
+    "services/dataset-versioning-service/internal/repo/output_commit_receipts_integration_test.go": {
+      "sha256": "46628fcae88bb94d794256c98c39f9f28cf21e51c8e74cf61eefb1182126b84c",
+      "size": 10450
+    },
+    "services/dataset-versioning-service/internal/repo/output_commit_receipts_w1_integration_test.go": {
+      "sha256": "7400b056b1b96c238c8cb71f0005f8034a7af85d058c53437c34b78f1a8d097c",
+      "size": 29191
+    },
+    "services/dataset-versioning-service/internal/repo/parity.go": {
+      "sha256": "a25731cbcea300e71b12eee4cef5b8af9d5aec85488aadf2dcc11342d47555e0",
+      "size": 89433
+    },
+    "services/dataset-versioning-service/internal/repo/parity_test.go": {
+      "sha256": "afedcafa703a1ad2166bbf89acc642a380e545f104a9397223f7c09a8457ff7f",
+      "size": 20465
+    },
+    "services/dataset-versioning-service/internal/repo/publish.go": {
+      "sha256": "838a235b911339e45d4b3d56bdadd3bc30975456882dd69dad7f4da84a91b5c4",
+      "size": 10232
+    },
+    "services/dataset-versioning-service/internal/repo/publish_fault_injection_integration_test.go": {
+      "sha256": "6ee83f3cc4a4989c60323df737a921c227ca59c72e19ff38484c5ae2f5003dfa",
+      "size": 10116
+    },
+    "services/dataset-versioning-service/internal/repo/repo.go": {
+      "sha256": "1d6ee249544e8b1fb9e470dba33f49ed934ca825c62fb09edb6f6ff5d3b59250",
+      "size": 16396
+    },
+    "services/dataset-versioning-service/internal/repo/repo_test.go": {
+      "sha256": "f9c696602503603f927533a5ebb641f3844a1cb946467744c9e7674b7efd88b4",
+      "size": 2599
+    },
+    "services/dataset-versioning-service/internal/repo/schema_branch_http_integration_test.go": {
+      "sha256": "a6fa3862bca1364f24e624c8a941207e3ef5ac365f6683efec7bd84935613e9f",
+      "size": 14952
+    },
+    "services/dataset-versioning-service/internal/repo/tenant.go": {
+      "sha256": "a743453ed6264e641900a1b244945ffc5d084ba3968bae7865e527325087cf79",
+      "size": 7484
+    },
+    "services/dataset-versioning-service/internal/repo/tenant_isolation_integration_test.go": {
+      "sha256": "f0edf13ac7da0e2af312d914e3aa374e2624281e1cf7be14bd8c470670d2bd68",
+      "size": 6523
+    },
+    "services/dataset-versioning-service/internal/repo/transaction_invariants_test.go": {
+      "sha256": "a479ef82d5a84214adc0129f91ea802f86aff82673a05d40fc99bd7e401654b8",
+      "size": 3386
+    },
+    "services/dataset-versioning-service/internal/runtime/retention/repo_adapter.go": {
+      "sha256": "bc01d1dedf324bf3fdd4de6e79c18359df5d077795eab8d2234c1ba138a1609b",
+      "size": 1667
+    },
+    "services/dataset-versioning-service/internal/runtime/retention/worker.go": {
+      "sha256": "497d32b231ee0746ba0e999a6c4fd9b9a37f367ffdbeb89210027810d2313eca",
+      "size": 5828
+    },
+    "services/dataset-versioning-service/internal/runtime/retention/worker_test.go": {
+      "sha256": "e419ce7f5165afdb763a8be311aca9ce86d8a489023a2d926153103e108c9e56",
+      "size": 9636
+    },
+    "services/dataset-versioning-service/internal/server/server.go": {
+      "sha256": "3296b82d02a6c8fd2cb675b8b938ea56934a063bdfe770124d725cd9fd2d2f7a",
+      "size": 9007
+    },
+    "services/dataset-versioning-service/internal/server/server_test.go": {
+      "sha256": "cd34aeae454b01a00e896d6cc48ef3b11ad49d305f035b1bf6cecef6f6b68382",
+      "size": 9892
+    },
+    "services/pipeline-build-service/cmd/pipeline-build-service/main.go": {
+      "sha256": "4230d6cae2edbf7f12e476a81eb0baf40a09ad157b911550f817cbaf1a765089",
+      "size": 8384
+    },
+    "services/pipeline-build-service/internal/config/config.go": {
+      "sha256": "8db49ae195e2f21f26f24b6dec7c02216008486c1e83f686073a59ec3ed51ca6",
+      "size": 4455
+    },
+    "services/pipeline-build-service/internal/config/config_test.go": {
+      "sha256": "c68e6b4463ffa77f6d130e64f3414d9e0c6c61a2f6236e51821a49854f17e250",
+      "size": 891
+    },
+    "services/pipeline-build-service/internal/domain/engine/dag.go": {
+      "sha256": "bdc7acd458c8485c248e9aa3b5deb7760240206eaa8b512a3fe0045632723e23",
+      "size": 5134
+    },
+    "services/pipeline-build-service/internal/domain/engine/dag_executor.go": {
+      "sha256": "a2c948b70b67a7d3732b18fcf0ce8c13cdb828adaa95e80003e43200404eec47",
+      "size": 5104
+    },
+    "services/pipeline-build-service/internal/domain/engine/engine.go": {
+      "sha256": "9e5e71d9ddbee476f4ae8d9bcc23a64fd2b9b34f84ef62a75d09ff63ae2a924c",
+      "size": 6791
+    },
+    "services/pipeline-build-service/internal/domain/engine/engine_test.go": {
+      "sha256": "e375e49c20ac8bb04f0d7d71aa2554fb7481e96d42184cc0c877e3474e3e7cd0",
+      "size": 9433
+    },
+    "services/pipeline-build-service/internal/domain/engine/runtime.go": {
+      "sha256": "adce7a81607b5e9ca6f7b6fc2bc958c62528d1dfc324fea73483c0358b92c246",
+      "size": 11917
+    },
+    "services/pipeline-build-service/internal/domain/engine/types.go": {
+      "sha256": "3d79f628465f41673782ab7ae1b675213968e291b8cdb34e4980fc445929b185",
+      "size": 3958
+    },
+    "services/pipeline-build-service/internal/domain/executor/executor.go": {
+      "sha256": "c15ada2a55fe2088be994e1cd74a286006c11daeaa0a224470670831893e766e",
+      "size": 21290
+    },
+    "services/pipeline-build-service/internal/domain/executor/executor_test.go": {
+      "sha256": "2bc7419cd1fabeed5adeb328bc0f1c21bedaff0f6aede0a2c854a859a14d0251",
+      "size": 7635
+    },
+    "services/pipeline-build-service/internal/domain/joblifecycle/joblifecycle.go": {
+      "sha256": "30f42efd39bd80cc040332f56f9cdc1d2c1331a1e74b139bbea6a3c7d0729a4b",
+      "size": 4321
+    },
+    "services/pipeline-build-service/internal/domain/joblifecycle/joblifecycle_test.go": {
+      "sha256": "8a8dec754568ac129590fc8d80b0403607f9c950fdf33f5919378ebbe15ef082",
+      "size": 2305
+    },
+    "services/pipeline-build-service/internal/domain/lineage/lineage.go": {
+      "sha256": "ffdc8d376261e7a47662ae7283f3e10b37e50d259da4877cc0f2204cb49d9170",
+      "size": 23107
+    },
+    "services/pipeline-build-service/internal/domain/lineage/lineage_test.go": {
+      "sha256": "74cd9684e03584bd45378dab5dab3f8cfeca647b1130d1adc6f43bbd16ee1d0a",
+      "size": 11174
+    },
+    "services/pipeline-build-service/internal/domain/markings/markings.go": {
+      "sha256": "f72be6167c538b4cbd398cb6489dd28c2a9670fc6a4d0759c22c268fa7361ff1",
+      "size": 2464
+    },
+    "services/pipeline-build-service/internal/domain/resolver/branch.go": {
+      "sha256": "aa8ed394ed73961a86286a2ef87e23accbb7ff175ae9103fbdf686a665b8c7a4",
+      "size": 3689
+    },
+    "services/pipeline-build-service/internal/domain/resolver/resolver.go": {
+      "sha256": "5b3ed2406859986475a088000be6a7d10c3d481fbc0f22f48cf6b624a2c2e9bd",
+      "size": 26713
+    },
+    "services/pipeline-build-service/internal/domain/resolver/resolver_test.go": {
+      "sha256": "d4ac60244a7c2b2e94be9412a1489ed4f4c69901f562032445b153d06ff8bc23",
+      "size": 12021
+    },
+    "services/pipeline-build-service/internal/domain/runners/runners.go": {
+      "sha256": "7f1dec479cfebbc7aa552c56f451629a3bff73f1586892185e230c026ed3e2bc",
+      "size": 23625
+    },
+    "services/pipeline-build-service/internal/domain/runners/runners_test.go": {
+      "sha256": "b5f99d69b24fcf5eaaa8fb086d5411959e0219dbb931f5594dc48cc2d884bdfd",
+      "size": 13163
+    },
+    "services/pipeline-build-service/internal/domain/schedule/nextrun.go": {
+      "sha256": "c30614efaca37ad376692f525133910d7df28d1754e0e54686af102e4c1ed6a2",
+      "size": 1576
+    },
+    "services/pipeline-build-service/internal/domain/schedule/nextrun_test.go": {
+      "sha256": "cf427b42b0d83ab1c492c6e32c78ac58933baf2022ce8e0418a1e37823e4c929",
+      "size": 2579
+    },
+    "services/pipeline-build-service/internal/domain/schedule/schedule.go": {
+      "sha256": "b3a2fda13fb0955153f089a6f6f9a0418084a451037ca150ee450dea106cffb8",
+      "size": 16471
+    },
+    "services/pipeline-build-service/internal/domain/schedule/schedule_test.go": {
+      "sha256": "9dc39ae7be63bb4ea839baee9a2d7ccc6f780e00e6f7a01f514f21e9173c65fb",
+      "size": 11729
+    },
+    "services/pipeline-build-service/internal/handler/abort.go": {
+      "sha256": "9b3e4eff3a8f9160c4f23bd7a8dc0b9cb3031bfa1e196347160afc6f1f229049",
+      "size": 16534
+    },
+    "services/pipeline-build-service/internal/handler/abort_test.go": {
+      "sha256": "5817f2d466bd363abf6c12b527ea9b996aa90e1f1d14733a198133e59233d4c3",
+      "size": 6509
+    },
+    "services/pipeline-build-service/internal/handler/aip_generation.go": {
+      "sha256": "341a05914b3649c4280a5810aab3c64bf79c304f9c7f7f721547e076f6f631c5",
+      "size": 11644
+    },
+    "services/pipeline-build-service/internal/handler/aip_generation_test.go": {
+      "sha256": "9179ac7605ab4b5f393e58d00534b443a78d811946c074a2050e30c9b2b891e7",
+      "size": 4954
+    },
+    "services/pipeline-build-service/internal/handler/build_resolution.go": {
+      "sha256": "8b2ac6c24711ec595616e11e447a71f081dad97fb45487b92a575f13227625a7",
+      "size": 26295
+    },
+    "services/pipeline-build-service/internal/handler/build_resolution_test.go": {
+      "sha256": "661b32fdb9a6de3c81c786408af2c3c5b596c2c16d1d8bd4a2f4f1eb3ce4710b",
+      "size": 9887
+    },
+    "services/pipeline-build-service/internal/handler/builds_v1_test.go": {
+      "sha256": "156f77dbbb1596c2b65c4a89bdefee941c3a9a3296b306a2e837b92c7f48a122",
+      "size": 6347
+    },
+    "services/pipeline-build-service/internal/handler/config_gates_test.go": {
+      "sha256": "d0f451e4044cf5f9fc3757c565eaac5d12a7e0b628717620a76ee6f24393f32d",
+      "size": 8026
+    },
+    "services/pipeline-build-service/internal/handler/data_integration.go": {
+      "sha256": "9c5d8e6dbe3fce0557995c114fb298e35b9272ec120988543e493b5eaaf7ad33",
+      "size": 11367
+    },
+    "services/pipeline-build-service/internal/handler/data_integration_test.go": {
+      "sha256": "b7ba6c0f1f5296ed0e2f7e4144e7599200f2a33fa27fb46a7ca0e28ad7f3cf0e",
+      "size": 12713
+    },
+    "services/pipeline-build-service/internal/handler/dataset_http_versioning.go": {
+      "sha256": "11bb879eda1d7ebb06b8c9d83c418f436cf243e80a34a2ca25e75677738ffd90",
+      "size": 12480
+    },
+    "services/pipeline-build-service/internal/handler/dataset_http_versioning_test.go": {
+      "sha256": "90fb95d54fcf1a8c730adfbcd16869dc402670c9e68ade260795a8823d1fcbbd",
+      "size": 10682
+    },
+    "services/pipeline-build-service/internal/handler/dataset_input_loader.go": {
+      "sha256": "bd3bcfb1cf4d988a7eecce104c481aa0ac433f8dd09d82bef3d6ffb227f87b12",
+      "size": 8850
+    },
+    "services/pipeline-build-service/internal/handler/dataset_input_runtime_test.go": {
+      "sha256": "8a53bfc7b54eec00992092ac9be002895622174728a92ee4503ed4f02e20ad2f",
+      "size": 16993
+    },
+    "services/pipeline-build-service/internal/handler/dataset_output_committer.go": {
+      "sha256": "cf997255bf0e272afbfd174053c63bdcb196b0c17c1d8cf18239f46cad9a969b",
+      "size": 16686
+    },
+    "services/pipeline-build-service/internal/handler/dataset_output_committer_test.go": {
+      "sha256": "12245a23a0868175de4e52cba341409d3afcaf0676ef8b3a9cc5dc6b76702484",
+      "size": 9043
+    },
+    "services/pipeline-build-service/internal/handler/distributed_runtime.go": {
+      "sha256": "df7201e9f9eb27fc09635fd5c20478432d2cb5e1d11e6fda4f88cbf4d152c498",
+      "size": 9234
+    },
+    "services/pipeline-build-service/internal/handler/distributed_runtime_test.go": {
+      "sha256": "b6d703ac2687a89293bc63610bd12f1edcadb2d057910d16f4f0112535cab241",
+      "size": 5145
+    },
+    "services/pipeline-build-service/internal/handler/execution.go": {
+      "sha256": "4f37988d6b92962b793b12ca97dab1b35e58c2dd634d78c18987bc4066ca2950",
+      "size": 49268
+    },
+    "services/pipeline-build-service/internal/handler/execution_test.go": {
+      "sha256": "44eb705f6dda8b19fe1c3f4de87530649a9669a888694897067558268c67697f",
+      "size": 24295
+    },
+    "services/pipeline-build-service/internal/handler/function_registry.go": {
+      "sha256": "44f0bd74054ee1b4bfbb7b8e2bb7985ad91fcd9a4d697e960dfb82e0fa7a98bd",
+      "size": 3374
+    },
+    "services/pipeline-build-service/internal/handler/geo_join_runtime.go": {
+      "sha256": "5dbeb02e722757f9ed4c5fab07ed60aeb23471341996faf36610e4445ded513a",
+      "size": 9206
+    },
+    "services/pipeline-build-service/internal/handler/geo_join_runtime_test.go": {
+      "sha256": "913b4d39dc8ea6a3c6cc793bebd71414b24bf2589944afbabf9f5d3b288e56f9",
+      "size": 6074
+    },
+    "services/pipeline-build-service/internal/handler/gpx_runtime.go": {
+      "sha256": "001beb4e8613fb01d85cba629dac8dc28bdf09deaeddac686460c2714d1d5907",
+      "size": 4955
+    },
+    "services/pipeline-build-service/internal/handler/gpx_runtime_test.go": {
+      "sha256": "972bfabb1ac3303a06c15b0ef7846e9e96aba044c3ad9266410243287ebe6c10",
+      "size": 1879
+    },
+    "services/pipeline-build-service/internal/handler/gpx_schema.go": {
+      "sha256": "c8e90218ebbf33ee2d8f1ed8ef728082d68e788beee2a9965d4f9ad946a291d5",
+      "size": 3345
+    },
+    "services/pipeline-build-service/internal/handler/gpx_upload.go": {
+      "sha256": "cecdd8dc414bc036859f787edc6ec74e4a551d261206efe395a21456f466a3cf",
+      "size": 3835
+    },
+    "services/pipeline-build-service/internal/handler/gpx_upload_test.go": {
+      "sha256": "9c762d7b17287554a3471c10eb91e2d2f5e6800ca69ef61c2c4273e410dc5d73",
+      "size": 2074
+    },
+    "services/pipeline-build-service/internal/handler/handlers.go": {
+      "sha256": "c6cfd383e94df70fbf832b951205b28eabd60b39d3855d4bc866943842c70293",
+      "size": 53317
+    },
+    "services/pipeline-build-service/internal/handler/haversine_runtime.go": {
+      "sha256": "3889052a42948e9335f6eddd67469701dac3968160ae8f5f1a3ea77b00479ddf",
+      "size": 3670
+    },
+    "services/pipeline-build-service/internal/handler/haversine_runtime_test.go": {
+      "sha256": "112723384ef73430738ec53505bc69b61d8ad5d928092b9b4f3e74ec457fcb54",
+      "size": 1500
+    },
+    "services/pipeline-build-service/internal/handler/haversine_schema.go": {
+      "sha256": "f6e69a0b694d7f37ee05816adc4d67b533b126096220c4861f687863ec909809",
+      "size": 2424
+    },
+    "services/pipeline-build-service/internal/handler/job_logs_test.go": {
+      "sha256": "6e19e94463ee37067a4eee06c3dd7ed02e27f5191d8b4a6801866271ea4bc9c6",
+      "size": 4624
+    },
+    "services/pipeline-build-service/internal/handler/lightweight_runtime.go": {
+      "sha256": "9282880d47511d3be41c1430f2b3189a91da36cd75ad52519aaf2365065dcc22",
+      "size": 42661
+    },
+    "services/pipeline-build-service/internal/handler/llm_runtime.go": {
+      "sha256": "ea1a11784e40ccf07ec541c330f5972a27f1ff5a152f6bdd58bf1a74c9a512ae",
+      "size": 11255
+    },
+    "services/pipeline-build-service/internal/handler/llm_runtime_test.go": {
+      "sha256": "5a2ace7067e7c24abcaa6fccaaf3ba3b170c5a38058d46526a796d70c043c0ff",
+      "size": 5076
+    },
+    "services/pipeline-build-service/internal/handler/ontology_object_output_committer.go": {
+      "sha256": "d558f35974460383141e7a77f27219f06e692775fe74f3d1c1086527306a0d1c",
+      "size": 29518
+    },
+    "services/pipeline-build-service/internal/handler/ontology_object_output_committer_test.go": {
+      "sha256": "33bce3c683a21b4f537dcff65098dc0de655ab5c3393bd719bd7824ade341cb9",
+      "size": 10950
+    },
+    "services/pipeline-build-service/internal/handler/pipeline_crud_test.go": {
+      "sha256": "444f9101ce06ddb274a2474983900cc1a10f4a387c3bb61cc4b4bc2fab111e01",
+      "size": 17646
+    },
+    "services/pipeline-build-service/internal/handler/pipeline_function_test.go": {
+      "sha256": "8e8cc622aaeae835bba60b03cd317c368c6ffffbeb61434b320587be2f2708ee",
+      "size": 5512
+    },
+    "services/pipeline-build-service/internal/handler/preview.go": {
+      "sha256": "7e06c2f869a3ca98c578c3c65d0f9449cb4a2b415d479fcc5b39e182869d9dcc",
+      "size": 12610
+    },
+    "services/pipeline-build-service/internal/handler/preview_test.go": {
+      "sha256": "c6d5faf9f69f658f468fe8f5519d19c87ff9ad78e1c4dac497d148a35178794c",
+      "size": 6406
+    },
+    "services/pipeline-build-service/internal/handler/python_transform.go": {
+      "sha256": "aa0d60bef48144b77d373b6994bbd6b3b6ee6f680ca1d43e842df07934fd1d0a",
+      "size": 6845
+    },
+    "services/pipeline-build-service/internal/handler/schema_guidance.go": {
+      "sha256": "85d1274c29aaae11d81a93b6eec6adbfd7ee5e9ca3c5482e30c4c29e130431f0",
+      "size": 19765
+    },
+    "services/pipeline-build-service/internal/handler/schema_guidance_test.go": {
+      "sha256": "36831f21650dbae418a92c130d82835f6afcb93273976e8f78ee23142a075652",
+      "size": 4711
+    },
+    "services/pipeline-build-service/internal/handler/schema_validation.go": {
+      "sha256": "5ca147ce108b355d751eaeddbae229a98f7937b0bc0b4da50a86123bfe0b42f7",
+      "size": 55958
+    },
+    "services/pipeline-build-service/internal/handler/schema_validation_test.go": {
+      "sha256": "44774091d34b7ae5fdef2c4874779997243bb2bff3b68d2c67bd4796b0058c3f",
+      "size": 13719
+    },
+    "services/pipeline-build-service/internal/handler/spark_runs_test.go": {
+      "sha256": "b79d0e15d5ac325fa022f1cad4de39c17410cc051b23c918f9633ac1ba0ac9b2",
+      "size": 9086
+    },
+    "services/pipeline-build-service/internal/handler/tenancy.go": {
+      "sha256": "9cc1e7a92cd61ebc016ec5e01a31cb3f4f387159c86b0187c8bdc7667a3de9d1",
+      "size": 2733
+    },
+    "services/pipeline-build-service/internal/handler/tenancy_test.go": {
+      "sha256": "4ea16a6bf3d69d2c3bc53b0fcf254c611d5dd0193a1013675ea9e15ed8d5d7af",
+      "size": 22552
+    },
+    "services/pipeline-build-service/internal/handler/tenant_boundary_gate_test.go": {
+      "sha256": "01e0bee18ceb8e0bcf52bfb73a2d81e8a298f4742dac24ef4b85d0d16834179a",
+      "size": 6603
+    },
+    "services/pipeline-build-service/internal/handler/transform_catalog.go": {
+      "sha256": "d20f88a733adea08778b06622ba7e144042a90675bce17ff721ae9e8ee68cb37",
+      "size": 43051
+    },
+    "services/pipeline-build-service/internal/handler/transform_catalog_test.go": {
+      "sha256": "a145f4069e9fc0fc9ba20f1988eaab5bb242de216bfe464951482d84b1f44b2c",
+      "size": 3403
+    },
+    "services/pipeline-build-service/internal/iceberg/client.go": {
+      "sha256": "40ca65a37a07ff3af961ff7623d605f286f942eb8aa56700b028ec66a3079845",
+      "size": 8893
+    },
+    "services/pipeline-build-service/internal/iceberg/client_test.go": {
+      "sha256": "2d10163d30fd00093fa5dbf42951c53f4c4ded15e061b8f8941439ffdcfad59b",
+      "size": 5815
+    },
+    "services/pipeline-build-service/internal/logs/logs.go": {
+      "sha256": "b29200a6826bf885c98ced1f00b427670eb98916d5cedc489e09a2c8279a8a67",
+      "size": 5663
+    },
+    "services/pipeline-build-service/internal/models/build.go": {
+      "sha256": "d804ead7b769599a85f8d1b054fb426326e717745a4d56e04719ca31131c2a61",
+      "size": 5317
+    },
+    "services/pipeline-build-service/internal/models/contract_fixtures_test.go": {
+      "sha256": "b8a44c452f4cbac7953f66eddeadb815d888e8ecc2e6e09515bd508e5d3eea09",
+      "size": 973
+    },
+    "services/pipeline-build-service/internal/models/job.go": {
+      "sha256": "1979140592a88d500e934a05be8f36028d6254a165ca76585b72bdb41a2d85ef",
+      "size": 2122
+    },
+    "services/pipeline-build-service/internal/models/pipeline.go": {
+      "sha256": "6a491aa1410efe83db60019cdc61cea73e4d6e976e2a336e50f13591a078f2a9",
+      "size": 13164
+    },
+    "services/pipeline-build-service/internal/models/pipeline_ir.go": {
+      "sha256": "2d5e579f1cac75cbbc94759f7954768e39466bafeaf23d058c70efeec7e56cc0",
+      "size": 16687
+    },
+    "services/pipeline-build-service/internal/models/pipeline_ir_test.go": {
+      "sha256": "93e3d839fe07f407a4e39e1687bd78a339e2187a6bdac4715dcbba6fd6e60ccc",
+      "size": 6298
+    },
+    "services/pipeline-build-service/internal/models/pipeline_type_test.go": {
+      "sha256": "2bbe7fa6103b0268c86ac623ae50c45c9bfd5638e13c550ad6b580647bfb0908",
+      "size": 1062
+    },
+    "services/pipeline-build-service/internal/models/resolver.go": {
+      "sha256": "aa60c439921ef4ff6c9325ae42efe74c0275f27578c97e3c59d8fde931abad8a",
+      "size": 2988
+    },
+    "services/pipeline-build-service/internal/models/run.go": {
+      "sha256": "f1ef02690189132cd370c4132d001f65b2ff64126a416457d384609c7690e31f",
+      "size": 4735
+    },
+    "services/pipeline-build-service/internal/postgres/migrations.go": {
+      "sha256": "670954f1ae5c685efb7d54aa31842b79b135ce076e4905044d26263645a97571",
+      "size": 1768
+    },
+    "services/pipeline-build-service/internal/postgres/pipelines.go": {
+      "sha256": "0157d1e67527a437420376511059588a4662c685c74a77e7dee63b6681f208b7",
+      "size": 24155
+    },
+    "services/pipeline-build-service/internal/postgres/repository.go": {
+      "sha256": "2eaff14da3518826c90e2dcbbf643255d021539a22d01cf1ae92f335c0796da2",
+      "size": 65070
+    },
+    "services/pipeline-build-service/internal/postgres/repository_test.go": {
+      "sha256": "4c90db91a9283559c7287fa96fc9968ae57d364b7b801ba2f7ed72d6e7a201ba",
+      "size": 13549
+    },
+    "services/pipeline-build-service/internal/postgres/tenancy.go": {
+      "sha256": "dd0f52e4c28b3296a6b5c603cd6f5b30945df5488e0b68492fc5ce8f90917bb0",
+      "size": 6522
+    },
+    "services/pipeline-build-service/internal/postgres/tenant_build_lifecycle_integration_test.go": {
+      "sha256": "7fb5997e36f00491e0b624c683c0b9af9707385c7240f0b6791c61cdcb5f082f",
+      "size": 45824
+    },
+    "services/pipeline-build-service/internal/postgres/tenant_isolation_integration_test.go": {
+      "sha256": "cf667169e4cfc2f21fb56edbef0ae09dc2af16114bee642e1aec9f7e17990056",
+      "size": 25606
+    },
+    "services/pipeline-build-service/internal/postgres/tenant_isolation_test.go": {
+      "sha256": "54448f5ab8f014b5ef020bde882417a420fb592b81f3cf9268e5dfc947033bcc",
+      "size": 21973
+    },
+    "services/pipeline-build-service/internal/runtime/python.go": {
+      "sha256": "6a335c59256e8174c72e62a4af65364f78f91a345c1702abaa7b095613b54a08",
+      "size": 6439
+    },
+    "services/pipeline-build-service/internal/runtime/python_test.go": {
+      "sha256": "28f3d094b1ca587a0dcada86c176bfbe51d48350090cc6ccc20d186ea66ea767",
+      "size": 4423
+    },
+    "services/pipeline-build-service/internal/runtime/sidecar_integration_test.go": {
+      "sha256": "610da840270ed3772f013d15e2a6be45d4adb22cdf5e7a71d8da0aacce365850",
+      "size": 4670
+    },
+    "services/pipeline-build-service/internal/server/route_auth_audit_test.go": {
+      "sha256": "9548459ac3f941c4986f142172f759f750d92ec249b64ef5dfe40317103b4289",
+      "size": 3391
+    },
+    "services/pipeline-build-service/internal/server/route_smoke_test.go": {
+      "sha256": "6ff3085ea95fcf59254f55a2496966ec869eccab3e5b70fbefd61ded43e65992",
+      "size": 1582
+    },
+    "services/pipeline-build-service/internal/server/server.go": {
+      "sha256": "28d0d8feb4751a3fc283805f68391aac63d67a1078589ad44467c3f40f4ba322",
+      "size": 9554
+    },
+    "services/pipeline-build-service/internal/spark/spark.go": {
+      "sha256": "d7133beb9c3f6d9dd1a70967024f3d6b6137ac3783f278ae3eaf12caa2e1ea97",
+      "size": 20266
+    },
+    "services/pipeline-build-service/internal/spark/spark_test.go": {
+      "sha256": "7aa5d05424db14c119b96e1b667d133deb3711e9b85cc7708366c0784d99149d",
+      "size": 9098
+    },
+    "services/pipeline-build-service/migrations/20260419100005_initial_pipelines.sql": {
+      "sha256": "c7317f1d04555b5d2e30ecb3ef8e8b5b541f4d09e27bd71d57689a03f7a0aba2",
+      "size": 1411
+    },
+    "services/pipeline-build-service/migrations/20260421170000_pipeline_enhancements.sql": {
+      "sha256": "9b7d4d5994ea4368eafb8fef5cc221f1c8fb6d04772a54068bb9e149b623e438",
+      "size": 1622
+    },
+    "services/pipeline-build-service/migrations/20260425190000_generalized_lineage.sql": {
+      "sha256": "2522c5086a8f6f503764f8a5ea4aa97e09d0cf0a87e21138c505405a65830194",
+      "size": 1601
+    },
+    "services/pipeline-build-service/migrations/20260427070600_16_compute_modules_foundation.sql": {
+      "sha256": "633951471ed7c67e2a1d64ea3ee03bcbc713a94f16129a33c76aea409502fb84",
+      "size": 685
+    },
+    "services/pipeline-build-service/migrations/20260427070600_17_compute_module_runs_foundation.sql": {
+      "sha256": "3b7854eb59fba345e94ae038073a5f9546d746d1aed505badbc35e67d6f1d404",
+      "size": 689
+    },
+    "services/pipeline-build-service/migrations/20260504000020_job_specs.sql": {
+      "sha256": "bcc34213ee7ccb000a0e6ae3fd1fb22d9f2635691d8f25dbed7abcfb621dbea9",
+      "size": 2882
+    },
+    "services/pipeline-build-service/migrations/20260504000050_builds_init.sql": {
+      "sha256": "fe93457f8c4dad01aed3caf1eaa673f3efed50443709a0e49eba35297548d442",
+      "size": 7322
+    },
+    "services/pipeline-build-service/migrations/20260504000051_multi_output.sql": {
+      "sha256": "d4bc722f245dd0cd3300edae3f9416b285e500592156fe98e0ac8b8a71344d75",
+      "size": 4523
+    },
+    "services/pipeline-build-service/migrations/20260504000060_input_view_filter.sql": {
+      "sha256": "4406178ee497b9a411b3cd11539bdbb7017e02eb3807511bf73dcc869bd76e5b",
+      "size": 2555
+    },
+    "services/pipeline-build-service/migrations/20260504000070_job_logs.sql": {
+      "sha256": "2a830b8817817a652536ed884382880522d342269f82b8304cf35fcc447db8f8",
+      "size": 1791
+    },
+    "services/pipeline-build-service/migrations/20260504000080_pipeline_run_submissions.sql": {
+      "sha256": "16605d617a8d86446d8e9a7935ef17b1095c86e6e4fbef4246a2d84ef207f497",
+      "size": 1531
+    },
+    "services/pipeline-build-service/migrations/20260504000080_schedules_init.sql": {
+      "sha256": "b698adc9d5f32543bd0b2b08a5505181687dadc58d7fcefbeee0b14fc0c0a314",
+      "size": 7574
+    },
+    "services/pipeline-build-service/migrations/20260504000081_schedule_runs.sql": {
+      "sha256": "689f5eb52eec06cda08e0c31199445415069f94c6b32981355e6916c2b575397",
+      "size": 2356
+    },
+    "services/pipeline-build-service/migrations/20260504000082_schedule_scope.sql": {
+      "sha256": "463eae0653716db15ded1b9e01c01b06ead4548c596086cb68322da72e2a5c0a",
+      "size": 2889
+    },
+    "services/pipeline-build-service/migrations/20260504000083_schedules_definitions.sql": {
+      "sha256": "fed3da61d347d68dec5bb440c9b8b8e4b0ed90e8e006faa1f082f5846f05d00a",
+      "size": 2428
+    },
+    "services/pipeline-build-service/migrations/20260504000090_parameterized.sql": {
+      "sha256": "e07e7eba494a0b14a3309c1b13d9033410d740621610e9b98a94f527285e72e8",
+      "size": 2246
+    },
+    "services/pipeline-build-service/migrations/20260505000010_pipeline_type_lifecycle.sql": {
+      "sha256": "5446a00450f547b4e377acdfadb5f76ec9492aa577f1c36e7b33f27854cbf5a2",
+      "size": 2468
+    },
+    "services/pipeline-build-service/migrations/20260511000000_pipeline_authoring_lifecycle.sql": {
+      "sha256": "01d7e4aa4b11e5c0999d2edb8ef48be1a27b4c94313d6f24bc3f16b52d49e736",
+      "size": 2500
+    },
+    "services/pipeline-build-service/migrations/20260511001000_pipeline_run_orchestration_lifecycle.sql": {
+      "sha256": "7ce44cf8ea34a2acd6f6489dec08e8e419dadf195a160cf7f10f1e2f1d317e51",
+      "size": 768
+    },
+    "services/pipeline-build-service/migrations/20260511002000_distributed_pipeline_type.sql": {
+      "sha256": "415cf9e5ecb3854c389a12eee6c758066c39c7ad2fb52670eff540156d08052f",
+      "size": 808
+    },
+    "services/pipeline-build-service/migrations/20261113100000_tenant_isolation.sql": {
+      "sha256": "a1ed19b9a961bab5f6ec18dc3b9feb6fa554c5b6068f8674a63d550d19646de8",
+      "size": 3181
+    },
+    "services/pipeline-build-service/migrations/20261113110000_job_spec_canonical_rid.sql": {
+      "sha256": "bf4f917ae76d4879b54d8b559070f5bd5df3586cc5887e55fec8a774b36b8779",
+      "size": 876
+    },
+    "services/pipeline-build-service/migrations/20261113110001_build_pending_output_txns.sql": {
+      "sha256": "8eaa7a81a278036167271db66eb997d4a51bd51133a447c13783e316a13978eb",
+      "size": 869
+    },
+    "services/pipeline-build-service/migrations/embed.go": {
+      "sha256": "bbb7b1ef2c911ff6f32cf5c827c4cfb80e6817f607ffe9d1eea8e9dd2a9859c6",
+      "size": 278
+    }
+  },
+  "source_snapshot_manifest_sha256": "6f3b492fe5aef361379faeb53fd57dbc248a1fd3862cabfe158f7db49a108c96"
+}

@@ -1,0 +1,124 @@
+{
+  "kind": "read-only origin copies; no originals imported/executed",
+  "files": [
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p1/smoke/smoke.py",
+      "origin_sha256": "939d0ccf89b4873865c4b3f169be0c393247548f3f9aaaaf4807ee2f1fc9a406",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p1/smoke/smoke.py",
+      "copy_sha256": "939d0ccf89b4873865c4b3f169be0c393247548f3f9aaaaf4807ee2f1fc9a406",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-1/smoke_p21.py",
+      "origin_sha256": "11aaf9a0553ef8d2430db178f3d0db70dda8dd196173d918fb173d31fcebe6d3",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-1/smoke_p21.py",
+      "copy_sha256": "11aaf9a0553ef8d2430db178f3d0db70dda8dd196173d918fb173d31fcebe6d3",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-2/smoke_p22.py",
+      "origin_sha256": "751ef54eb851cc757b278973d0bbb3592f32691b7d540930177dfd7ce956fb70",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-2/smoke_p22.py",
+      "copy_sha256": "751ef54eb851cc757b278973d0bbb3592f32691b7d540930177dfd7ce956fb70",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-2/p22_connector2.sh",
+      "origin_sha256": "5c63749d3ab24ae057a8f81d2ff7837af2df9260227cbc868433bbfb240e6e23",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-2/p22_connector2.sh",
+      "copy_sha256": "5c63749d3ab24ae057a8f81d2ff7837af2df9260227cbc868433bbfb240e6e23",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-2/compose-p22-connector2.yaml.template",
+      "origin_sha256": "47e9f03f5fedd920c85804e88f4ffb9748000ea8c51da22c62fa22843166fe69",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-2/compose-p22-connector2.yaml.template",
+      "copy_sha256": "47e9f03f5fedd920c85804e88f4ffb9748000ea8c51da22c62fa22843166fe69",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-2/dataset_proxy.py",
+      "origin_sha256": "985e86561e59ee0da3e1f981c49c5e389a2384cbc3aced2820aac04e7b68b578",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-2/dataset_proxy.py",
+      "copy_sha256": "985e86561e59ee0da3e1f981c49c5e389a2384cbc3aced2820aac04e7b68b578",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-3/smoke_p23.py",
+      "origin_sha256": "63cc6de1cbbb188e2e4f435e46fdb554fe944da993a1f958658f64528c82d810",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-3/smoke_p23.py",
+      "copy_sha256": "63cc6de1cbbb188e2e4f435e46fdb554fe944da993a1f958658f64528c82d810",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-3/admission_snapshots.py",
+      "origin_sha256": "5285a4b7edf88b79606dc232257b084cae2a2d60481749eda5c5d6551fa6836a",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-3/admission_snapshots.py",
+      "copy_sha256": "5285a4b7edf88b79606dc232257b084cae2a2d60481749eda5c5d6551fa6836a",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-3/p23_live_guard.py",
+      "origin_sha256": "3ba5826ed53c8cb810dc96706d3372e2f2c13cd206f46b6020c75ffb36a8bdf8",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-3/p23_live_guard.py",
+      "copy_sha256": "3ba5826ed53c8cb810dc96706d3372e2f2c13cd206f46b6020c75ffb36a8bdf8",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-4/smoke_p24.py",
+      "origin_sha256": "f5b583d92372db086ec4b98f0a17dff6adaf72dddeecd0db0fe8b4e21d468a83",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-4/smoke_p24.py",
+      "copy_sha256": "f5b583d92372db086ec4b98f0a17dff6adaf72dddeecd0db0fe8b4e21d468a83",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-4/p24_live_guard.py",
+      "origin_sha256": "e645d2537706dca8db8d9dccbfdf7e034740de22684232fcdcfdb8ee09c09ce4",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-4/p24_live_guard.py",
+      "copy_sha256": "e645d2537706dca8db8d9dccbfdf7e034740de22684232fcdcfdb8ee09c09ce4",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-4/p24_pins.py",
+      "origin_sha256": "93557081e8ebfc9130ac3f012f271ae04f1a25df9c0a13dec61ed05426b9e215",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-4/p24_pins.py",
+      "copy_sha256": "93557081e8ebfc9130ac3f012f271ae04f1a25df9c0a13dec61ed05426b9e215",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-4/implementation-contract.md",
+      "origin_sha256": "f6223a46cc59602185a2d746e9f8f9e621bf391cfdf557af22124bbf0004a247",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-4/implementation-contract.md",
+      "copy_sha256": "f6223a46cc59602185a2d746e9f8f9e621bf391cfdf557af22124bbf0004a247",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/smoke_p25.py",
+      "origin_sha256": "de6eb2bcbc6be34b57f6f7ab4da3be535fec9b140c2646bcbfcc9214395259a1",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-5/smoke_p25.py",
+      "copy_sha256": "de6eb2bcbc6be34b57f6f7ab4da3be535fec9b140c2646bcbfcc9214395259a1",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/fixtures/rest_source_p25.py",
+      "origin_sha256": "8a98e7927f4d8a9e237a6c0a98258c48eb6ab0c0f9d2c5b8df24592820e9788b",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-5/fixtures/rest_source_p25.py",
+      "copy_sha256": "8a98e7927f4d8a9e237a6c0a98258c48eb6ab0c0f9d2c5b8df24592820e9788b",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/fixtures/dataset_fault_proxy_p25.py",
+      "origin_sha256": "c0e3bbfe240c000b0d3170da6854098a8f728f2264db185579f0e0c0d06961da",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-5/fixtures/dataset_fault_proxy_p25.py",
+      "copy_sha256": "c0e3bbfe240c000b0d3170da6854098a8f728f2264db185579f0e0c0d06961da",
+      "patches": []
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/compose-p25-fixture.yaml",
+      "origin_sha256": "28ec8a97e4106e4d4112f6b232f6869230e5f1815cd8e480c1d4def4e0b18350",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/tree/business-platform-p2-5/compose-p25-fixture.yaml",
+      "copy_sha256": "28ec8a97e4106e4d4112f6b232f6869230e5f1815cd8e480c1d4def4e0b18350",
+      "patches": []
+    }
+  ]
+}

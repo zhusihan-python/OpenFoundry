@@ -1,0 +1,20 @@
+# FROZEN 2026-11-15 (W6) — dataset-versioning-service P26 PG required names.
+# Source of truth: W1-DATASET-INTERFACE.md §5 required table + the LANDED
+# integration test sources (internal/repo/output_commit_receipts_
+# integration_test.go, output_commit_receipts_w1_integration_test.go;
+# r9 adds the W1b attempt3 wire test — output_commit_ackloss_integration_
+# test.go:217, Root static-accepted 2026-11-15), frozen BEFORE the first
+# real PG run (root round-1 #7: no circular "must-be-green-to-be-listed"
+# pinning). Runner contract: each name must
+# appear exactly 1 RUN / 1 PASS / 0 SKIP / 0 FAIL with package ok and
+# real rc 0 — a missing name FAILS; every raw attempt (incl. failures)
+# is preserved under results/w6/pg/.
+TestW1KeyedLockInterleavesWithReplay
+TestW1KeyedLockWaitCancelZeroWrite
+TestW1KeyedReceiptInsertFailureRollsBackPublish
+TestW1KeyedCommitAThenBReplayStable
+TestW1KeyedLegacySharedLockOrderNoDeadlock
+TestW1GetOutputCommitReceiptOwnForeignUnknown
+TestWithIdempotentOutputCommitConcurrentTwoInstances
+TestWithIdempotentOutputCommitConcurrentFingerprintDivergence
+TestPGP26DatasetWireCommitAckLossReplaysReceipt

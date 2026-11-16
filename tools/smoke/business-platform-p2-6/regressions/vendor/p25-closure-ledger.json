@@ -1,0 +1,234 @@
+{
+  "schema": "p26-p25-copied-closure-v1",
+  "source_S": "ff9cf1dfcdfdf275005687a4edbc0da3ae88a036335b1b3a236f857d59eecf0e",
+  "files": [
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/smoke_p25.py",
+      "origin_sha256": "de6eb2bcbc6be34b57f6f7ab4da3be535fec9b140c2646bcbfcc9214395259a1",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/p25-runtime/smoke_p25.py",
+      "copy_sha256": "f931dca20e5be294e250f551063f282c97233fe812ed54ced56d32809a6e254d",
+      "patches": [
+        {
+          "old": "def _validate_crash_record(rec, defs, held_def, prior, prior_path, expected_image=None):\n    \"\"\"round-3 #3 STRICT crash-record validation (pure). Requires\n    concrete identities, raw kill/start cmd rc + artifact SHAs, container\n    StartedAt before != after (a REAL recreation), ordered event\n    timestamps, the exact held identities present in the pre snapshot,\n    and the pre-snapshot file's actual sha256. A `restarted: true` alone\n    is never green.\"\"\"\n    problems = []\n    if not isinstance(rec, dict):\n        return [\"crash record is not a JSON object\"]\n    if rec.get(\"schema\") != \"p25-crash-record-v1\":\n        problems.append(\"schema must be p25-crash-record-v1\")\n    for k in (\"project\", \"service\", \"container\", \"performed_by\"):\n        if not isinstance(rec.get(k), str) or not rec.get(k):\n            problems.append(\"field %r must be a non-empty string\" % k)\n    if rec.get(\"method\") != \"sigkill+start-same-image\":\n        problems.append(\"method must be 'sigkill+start-same-image' (a \"\n                        \"graceful docker restart cancels pre-gate work \"\n                        \"and would make the immutability expectation \"\n                        \"wrong)\")\n    img = rec.get(\"image\") or \"\"\n    if not (isinstance(img, str) and img.startswith(\"sha256:\")\n            and _is_sha256hex(img[len(\"sha256:\") :])):\n        problems.append(\"image must be sha256:<full 64-hex>\")\n    if rec.get(\"project\") != \"openfoundry-platform-p1-q3v9\":\n        problems.append(\"project must be pinned q3 project\")\n    if rec.get(\"service\") != \"p25connector\":\n        problems.append(\"crash service must be disposable p25connector\")\n    if rec.get(\"container\") != rec.get(\"container_id\"):\n        problems.append(\"container must equal inspected full container_id\")\n    if not _is_sha256hex(rec.get(\"container_id\")):\n        problems.append(\"container_id must be full 64-hex\")\n    if rec.get(\"image_before\") != img or rec.get(\"image_after\") != img:\n        problems.append(\"before/after image must equal pinned full image\")\n    if expected_image is not None and (not expected_image or rec.get(\"image\") != expected_image):\n        problems.append(\"crash image differs from externally pinned accepted image\")\n    for stage in (\"before\", \"after\"):\n        proof = rec.get(\"inspect_\" + stage) or {}\n        path = proof.get(\"artifact\")\n        try:\n            if not isinstance(path, str) or not os.path.isabs(path) or _file_sha256(path) != proof.get(\"artifact_sha256\"):\n                raise ValueError(\"inspect artifact missing or SHA mismatch\")\n            with open(path, encoding=\"utf-8\") as fh:\n                raw = json.load(fh)\n            if not isinstance(raw, list) or len(raw) != 1:\n                raise ValueError(\"inspect must contain exactly one container\")\n            c = raw[0]\n            labels = c.get(\"Config\", {}).get(\"Labels\", {})\n            if c.get(\"Id\") != rec.get(\"container_id\") or c.get(\"Image\") != img or labels.get(\"com.docker.compose.project\") != \"openfoundry-platform-p1-q3v9\" or labels.get(\"com.docker.compose.service\") != \"p25connector\" or c.get(\"State\", {}).get(\"StartedAt\") != rec.get(\"started_at_\" + stage):\n                raise ValueError(\"inspect identity/image/labels/StartedAt mismatch\")\n        except (OSError, ValueError, TypeError, KeyError) as exc:\n            problems.append(\"inspect_%s: %s\" % (stage, exc))\n    for act in (\"kill\", \"start\", \"health\"):\n        a = rec.get(act)\n        if not isinstance(a, dict):\n            problems.append(\"%s record missing\" % act)\n            continue\n        if not isinstance(a.get(\"cmd\"), str) or not a.get(\"cmd\"):\n            problems.append(\"%s.cmd missing\" % act)\n        if type(a.get(\"rc\")) is not int or a.get(\"rc\") != 0:\n            problems.append(\"%s.rc=%r want 0\" % (act, a.get(\"rc\")))\n        if not _is_sha256hex(a.get(\"artifact_sha256\")):\n            problems.append(\"%s.artifact_sha256 not 64-hex\" % act)\n        artifact = a.get(\"artifact\")\n        if not isinstance(artifact, str) or not os.path.isabs(artifact) or not os.path.isfile(artifact):\n            problems.append(\"%s artifact file missing\" % act)\n        elif _file_sha256(artifact) != a.get(\"artifact_sha256\"):\n            problems.append(\"%s artifact byte SHA mismatch\" % act)\n        import shlex\n        try:\n            argv = shlex.split(a.get(\"cmd\", \"\"))\n        except ValueError:\n            argv = []\n        container = rec.get(\"container\")\n        if act == \"kill\" and argv != [\"docker\", \"kill\", \"-s\", \"KILL\", container]:\n            problems.append(\"kill command must SIGKILL only declared container\")\n        if act == \"start\" and argv != [\"docker\", \"start\", container]:\n            problems.append(\"start command must start only declared container\")\n    b, a_ = rec.get(\"started_at_before\"), rec.get(\"started_at_after\")\n    if not isinstance(b, str) or not isinstance(a_, str) or \\\n            not _rfc3339(b) or not _rfc3339(a_):\n        problems.append(\"started_at_before/after must be RFC3339\")\n    elif _rfc3339(b) >= _rfc3339(a_):\n        problems.append(\"container StartedAt unchanged \u2014 not a REAL \"\n                        \"recreation\")\n    ts = rec.get(\"timestamps\")\n    if not isinstance(ts, dict) or any(k not in ts for k in _CRASH_TS_KEYS):\n        problems.append(\"timestamps must carry %s\" % (_CRASH_TS_KEYS,))\n    else:\n        vals = [_rfc3339(ts.get(k)) for k in _CRASH_TS_KEYS]\n        if not all(vals) or not all(x < y for x, y in zip(vals, vals[1:])):\n            problems.append(\"event timestamps not strictly ordered \"\n                            \"pre<kill<start<post\")\n        if _rfc3339(a_) != vals[2] or not _rfc3339(b) < vals[1]:\n            problems.append(\"StartedAt must bind actual start event and precede kill\")\n    held = rec.get(\"held\")\n    if not isinstance(held, dict):\n        problems.append(\"held identities missing\")\n    else:\n        for k in (\"def_id\", \"source_id\", \"run_id\"):\n            if not _is_uuidish(held.get(k)):\n                problems.append(\"held.%s not a UUID\" % k)\n        if held.get(\"def_id\") != held_def:\n            problems.append(\"held.def_id != --h10-held-def\")\n        hs = prior.get(held_def) or {}\n        hown = ((hs.get(\"checkpoint\") or {}).get(\"owner\") or {}).get(\n            \"run_id\")\n        if held.get(\"run_id\") != hown:\n            problems.append(\"held.run_id is not the pre-snapshot owner \"\n                            \"run\")\n        if held.get(\"source_id\") != hs.get(\"source_id\"):\n            problems.append(\"held.source_id != pre-snapshot source\")\n    if not _is_sha256hex(rec.get(\"pre_snapshot_sha256\")):\n        problems.append(\"pre_snapshot_sha256 not 64-hex\")\n    elif prior_path and os.path.exists(prior_path):\n        if _file_sha256(prior_path) != rec.get(\"pre_snapshot_sha256\"):\n            problems.append(\"pre_snapshot_sha256 != actual prior file \"\n                            \"sha256\")\n    if set(prior) != set(defs):\n        problems.append(\"prior snapshot set differs from observed defs\")\n    if prior_path and os.path.isfile(prior_path):\n        with open(prior_path, encoding=\"utf-8\") as fh:\n            pd = json.load(fh)\n        pt = _rfc3339(pd.get(\"taken_at\"))\n        if not pt or not isinstance(ts, dict) or _rfc3339(ts.get(\"pre_at\")) != pt:\n            problems.append(\"pre timestamp must equal prior snapshot capture time\")\n    return problems\n\n\n# ---------------------------------------------------------------------------\n# CLI\n# ---------------------------------------------------------------------------\n\n",
+          "new": "def _validate_crash_record(rec, defs, held_def, prior, prior_path, expected_image=None):\n    \"\"\"round-3 #3 STRICT crash-record validation (pure). Requires\n    concrete identities, raw kill/start cmd rc + artifact SHAs, container\n    StartedAt before != after (a REAL recreation), ordered event\n    timestamps, the exact held identities present in the pre snapshot,\n    and the pre-snapshot file's actual sha256. A `restarted: true` alone\n    is never green.\"\"\"\n    problems = []\n    if not isinstance(rec, dict):\n        return [\"crash record is not a JSON object\"]\n    if rec.get(\"schema\") != \"p25-crash-record-v1\":\n        problems.append(\"schema must be p25-crash-record-v1\")\n    for k in (\"project\", \"service\", \"container\", \"performed_by\"):\n        if not isinstance(rec.get(k), str) or not rec.get(k):\n            problems.append(\"field %r must be a non-empty string\" % k)\n    if rec.get(\"method\") != \"sigkill+start-same-image\":\n        problems.append(\"method must be 'sigkill+start-same-image' (a \"\n                        \"graceful docker restart cancels pre-gate work \"\n                        \"and would make the immutability expectation \"\n                        \"wrong)\")\n    img = rec.get(\"image\") or \"\"\n    if not (isinstance(img, str) and img.startswith(\"sha256:\")\n            and _is_sha256hex(img[len(\"sha256:\") :])):\n        problems.append(\"image must be sha256:<full 64-hex>\")\n    if rec.get(\"project\") != \"openfoundry-p26-legacy\":\n        problems.append(\"project must be pinned q3 project\")\n    if rec.get(\"service\") != \"p26connectorc\":\n        problems.append(\"crash service must be disposable p26connectorc\")\n    if rec.get(\"container\") != rec.get(\"container_id\"):\n        problems.append(\"container must equal inspected full container_id\")\n    if not _is_sha256hex(rec.get(\"container_id\")):\n        problems.append(\"container_id must be full 64-hex\")\n    if rec.get(\"image_before\") != img or rec.get(\"image_after\") != img:\n        problems.append(\"before/after image must equal pinned full image\")\n    if expected_image is not None and (not expected_image or rec.get(\"image\") != expected_image):\n        problems.append(\"crash image differs from externally pinned accepted image\")\n    for stage in (\"before\", \"after\"):\n        proof = rec.get(\"inspect_\" + stage) or {}\n        path = proof.get(\"artifact\")\n        try:\n            if not isinstance(path, str) or not os.path.isabs(path) or _file_sha256(path) != proof.get(\"artifact_sha256\"):\n                raise ValueError(\"inspect artifact missing or SHA mismatch\")\n            with open(path, encoding=\"utf-8\") as fh:\n                raw = json.load(fh)\n            if not isinstance(raw, list) or len(raw) != 1:\n                raise ValueError(\"inspect must contain exactly one container\")\n            c = raw[0]\n            labels = c.get(\"Config\", {}).get(\"Labels\", {})\n            if c.get(\"Id\") != rec.get(\"container_id\") or c.get(\"Image\") != img or labels.get(\"com.docker.compose.project\") != \"openfoundry-p26-legacy\" or labels.get(\"com.docker.compose.service\") != \"p26connectorc\" or c.get(\"State\", {}).get(\"StartedAt\") != rec.get(\"started_at_\" + stage):\n                raise ValueError(\"inspect identity/image/labels/StartedAt mismatch\")\n        except (OSError, ValueError, TypeError, KeyError) as exc:\n            problems.append(\"inspect_%s: %s\" % (stage, exc))\n    for act in (\"kill\", \"start\", \"health\"):\n        a = rec.get(act)\n        if not isinstance(a, dict):\n            problems.append(\"%s record missing\" % act)\n            continue\n        if not isinstance(a.get(\"cmd\"), str) or not a.get(\"cmd\"):\n            problems.append(\"%s.cmd missing\" % act)\n        if type(a.get(\"rc\")) is not int or a.get(\"rc\") != 0:\n            problems.append(\"%s.rc=%r want 0\" % (act, a.get(\"rc\")))\n        if not _is_sha256hex(a.get(\"artifact_sha256\")):\n            problems.append(\"%s.artifact_sha256 not 64-hex\" % act)\n        artifact = a.get(\"artifact\")\n        if not isinstance(artifact, str) or not os.path.isabs(artifact) or not os.path.isfile(artifact):\n            problems.append(\"%s artifact file missing\" % act)\n        elif _file_sha256(artifact) != a.get(\"artifact_sha256\"):\n            problems.append(\"%s artifact byte SHA mismatch\" % act)\n        import shlex\n        try:\n            argv = shlex.split(a.get(\"cmd\", \"\"))\n        except ValueError:\n            argv = []\n        container = rec.get(\"container\")\n        if act == \"kill\" and argv != [\"docker\", \"kill\", \"-s\", \"KILL\", container]:\n            problems.append(\"kill command must SIGKILL only declared container\")\n        if act == \"start\" and argv != [\"docker\", \"start\", container]:\n            problems.append(\"start command must start only declared container\")\n    b, a_ = rec.get(\"started_at_before\"), rec.get(\"started_at_after\")\n    if not isinstance(b, str) or not isinstance(a_, str) or \\\n            not _rfc3339(b) or not _rfc3339(a_):\n        problems.append(\"started_at_before/after must be RFC3339\")\n    elif _rfc3339(b) >= _rfc3339(a_):\n        problems.append(\"container StartedAt unchanged \u2014 not a REAL \"\n                        \"recreation\")\n    ts = rec.get(\"timestamps\")\n    if not isinstance(ts, dict) or any(k not in ts for k in _CRASH_TS_KEYS):\n        problems.append(\"timestamps must carry %s\" % (_CRASH_TS_KEYS,))\n    else:\n        vals = [_rfc3339(ts.get(k)) for k in _CRASH_TS_KEYS]\n        if not all(vals) or not all(x < y for x, y in zip(vals, vals[1:])):\n            problems.append(\"event timestamps not strictly ordered \"\n                            \"pre<kill<start<post\")\n        if _rfc3339(a_) != vals[2] or not _rfc3339(b) < vals[1]:\n            problems.append(\"StartedAt must bind actual start event and precede kill\")\n    held = rec.get(\"held\")\n    if not isinstance(held, dict):\n        problems.append(\"held identities missing\")\n    else:\n        for k in (\"def_id\", \"source_id\", \"run_id\"):\n            if not _is_uuidish(held.get(k)):\n                problems.append(\"held.%s not a UUID\" % k)\n        if held.get(\"def_id\") != held_def:\n            problems.append(\"held.def_id != --h10-held-def\")\n        hs = prior.get(held_def) or {}\n        hown = ((hs.get(\"checkpoint\") or {}).get(\"owner\") or {}).get(\n            \"run_id\")\n        if held.get(\"run_id\") != hown:\n            problems.append(\"held.run_id is not the pre-snapshot owner \"\n                            \"run\")\n        if held.get(\"source_id\") != hs.get(\"source_id\"):\n            problems.append(\"held.source_id != pre-snapshot source\")\n    if not _is_sha256hex(rec.get(\"pre_snapshot_sha256\")):\n        problems.append(\"pre_snapshot_sha256 not 64-hex\")\n    elif prior_path and os.path.exists(prior_path):\n        if _file_sha256(prior_path) != rec.get(\"pre_snapshot_sha256\"):\n            problems.append(\"pre_snapshot_sha256 != actual prior file \"\n                            \"sha256\")\n    if set(prior) != set(defs):\n        problems.append(\"prior snapshot set differs from observed defs\")\n    if prior_path and os.path.isfile(prior_path):\n        with open(prior_path, encoding=\"utf-8\") as fh:\n            pd = json.load(fh)\n        pt = _rfc3339(pd.get(\"taken_at\"))\n        if not pt or not isinstance(ts, dict) or _rfc3339(ts.get(\"pre_at\")) != pt:\n            problems.append(\"pre timestamp must equal prior snapshot capture time\")\n    return problems\n\n\n# ---------------------------------------------------------------------------\n# CLI\n# ---------------------------------------------------------------------------\n\n",
+          "count": 1,
+          "purpose": "h10 crash-validator actual NEW compose project/service pins only"
+        },
+        {
+          "old": "rc, out, err = -1, b\"\", type(exc).__name__.encode()",
+          "new": "rc, out, err = None, b\"\", type(exc).__name__.encode()",
+          "count": 1,
+          "purpose": "h13 SQL spawn/timeout has unavailable original child rc, never fabricated -1"
+        },
+        {
+          "old": "\"rc\": rc,\n            \"stdout\"",
+          "new": "\"rc\": rc, \"original_rc\": rc,\n            \"stdout\"",
+          "count": 1,
+          "purpose": "h13 original child rc explicit nullable metadata"
+        }
+      ],
+      "narrow_patch_sha256": "a47cc6b8b9239d0d0b40d53d83c49689ef522552a95624a6063c87825ad3eaf7"
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/h10_crash_runner_p25.py",
+      "origin_sha256": "21231530d7582a66f91acfafda56f6dec5ed454d85f7deb0d9c693467de6c4f8",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/p25-runtime/h10_crash_runner_p25.py",
+      "copy_sha256": "708eda2762bc9751eebdc874010f6099473cc99cd1552d9936ea43d7905f0b97",
+      "patches": [
+        {
+          "old": "        expected = {s['id'] for s in self.m.SCENARIOS",
+          "new": "        if healthy.get('schema') == 'p26-p25-healthy-bundle-v1':\n            spec = importlib.util.spec_from_file_location('p26_healthy_bundle', HERE.parents[1] / 'p25' / 'p26_healthy_bundle.py')\n            bundle = importlib.util.module_from_spec(spec); spec.loader.exec_module(bundle)\n            if bundle.verify_bundle(self.a.healthy_summary).get('ok') is not True: raise ValueError('NEW actual-source bundle rejected')\n        expected = {s['id'] for s in self.m.SCENARIOS",
+          "count": 1,
+          "purpose": "verify exact NEW current-source bundle; no fixed historical failed3"
+        },
+        {
+          "old": "healthy.get('schema') != 'p25-healthy-aggregate-v1'",
+          "new": "healthy.get('schema') not in ('p25-healthy-aggregate-v1','p26-p25-healthy-bundle-v1')",
+          "count": 1,
+          "purpose": "accept only independently verified actual NEW retained-owner provenance"
+        },
+        {
+          "old": "tag = 'failedhealthy-h13-' + owner['def_id']",
+          "new": "tag = 'retained-healthy-' + owner['def_id']",
+          "count": 1,
+          "purpose": "do not label future retained case identities as historical h13"
+        },
+        {
+          "old": "ENGINE_SHA = 'de6eb2bcbc6be34b57f6f7ab4da3be535fec9b140c2646bcbfcc9214395259a1'",
+          "new": "ENGINE_SHA = 'f931dca20e5be294e250f551063f282c97233fe812ed54ced56d32809a6e254d'",
+          "count": 1,
+          "purpose": "bind actual narrow-patched NEW engine bytes"
+        },
+        {
+          "old": "SOURCE_SHA = 'a1bff07f3760fce7b5661b169ba26a165712c950035d4e4ec9948639d51ffd27'",
+          "new": "SOURCE_SHA = 'ff9cf1dfcdfdf275005687a4edbc0da3ae88a036335b1b3a236f857d59eecf0e'",
+          "count": 1,
+          "purpose": "current full accepted S; historical originals unchanged"
+        },
+        {
+          "old": "PROJECT = 'openfoundry-platform-p1-q3v9'",
+          "new": "PROJECT = 'openfoundry-p26-legacy'",
+          "count": 1,
+          "purpose": "NEW aux project"
+        },
+        {
+          "old": "SERVICE = 'p25connector'",
+          "new": "SERVICE = 'p26connectorc'",
+          "count": 1,
+          "purpose": "NEW actual C service"
+        },
+        {
+          "old": "rc, out, err = -1, exc.stdout or b'', exc.stderr or b''",
+          "new": "rc, out, err = None, exc.stdout or b'', exc.stderr or b''",
+          "count": 1,
+          "purpose": "timeout has no fabricated child exit"
+        },
+        {
+          "old": "rc, out, err = -1, b'', type(exc).__name__.encode()",
+          "new": "rc, out, err = None, b'', type(exc).__name__.encode()",
+          "count": 1,
+          "purpose": "spawn failure has no fabricated child exit"
+        },
+        {
+          "old": "(directory / 'rc').write_text(str(rc) + '\\n')",
+          "new": "(directory / 'rc').write_text(('unavailable' if rc is None else str(rc)) + '\\n')",
+          "count": 1,
+          "purpose": "retain unavailable separately from actual child rc"
+        },
+        {
+          "old": "{'fixture_src_url': FIXTURE_URL",
+          "new": "{'fixture_src_url': args.fixture_src_url",
+          "count": 1,
+          "purpose": "Root fixed independent P25 fixture URL already validated by NEW runtime"
+        },
+        {
+          "old": "'--proxy-base', self.a.proxy_base, '--fixture-src-url', FIXTURE_URL",
+          "new": "'--proxy-base', self.a.proxy_base, '--fixture-src-url', self.a.fixture_src_url",
+          "count": 1,
+          "purpose": "Root fixed independent P25 fixture URL already validated by NEW runtime"
+        },
+        {
+          "old": "incremental_source_config(FIXTURE_URL, 'p25h13'",
+          "new": "incremental_source_config(self.a.fixture_src_url, 'p25h13'",
+          "count": 1,
+          "purpose": "Root fixed independent P25 fixture URL already validated by NEW runtime"
+        },
+        {
+          "old": "\n\ndef load_engine():\n",
+          "new": "\n\ndef row_sha(row):\n    return hashlib.sha256(json.dumps(row, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()\n\n\ndef import_projection(path, prefix):\n    \"\"\"Remove only bundle duplication from an import copy, never its origin.\"\"\"\n    path = Path(path).resolve()\n    origin_sha = sha(path)\n    document = json.loads(path.read_text())\n    rows = document['handles']\n    if not isinstance(rows, list) or document.get('count') != len(rows):\n        raise ValueError('import handles count mismatch')\n    semantic, ledger = [], []\n    for index, original in enumerate(rows):\n        if not isinstance(original, dict):\n            raise ValueError('import handle must be object')\n        projected = {k: v for k, v in original.items() if k not in ('bundle_origin', 'bundle_origins')}\n        semantic.append(projected)\n        ledger.append({'original_file_sha256': origin_sha, 'original_index': index,\n                       'original_row_sha256': row_sha(original), 'semantic_row_sha256': row_sha(projected),\n                       'removed_keys': sorted(set(original) - set(projected))})\n    projection_path = Path(str(prefix) + '.semantic.json')\n    ledger_path = Path(str(prefix) + '.ledger.json')\n    if projection_path.exists() or ledger_path.exists():\n        raise ValueError('exclusive import derivation required')\n    write(projection_path, {'handles': semantic, 'count': len(semantic)})\n    proof = {'schema': 'p26-h10-import-projection-v1', 'original_file': str(path),\n             'original_file_sha256': origin_sha, 'semantic_file': str(projection_path),\n             'semantic_file_sha256': sha(projection_path), 'rows': ledger}\n    write(ledger_path, proof)\n    return semantic, {'original_file': str(path), 'original_file_sha256': origin_sha,\n                      'semantic_file': str(projection_path), 'semantic_file_sha256': sha(projection_path),\n                      'ledger_file': str(ledger_path), 'ledger_file_sha256': sha(ledger_path)}\n\n\ndef load_engine():\n",
+          "count": 1,
+          "purpose": "Root-authorized import-only bundle metadata projection and separately retained actual handles; official Engine and deadlines unchanged"
+        },
+        {
+          "old": "        handles = json.loads(handles_path.read_text())['handles']\n        for h in handles:\n            if h.get('ok') is True and h.get('kind') in ('source', 'def', 'h10-def'):\n                if not self.m._is_uuidish(h.get('ref')):\n                    raise ValueError('invalid actual healthy handle UUID')\n                self.rec.persist_handle(h['kind'], h['ref'], dict(h, imported_from=str(handles_path),\n                                                                  imported_sha256=sha(handles_path)))\n",
+          "new": "        self.report['import_projections'] = []\n        handles = None\n        paths = [handles_path] + [Path(p).resolve() for p in self.a.retained_handles_file]\n        for index, path in enumerate(paths):\n            projected, proof = import_projection(path, self.root / ('import-%02d' % index))\n            self.report['import_projections'].append(proof)\n            if index == 0:\n                handles = projected\n            for h in projected:\n                if h.get('ok') is True and h.get('kind') in ('source', 'def', 'h10-def'):\n                    if not self.m._is_uuidish(h.get('ref')):\n                        raise ValueError('invalid actual imported handle UUID')\n                    self.rec.persist_handle(h['kind'], h['ref'], dict(h, imported_from=str(path),\n                                            imported_sha256=proof['original_file_sha256']))\n",
+          "count": 1,
+          "purpose": "Root-authorized import-only bundle metadata projection and separately retained actual handles; official Engine and deadlines unchanged"
+        },
+        {
+          "old": "                                (self.a.selected_build, self.a.healthy_summary, handles_path, HERE / 'smoke_p25.py', Path(__file__).resolve())}\n",
+          "new": "                                (self.a.selected_build, self.a.healthy_summary, *paths, HERE / 'smoke_p25.py', Path(__file__).resolve())}\n",
+          "count": 1,
+          "purpose": "Root-authorized import-only bundle metadata projection and separately retained actual handles; official Engine and deadlines unchanged"
+        },
+        {
+          "old": "    for name, port in (('connector', 17094), ('dataset', 17078), ('fixture', 17092), ('proxy', 17093)):\n",
+          "new": "    p.add_argument('--retained-handles-file', action='append', default=[])\n    for name, port in (('connector', 17094), ('dataset', 17078), ('fixture', 17092), ('proxy', 17093)):\n",
+          "count": 1,
+          "purpose": "Root-authorized import-only bundle metadata projection and separately retained actual handles; official Engine and deadlines unchanged"
+        }
+      ],
+      "narrow_patch_sha256": "2854e672c3bab1fe3b918250d1a191231f1722a44494072e11423a87a006f9b1"
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/collect_http_quiet_p25.py",
+      "origin_sha256": "b1872ce8fe37907b63b0d297ae68e2bf04c14a4d578ea8e6ff09e912abcdc422",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/p25-runtime/collect_http_quiet_p25.py",
+      "copy_sha256": "43a4ce4fb359e15f6f7346e1c726e8fceb2f99dfd68ad6460f83bf46ede2650f",
+      "patches": [
+        {
+          "old": "ENGINE_SHA = 'de6eb2bcbc6be34b57f6f7ab4da3be535fec9b140c2646bcbfcc9214395259a1'",
+          "new": "ENGINE_SHA = 'f931dca20e5be294e250f551063f282c97233fe812ed54ced56d32809a6e254d'",
+          "count": 1,
+          "purpose": "NEW engine SHA"
+        },
+        {
+          "old": "BASES = {'fixture': 'http://127.0.0.1:17092', 'proxy_admin': 'http://127.0.0.1:17093'}",
+          "new": "BASES = {'fixture': 'http://127.0.0.1:17095', 'proxy_admin': 'http://127.0.0.1:17096'}",
+          "count": 1,
+          "purpose": "NEW stage-owned P25 sidecar ports"
+        },
+        {
+          "old": "BASES = {'fixture': 'http://127.0.0.1:17095', 'proxy_admin': 'http://127.0.0.1:17096'}",
+          "new": "BASES = {'fixture': 'http://127.0.0.1:17103', 'proxy_admin': 'http://127.0.0.1:17104'}",
+          "count": 1,
+          "purpose": "Root independent NEW P25 sidecars; original P26 fixture/proxy remain unchanged"
+        }
+      ],
+      "narrow_patch_sha256": "876cb31ad51d8b53e3269ef8e05f8d79ee23989ddfa19091e115dcbd72f82359"
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/aggregate_healthy_p25.py",
+      "origin_sha256": "5f3a9e7dee10a3d213b5e76a582bcc7f23d54fc31d32e69d8f6079b292bfe983",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/p25-runtime/aggregate_healthy_p25.py",
+      "copy_sha256": "5f3a9e7dee10a3d213b5e76a582bcc7f23d54fc31d32e69d8f6079b292bfe983",
+      "patches": [],
+      "narrow_patch_sha256": null
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/selftest_aggregate_healthy_p25.py",
+      "origin_sha256": "fef183c190e8544b8e177a475c279604cc1e849e054f2d5bdfe9f80c2cefa529",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/p25-runtime/selftest_aggregate_healthy_p25.py",
+      "copy_sha256": "fef183c190e8544b8e177a475c279604cc1e849e054f2d5bdfe9f80c2cefa529",
+      "patches": [],
+      "narrow_patch_sha256": null
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/verify_h13_ledger_p25.py",
+      "origin_sha256": "96ea24930ae08b0b775f62bb5f557866c5fa044acf1d7252e597a027c62ddb9c",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/p25-runtime/verify_h13_ledger_p25.py",
+      "copy_sha256": "69fa6481960f48f98fb7ea69217c735487e78b5251ced58b66ce66fbb0f79636",
+      "patches": [
+        {
+          "old": "linked(argv[argv.index('-I')+1])",
+          "new": "linked(next(token for token in argv if token.endswith('.py')))",
+          "count": 1,
+          "purpose": "actual NEW collector script path after optional Python -B flag"
+        }
+      ],
+      "narrow_patch_sha256": "08f81682faf4746663336430a7763d09f2cd5917f4fbfa6e9f8fe051da56ea09"
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/fixtures/dataset_fault_proxy_p25.py",
+      "origin_sha256": "c0e3bbfe240c000b0d3170da6854098a8f728f2264db185579f0e0c0d06961da",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/p25-runtime/fixtures/dataset_fault_proxy_p25.py",
+      "copy_sha256": "c0e3bbfe240c000b0d3170da6854098a8f728f2264db185579f0e0c0d06961da",
+      "patches": [],
+      "narrow_patch_sha256": null
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/fixtures/rest_source_p25.py",
+      "origin_sha256": "8a98e7927f4d8a9e237a6c0a98258c48eb6ab0c0f9d2c5b8df24592820e9788b",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/p25-runtime/fixtures/rest_source_p25.py",
+      "copy_sha256": "8a98e7927f4d8a9e237a6c0a98258c48eb6ab0c0f9d2c5b8df24592820e9788b",
+      "patches": [],
+      "narrow_patch_sha256": null
+    },
+    {
+      "origin": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/selftest_h10_crash_runner_p25.py",
+      "origin_sha256": "15d78fb22f7999676453186a05beb32b0872c95bd66d8ec032447b8f7c2c97f7",
+      "copy": "/Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-6/regressions/vendor/p25-runtime/selftest_h10_crash_runner_p25.py",
+      "copy_sha256": "2b2e710e7456e5e0a1caf6a91f06b80a070365812c754af298ce285e411ecdfe",
+      "patches": [
+        {
+          "old": "'p25connector':",
+          "new": "r.SERVICE:",
+          "count": 2,
+          "purpose": "pure fixture selected-image key follows NEW actual service"
+        }
+      ],
+      "narrow_patch_sha256": "4d585304de8601f5414f45a9ffe2f64a9c846df821f07622908b2e34d1f06d26"
+    }
+  ],
+  "note": "only NEW copies imported/executed; originals read-only; old fixed-three-replacement aggregator retained only for applicable exact facts, never default NEW selection"
+}

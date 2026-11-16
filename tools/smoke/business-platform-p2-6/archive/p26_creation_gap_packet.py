@@ -1,0 +1,29 @@
+"""Bounded four-case provenance/GET plan from immutable recorded artifacts."""
+import hashlib,json,re
+from pathlib import Path
+B=Path('tools/smoke/business-platform-p2-6');O=B/'results/w9/2026-11-15-w9-attempt15'
+def doc(p):return json.loads(Path(p).read_text())
+def build():
+ candidate=doc(O/'final-owned-coverage.CANDIDATE.json');inventory=doc(B/'results/w9/2026-11-15-w9-attempt11/15-all-results-history-snapshot.json')['members'];gaps=[]
+ def ref(path,pointer=''):
+  p=Path(path);relative=str(p.relative_to(Path.cwd())) if p.is_absolute() else str(p);raw=p.read_bytes();pin=inventory[relative];assert hashlib.sha256(raw).hexdigest()==pin['sha256'] and len(raw)==pin['size'];return {'path':str(p.resolve()),'sha256':pin['sha256'],'bytes':len(raw),'json_pointer':pointer}
+ for entry in candidate['unresolved_actual_ids']:
+  did=entry['def_id'];origin=entry['declared_origins'][0];result=doc(origin['path']);directory=Path(origin['path']).parent;roster=result['owned_roster'];ix=next(i for i,x in enumerate(roster) if x.get('kind')=='sync_def' and x['id']==did);sid=roster[ix]['source'];src=next(x for x in roster if x.get('kind')=='source' and x['id']==sid)
+  files=[Path(path) for path in inventory if str(Path(path).parent)==str(directory.relative_to(Path.cwd()))];requests=[];source_requests=[]
+  for meta in files:
+   if meta.suffix!='.meta':continue
+   command=meta.with_suffix('.cmd')
+   if str(command) not in inventory:continue
+   text=command.read_text();m=doc(meta);request=m.get('request',{})
+   if text.startswith('POST /api/v1/data-connection/syncs\n') and request.get('source_id')==sid:requests.append((meta,command,m))
+   if text.startswith('POST /api/v1/data-connection/sources\n') and request.get('config',{}).get('sync',{}).get('query_params',{}).get('src')==src['src']:source_requests.append((meta,command,m))
+  assert len(requests)==len(source_requests)==1
+  selected=requests[0];target=selected[2]['request']['output_dataset_id'];events={}
+  for role,(meta,command,m) in [('def',selected),('source',source_requests[0])]:
+   raw=meta.with_suffix('.raw');rc=meta.with_suffix('.rc');marker=raw.read_text();assert re.fullmatch(r'status:201 bytes:[1-9][0-9]*\n',marker) and rc.read_text().strip()=='0';events[role]={'command':ref(command),'request_metadata':ref(meta,'/request'),'recorded_response_marker':ref(raw),'normalized_harness_rc':ref(rc),'recorded_status':201,'response_body_recorded':False,'original_Unix_child_rc':None}
+  gaps.append({'def_id':did,'source_id':sid,'output_dataset_id':target,'case':result['scenario'],'case_original':ref(origin['path']),'owned_def_row':ref(origin['path'],'/owned_roster/'+str(ix)),'owned_source_row':ref(origin['path'],'/owned_roster/'+str(roster.index(src))),'actual_POST_provenance':events,'claim_limit':'Own case/declared UUID + actual POST request and status201 marker are original. Historical response body/parent-owner bytes were not recorded and are not reconstructed.','required_current_checks':{'definition_id':did,'definition_source_id':sid,'definition_output_dataset_id':target,'source_id':sid,'Root_explicit_expected_actor_and_tenant':'required before collection; do not infer eligibility by same owner'},'Root_phase_required':True})
+ plans=[{'def_id':e['def_id'],'source_id':e['source_id'],'output_dataset_id':e['output_dataset_id'],'expected_actor':e['actor_id'],'expected_tenant':e['org_id'],'creation_basis':'authenticated projection' if e['projection_normalization_required'] else 'original full safe response','definition_creation':e['definition_creation'],'source_creation':e['source_creation']} for e in candidate['creators']]
+ plans += [{'def_id':e['def_id'],'source_id':e['source_id'],'output_dataset_id':e['output_dataset_id'],'creation_basis':'original case UUID roster + exact POST requests/status201 markers; historical body unavailable','expected_actor':'Root must supply explicit approved identity','expected_tenant':'Root must supply explicit approved identity'} for e in gaps]
+ return {'status':'ACTIONABLE OFFLINE GAP AND BOUNDED CURRENT-PARENT PLAN; NO AUTHORITY/LIVE','schema_proposal':'p26-owned-creation-and-current-parent-v1','four_gaps':gaps,'exact_current_parent_plan':plans,'exact_definition_count':len(plans),'exact_unique_source_count':len({e['source_id'] for e in plans}),'protected_exclusions':candidate['protected_definitions_excluded'],'collector_contract':['Root pins exact input manifest SHA, current source/deployment identities, phase+fresh expiry, actor/tenant per exact ID','GET exact Def, GET exact explicitly recorded Source, optionally GET exact bound Dataset; no discovery by owner/name/extra DB rows','Store original safe response metadata/body/transport outcome; Source config/auth omitted. No write/cancel/recover/delete/arm actions','Require Def.id/source_id/output_dataset_id and org equal explicit creation-parent plan; Source.id/owner_id/org equal exact approved actor/tenant; every ID unique and outside protected exclusions','For authenticated creation projections, emit transparent derived actor→owner_id/tenant→org_id fields with original-reference ledger; never label them original full Source bodies','For four gaps accept only combined case-owned-roster + exact request/status201 marker + current exact-parent observation; preserve explicit historical-body absence','Replay offline all original hashes/parent assertions. A 404 or mismatched parent is unresolved unless actual prior owned-delete evidence is independently supplied; never silently adopt another row','Full final coverage stays incomplete until P24 successful retry/P25/P1post/ABC stages are incorporated and Root final cutoff reviewed'],'private_reads':0,'actual_GETs':0,'future_P25_pending':True}
+if __name__=='__main__':
+ d=build();(O/'four-early-def-gap-and-current-parent-plan.json').write_text(json.dumps(d,indent=2)+'\n');print('gap4; exactGET plan',d['exact_definition_count'],'defs',d['exact_unique_source_count'],'sources')

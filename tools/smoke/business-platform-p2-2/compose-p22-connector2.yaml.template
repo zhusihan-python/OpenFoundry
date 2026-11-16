@@ -1,0 +1,104 @@
+# Additive override for the P2.2 acceptance run: THREE optional services
+# on top of the frozen P1 stack (same project, network, and .env secrets;
+# nothing in the P1 tool directory is modified).
+#
+#   connector2    — second connector replica, port 17089: cross-process
+#                   cancel proof (root item 3: cancel a run executed by
+#                   instance A via HTTP on instance B => DB observation,
+#                   not a process-local map).
+#   dataset-proxy — controlled reverse proxy (tools/smoke/business-platform-
+#                   p2-2/dataset_proxy.py) in front of the REAL dataset
+#                   service, port 17091. It can hold the RESPONSE of a
+#                   matching request (e.g. outputs:commit) after the
+#                   upstream has fully processed it — never fabricating or
+#                   altering bytes — for the gate-wins/too_late and
+#                   publish-lost-response evidence.
+#   connector3    — connector replica whose DATASET_SERVICE_URL points at
+#                   the proxy, port 17087: used for the proxy-mediated
+#                   scenarios (with the other replicas stopped so the task
+#                   is deterministically executed by connector3).
+#
+# Rendered by p22_connector2.sh into $OF_P1_TMP/compose-p22-connector2.yaml
+# (__OF_ROOT__ replaced). Applied only at P2.2 acceptance, after the root
+# session green-lights execution; `up` is interlocked behind
+# P22_CONFIRM_CONNECTOR2=yes:
+#
+#   docker compose -f $OF_P1_TMP/compose.yaml \
+#     -f $OF_P1_TMP/compose-p22-connector2.yaml \
+#     --project-name openfoundry-platform-p1-q3v9 up -d connector2 \
+#       dataset-proxy connector3
+#
+# Removing the replicas never touches the base services:
+#   docker compose ... -f compose-p22-connector2.yaml rm -sf connector2 \
+#     dataset-proxy connector3
+#
+# Port plan (host 127.0.0.1): P1 17078/17081/17088/17090; P2.2 adds
+# 17087 (connector3), 17089 (connector2), 17091 (dataset-proxy).
+services:
+  connector2:
+    networks:
+      p1net: {}
+    build:
+      context: "__OF_ROOT__"
+      dockerfile: __OF_ROOT__/tools/smoke/business-platform-p1/service.Dockerfile
+      args:
+        SERVICE_NAME: connector-management-service
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50088
+      DATABASE_URL: postgres://openfoundry:${OF_P1_PG_PASSWORD:?}@postgres:5432/connectors
+      JWT_SECRET: ${OF_P1_JWT_SECRET:?}
+      DATASET_SERVICE_URL: http://dataset:50078
+      CREDENTIAL_ENCRYPTION_KEY: ${OF_P1_CREDENTIAL_KEY:?}
+      ALLOW_PRIVATE_NETWORK_EGRESS: "true"
+      ALLOWED_EGRESS_HOSTS: fixture
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dataset:
+        condition: service_started
+    ports:
+      - "127.0.0.1:17089:50088"
+
+  dataset-proxy:
+    networks:
+      p1net: {}
+    image: python:3.12-alpine
+    volumes:
+      - __OF_ROOT__/tools/smoke/business-platform-p2-2/dataset_proxy.py:/srv/dataset_proxy.py:ro
+    command: ["python3", "-I", "/srv/dataset_proxy.py", "0.0.0.0", "8091", "http://dataset:50078"]
+    depends_on:
+      dataset:
+        condition: service_started
+    ports:
+      - "127.0.0.1:17091:8091"
+
+  connector3:
+    networks:
+      p1net: {}
+    build:
+      context: "__OF_ROOT__"
+      dockerfile: __OF_ROOT__/tools/smoke/business-platform-p1/service.Dockerfile
+      args:
+        SERVICE_NAME: connector-management-service
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50088
+      DATABASE_URL: postgres://openfoundry:${OF_P1_PG_PASSWORD:?}@postgres:5432/connectors
+      JWT_SECRET: ${OF_P1_JWT_SECRET:?}
+      # THE difference from connector/connector2: dataset traffic goes
+      # through the controlled proxy (response holds are installable at
+      # run time via its admin API on the SAME listener).
+      DATASET_SERVICE_URL: http://dataset-proxy:8091
+      CREDENTIAL_ENCRYPTION_KEY: ${OF_P1_CREDENTIAL_KEY:?}
+      ALLOW_PRIVATE_NETWORK_EGRESS: "true"
+      ALLOWED_EGRESS_HOSTS: fixture
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dataset:
+        condition: service_started
+      dataset-proxy:
+        condition: service_started
+    ports:
+      - "127.0.0.1:17087:50088"

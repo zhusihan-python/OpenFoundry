@@ -1,0 +1,41 @@
+# P25 RUNTIME override — compose-p25-runtime.yaml (runtime-track owned)
+#
+# Stacks LAST over: q3 compose.yaml + compose-p25-fixture.yaml +
+# build/compose-p25-aux.yaml (PG-generated, read-only use). ONLY
+# runtime env/image selections live here (review-first-switch-round1
+# fix 4); no PG/Old-Tools owned yaml is edited:
+#   * p25fixture/p25-proxy run the r18-CACHED python:3.12-alpine FULL
+#     image id (build-candidate-bindings-r18.json cache_only_images —
+#     never pulled, never the original yaml's python:3.14-slim);
+#   * p25-proxy gets its full definition here (port 17093 → dataset
+#     service inside the compose network);
+#   * p25connector: fault-proxy DATASET_SERVICE_URL + p25fixture
+#     eress + the scheduler loop ON for the healthy window (h13):
+#     OPENFOUNDRY_SYNC_SCHEDULER_INTERVAL_SECS=1 (base loops stay OFF —
+#     this env applies to the aux replica ONLY).
+#
+# NOT RELEASED for deployment: used only by the released driver phases.
+
+services:
+  p25fixture:
+    image: sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+
+  p25-proxy:
+    networks:
+      p1net: {}
+    image: sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+    volumes:
+      - /Volumes/ExternalSD/projects/OpenFoundry/tools/smoke/business-platform-p2-5/fixtures/dataset_fault_proxy_p25.py:/srv/dataset_fault_proxy_p25.py:ro
+    command: ["python3", "-I", "/srv/dataset_fault_proxy_p25.py", "0.0.0.0", "80", "http://dataset:50078"]
+    ports:
+      - "127.0.0.1:17093:80"
+    restart: "no"
+
+  p25connector:
+    image: sha256:5947232921a29a40a0bdd7d28def5a7c44ea487e5412072e9d1f5837576a72db
+    ports:
+      - "127.0.0.1:17094:50088"
+    environment:
+      DATASET_SERVICE_URL: http://p25-proxy:80
+      ALLOWED_EGRESS_HOSTS: fixture,p25fixture
+      OPENFOUNDRY_SYNC_SCHEDULER_INTERVAL_SECS: "1"

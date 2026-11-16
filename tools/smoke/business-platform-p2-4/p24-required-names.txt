@@ -1,0 +1,21 @@
+# DRAFT — NOT FROZEN (tools GLM, 2026-11-14).
+# Read from the CURRENT services/connector-management-service/internal/
+# repo/schedule_integration_test.go top-level test functions (13 today).
+# PG GLM is still applying the 18-item review; the final count/names are
+# frozen by root only AFTER source+tests are stable and real-PG green.
+# The exact checker (formal_run_p24.sh pg59 phase) refuses an EMPTY
+# list; using this draft list means every name below must actually run
+# 1RUN/1PASS/0SKIP before pg59 can pass.
+TestPGScheduleLockedClockAndCandidateCAS
+TestPGScheduleSameSlotSingleWinnerTwoPools
+TestPGScheduleLoopBoundedFairProgress
+TestPGScheduleSkipDecisionAtomicity
+TestPGScheduleSuccessCommitStampLastAndPrune
+TestPGScheduleStageFailureFullRollback
+TestPGScheduleHonestDispatchResidue
+TestPGScheduleGrantGenerationCASAndArmRevoke
+TestPGScheduleHeartbeatExactGeneration
+TestPGScheduleGetViewLiveByActualRevision
+TestPGScheduleConfigSemanticsZeroWrite
+TestPGScheduleMigrationReplayLegacyDisabled
+TestPGScheduleIndependentSourcesProgress

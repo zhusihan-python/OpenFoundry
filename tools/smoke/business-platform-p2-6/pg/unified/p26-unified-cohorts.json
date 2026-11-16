@@ -1,0 +1,68 @@
+{
+ "fresh_db": "unified runs create a fresh lowercase db ofp26_unified_<ts> per sweep (P25 precedent) + SHOW server_major gate",
+ "grouping_actual": {
+  "connector": {
+   "current": 18,
+   "old": 64,
+   "total": 82
+  },
+  "dataset": {
+   "current": 9,
+   "old": 6,
+   "total": 15
+  },
+  "pipeline": {
+   "current": 0,
+   "old": 17,
+   "total": 17
+  }
+ },
+ "note": "114 expected ONLY after W2 wire name lands (Root accepts then); names are the authority, counts are reported facts",
+ "services": {
+  "connector": {
+   "dsn_env": "CONNECTOR_DB_DSN",
+   "expect_go": "go1.26.3",
+   "image_full_id": "2d6c80227255c3112a4d08e67ba98e58efd3846daf15d9d7d4c389565d881b1a",
+   "image_ref": "golang:1.26.3",
+   "names_file": "p26-unified-connector-names.txt",
+   "packages": [
+    "./services/connector-management-service/internal/handlers/",
+    "./services/connector-management-service/internal/repo/"
+   ],
+   "volumes": [
+    "openfoundry-gomod",
+    "openfoundry-gobuild"
+   ]
+  },
+  "dataset": {
+   "dsn_env": "DATASET_DB_DSN",
+   "expect_go": "go1.26.3",
+   "image_full_id": "2d6c80227255c3112a4d08e67ba98e58efd3846daf15d9d7d4c389565d881b1a",
+   "image_ref": "golang:1.26.3",
+   "names_file": "p26-unified-dataset-names.txt",
+   "packages": [
+    "./services/dataset-versioning-service/internal/repo/"
+   ],
+   "volumes": [
+    "openfoundry-gomod",
+    "openfoundry-gobuild"
+   ]
+  },
+  "pipeline": {
+   "dsn_env": "PIPELINE_DB_DSN",
+   "expect_go": "go1.26.3",
+   "image_full_id": "2d6c80227255c3112a4d08e67ba98e58efd3846daf15d9d7d4c389565d881b1a",
+   "image_ref": "golang:1.26.3",
+   "names_file": "p26-unified-pipeline-names.txt",
+   "packages": [
+    "./services/pipeline-build-service/internal/postgres/"
+   ],
+   "volumes": [
+    "openfoundry-gomod",
+    "openfoundry-gobuild"
+   ]
+  }
+ },
+ "total_names": 114,
+ "utc": "20261115T052924Z"
+}

@@ -1,0 +1,60 @@
+{
+ "generated_by": "tools GLM (root-authorized 2026-11-14: 'contract-pinned.json\u7531\u4f60\u6839\u636e\u5df2\u5ba1root review-contract\u4e0e\u968f\u540eimplementation-contract\u751f\u6210')",
+ "authority": {
+  "review_contract": "/Users/allen/.codex/visualizations/2026/11/13/01a1d419-a586-76c2-b72b-8b773a80c7b6/handoffs/2026-11-14-p24/review-contract.md",
+  "review_contract_sha256": "61fa868cc3d9b6dbbc9cabba5671ea37caef71bf200eac6e59ee7771f43f91de",
+  "status": "direction-approved-and-corrected (root reviewed design-draft + PG plan; 10 mandatory corrections incorporated)"
+ },
+ "exact_names": {
+  "implementation_contract": "tools/smoke/business-platform-p2-4/implementation-contract.md",
+  "status": "LANDED 2026-11-14 10:38 (primary GLM); smoke_p24.py ROUTES/FIELDS pinned 8/8 + 16/16 from it. Source primary is applying round-2 fixes (unit tests, main Stop ordering, some DTO omitempty) \u2014 actual API/field semantics must be re-verified against the built candidate before formal runs; the contract is authoritative for shapes until then.",
+  "pg_required_names": "p24-required-names.txt DRAFT: 13 top-level names read from current schedule_integration_test.go; root freezes final list/count only after source+tests stable and real-PG green (tools review-tools-round1 item 10)",
+  "formal_execution": {
+   "authority": "handoffs/2026-11-14-p24/formal-execution-contract.md (read 2026-11-14)",
+   "driver": "formal_run_p24.sh complete; 'full' LOCKED SAFE FALLBACK (root final selection 2026-11-14): aux-down/restart3/reread(old artifact+BuildJob)/P1post9 all BEFORE P21ABC; ABC is the LAST q3 write; post-ABC read-only snapshot/hash/finalize only. cohort-gate/abc-pre remain standalone phases for a future separately-reviewed round, never auto-selected",
+   "q_adaptation": "p23_q_guard_adapter_p24.py: EXACTLY the frozen Q inner guard argv substituted to the 4-pin guard; exactly-one required; RELEASED_FOR_EXECUTION=false until root review; label 'frozen 8-scenario code with P24-only guard-command adaptation'",
+   "cohort_gate": "cohort_gate_p24.py: SHA-bound root-approved 2-row record + fixed four; fixed pins stay EXACTLY four; no auto-discovery/no age exemption; gate runs only immediately before the ONE planned base3 restart",
+   "pg_runner": "run_pg_isolated_p24.sh owned by PG GLM; interface expected: stdout PG_LOG=<abs> and PG_RC_FILE=<abs>; unified old59+newN in ONE fresh log; dev PG never goes through P1/run.sh (it would drop q3 migrate_fresh)",
+   "postfacts": "verify_postfacts_p24.py separate from preflight; controlled count 6 after ABC allowed only via approved cohort or ABC-bound fallback (\u22642); owned cron defs may remain disabled/NULL-cursor"
+  }
+ },
+ "pinned_decisions": {
+  "cron": "reuse libs/scheduling-cron: Unix5 for 5 fields, Quartz6 for 6; UTC default + IANA tz; expression <= 256 bytes; no new dependency",
+  "legacy_migration": "saved schedules migrate DISABLED with NULL cursor; no backfill/implicit activation; validate every explicitly supplied new nonempty cron/tz (even disabled); untouched old invalid strings stay compatible with name-only edits",
+  "lifecycle": "empty cron clears+disables; omitted PATCH fields preserve; enable requires valid nonempty cron; same-value patch does not invalidate grant; actual config change (cron/tz/enabled/output/file_glob) invalidates by revision; disable NULLs cursor; re-enable/config change computes future cursor from locked DB time; arm/renew preserve cursor+revision",
+  "scheduler_interval": "default 0 (off); explicit range 1-30 seconds",
+  "grant": "memory TTL default 300s, explicit 1-86400, capped by verified JWT exp; registry bound 1024, claim batch 8, tick retention 500, owner freshness 90s",
+  "routes": "draft route family + ordinary Sync create/PATCH/read schedule additions + POST/DELETE schedule:arm + GET schedule/ticks; all existing aliases registered; invalid new schedule input -> invalid_schedule; scopes/permissions follow neighboring Sync routes; scheduler-off arm must not promise execution",
+  "identity": "independent random schedule boot UUID (never lease holder/hostname/token); each successful arm gets a fresh random grant_id/epoch; persist+compare boot ID, revision, actor, trusted tenant snapshot, expected Source/Sync/output binding, absolute expiry",
+  "dispatch_honesty": "committed tick = durable admission/enqueue, NOT proven dispatch; crash between commit and dispatch leaves pending Run unadopted; Run stays execution/terminal truth",
+  "time_and_locking": "caller/worker now is a scan hint only; fresh clock_timestamp() after Source->Def locks is authoritative; claim CAS on expected revision+scheduled_for; nonblocking/bounded Source/Def acquisition; keyset/round-robin fair candidate selection; advanceSyncLastAdmitted stays the LAST statement of the success transaction; never continue aborted 55P03; 23505 handling only for the explicit slot-unique constraint",
+  "deadline": "absolute cap: auth registry expiry and task deadline = min(existing bounds, grant absolute expiry); queue wait consumes budget; active sweeper clears even with scheduling off; publish-gate entry keeps P22 bounded cleanup contract",
+  "owner_liveness": "heartbeat updates only the exact (grant_id, boot, revision, actor/tenant, expiry) generation; never extends expires_at/revives stale; zero rows => drop local generation; stale owner -> auth_required, fresh arm required; remote live owner never preempted; GET state distinguishes DB liveness metadata from locally available authorization",
+  "ticks_api": "tenant/Source-permission protected; default 50, max 200; private-field-free DTOs; persists scheduled_for, claimed_at, decision/reason, optional Run link; bounded strings; aggregate skip reasons"
+ },
+ "acceptance_gates": {
+  "G1": "real automatic REST 151/hash/lineage",
+  "G2": "two instances same slot <=1 Run + tick association",
+  "G3": "enable/disable/modify/clear semantics",
+  "G4": "short JWT/renew/cross-instance/restart auth_required",
+  "G5": "shared Source quota/interval/local full/Stop/other Source progress",
+  "G6": "tenant same-sub dual-Org/personal/parent mismatch/role",
+  "G7": "migration/restart old state; finally disable owned schedule + prove stopped",
+  "G8": "evidence honesty: original values/rc/hash, failures and skips preserved"
+ },
+ "scope_boundaries": {
+  "adr_0025": "explicit limited business-platform exception: only current REST snapshot batch Sync path; media-set scheduling dormant; NOT the platform Temporal migration",
+  "frozen": "P1/P21/P22/P23 tools+results untouched; 4 controlled rows + legacy b6ec49ab B/C never cancelled/rewritten; fixture never restarted"
+ },
+ "formal_execution": {
+  "authority": "handoffs/2026-11-14-p24/formal-execution-contract.md + root locked-fallback selection 2026-11-14",
+  "driver": "full LOCKED FALLBACK ordered: preflight baseline fingerprints unit pg-evidence(import-or-exec) build swap p1pre9 p23-adapted p22full scheduler-window pre-auxdown-gates aux-down persist-pre pre-restart-gates restart3(stop120/start/health/verify) reread p1post9 [ABC LAST WRITE] p21abc postfacts persist-post source-freeze standalone finalize; smoke invoked with --confirm-http --official --with-restart-probe; entry rc0 fix verified by pure mock (0/5/7)",
+  "q_adaptation": "p23_q_guard_adapter_p24.py: EXACT whole-argv substitution (python3 -I <p23 guard> <exact env dir> connector) incl. cmd[3] dir equality; ANY other old-guard reference rejected; full stdout/stderr + sha256 archived; exactly-one required; exception-safe record; RELEASED_FOR_EXECUTION=false until root review",
+  "cohort_gate": "cohort_gate_p24.py SHA-bound (future separately-reviewed round only; never auto-selected by full)",
+  "pg_runner": "run_pg_isolated_p24.sh owned by PG GLM; modes up/new-normal/new-race/unified; driver expects PG_LOG=/PG_RC_FILE= stdout markers; version gate returns 2 on toolchain mismatch; dev PG never goes through P1/run.sh",
+  "postfacts": "LOCKED FALLBACK attempt-bound: collect_postfacts_p24.py -> ONE fresh attempt dir + attempt-manifest (sha/rc per file + result-input sha bindings); verify_postfacts_p24.py UNCONDITIONALLY exact-6 unique (old4 x27 unchanged + diff EXACTLY 2 bound by FULL parent chain: 9 chain keys, org triple, run_owner/requested==owner per frozen P21 actor; B lease<started by REAL datetime; C bound to logical_path UUID + result COMMITTED/lineage/hash + LIVE target re-proof); old4 pre-boot with new2 reported post-boot; owned final state by FRESH SQL (disabled/NULL/bindings match, zero grants, GLOBAL nonempty-cron == owned cron set)",
+  "source_freeze": "source_hash_p24.py content hash (3 services Go/SQL + libs/scheduling-cron + go.mod/go.sum) recorded pre-build and post-acceptance must be EQUAL; actual 5 image IDs re-checked vs built set",
+  "pg_binding_import": "05-pg-import binds /private/tmp/openfoundry-p24-repair-evidence/pg/PG_FINAL_BINDING.json (rc0 executed): verifies per-round raw/rc sha+rc0+go version+no source drift, runs the REAL exact checker over imported logs (new-only x2 + unified72), records optional 5 external SKIPs unverified and preserved failures; identical-content PG tests are NOT rerun",
+  "source_freeze_authority": "source_hash_p24.py combined over 373 files == 8cd25d4220a6bdae843a693e1c1afa2537f5902a31e3e970704db6386b (driver pre anchor == PG binding == current frozen source, all three verified equal 2026-11-14)"
+ }
+}

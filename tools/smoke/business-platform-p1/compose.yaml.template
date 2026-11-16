@@ -1,0 +1,180 @@
+# Rendered by tools/smoke/business-platform-p1/run.sh setup into
+# /private/tmp/openfoundry-platform-p1-<suffix>/compose.yaml.
+# __OF_ROOT__ is replaced with the repo root; secrets come from the
+# generated .env next to this file (never committed).
+#
+# Port plan (host 127.0.0.1): dataset 17078, pipeline 17081,
+# connector 17088, fixture 17090 — isolated from the 16078/16081 and
+# 15078/15081 environments. Postgres is not published to the host.
+name: openfoundry-platform-p1-q3v9
+
+services:
+  postgres:
+    networks:
+      p1net: {}
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: datasets
+      POSTGRES_USER: openfoundry
+      POSTGRES_PASSWORD: ${OF_P1_PG_PASSWORD:?}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01-create-dbs.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "openfoundry", "-d", "datasets"]
+      interval: 2s
+      timeout: 3s
+      retries: 35
+
+  fixture:
+    image: python:3.12-alpine
+    volumes:
+      - __OF_ROOT__/tools/smoke/business-platform-p1/fixtures/rest_source.py:/srv/rest_source.py:ro
+    command: ["python3", "-I", "/srv/rest_source.py", "0.0.0.0", "8090"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8090/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      p1net:
+        ipv4_address: 172.28.9.9
+    ports:
+      - "127.0.0.1:17090:8090"
+
+  dataset:
+    networks:
+      p1net: {}
+    build:
+      context: "__OF_ROOT__"
+      dockerfile: __OF_ROOT__/tools/smoke/business-platform-p1/service.Dockerfile
+      args:
+        SERVICE_NAME: dataset-versioning-service
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50078
+      DATABASE_URL: postgres://openfoundry:${OF_P1_PG_PASSWORD:?}@postgres:5432/datasets
+      JWT_SECRET: ${OF_P1_JWT_SECRET:?}
+      # Presigned local-fs URLs must be reachable from the host smoke run.
+      DATASET_FILES_BASE_URL: http://127.0.0.1:17078
+    volumes:
+      # Local backing FS writes under the process CWD (RootDir empty ->
+      # "."), which is /home/nonroot for the distroless nonroot image.
+      # A named volume here makes artifact BYTES survive container
+      # recreation (metadata always lived in the Postgres volume).
+      # BaseDir/key prefix and DB are untouched.
+      - dataset-files:/home/nonroot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:17078:50078"
+
+  pipeline:
+    networks:
+      p1net: {}
+    build:
+      context: "__OF_ROOT__"
+      dockerfile: __OF_ROOT__/tools/smoke/business-platform-p1/service.Dockerfile
+      args:
+        SERVICE_NAME: pipeline-build-service
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50081
+      DATABASE_URL: postgres://openfoundry:${OF_P1_PG_PASSWORD:?}@postgres:5432/pipelines
+      JWT_SECRET: ${OF_P1_JWT_SECRET:?}
+      DATASET_SERVICE_URL: http://dataset:50078
+      # Fallback service token (no org claim). P1 requires request-scoped
+      # pipelines to forward the caller identity; if the implementation
+      # still uses this bearer it must remain a personal-domain token.
+      DATASET_SERVICE_BEARER: ${OF_P1_SERVICE_JWT:?}
+      STORAGE_BACKEND: local
+      DATA_DIR: /tmp/openfoundry-pipeline
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dataset:
+        condition: service_started
+    ports:
+      - "127.0.0.1:17081:50081"
+
+  connector:
+    networks:
+      p1net: {}
+    build:
+      context: "__OF_ROOT__"
+      dockerfile: __OF_ROOT__/tools/smoke/business-platform-p1/service.Dockerfile
+      args:
+        SERVICE_NAME: connector-management-service
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50088
+      DATABASE_URL: postgres://openfoundry:${OF_P1_PG_PASSWORD:?}@postgres:5432/connectors
+      JWT_SECRET: ${OF_P1_JWT_SECRET:?}
+      DATASET_SERVICE_URL: http://dataset:50078
+      CREDENTIAL_ENCRYPTION_KEY: ${OF_P1_CREDENTIAL_KEY:?}
+      # Global host/private boundary stays in force: the synthetic source
+      # is reached by HOSTNAME and the per-connection egress override from
+      # the Source config is what authorizes plain HTTP to it (Source
+      # session's egress fix — verified by the final acceptance). The
+      # earlier fixed-IP workaround is history only.
+      ALLOW_PRIVATE_NETWORK_EGRESS: "true"
+      ALLOWED_EGRESS_HOSTS: fixture
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dataset:
+        condition: service_started
+    ports:
+      - "127.0.0.1:17088:50088"
+
+  unit-tests:
+    networks:
+      p1net: {}
+    build:
+      context: "__OF_ROOT__"
+      dockerfile: __OF_ROOT__/tools/smoke/business-platform-p1/tests.Dockerfile
+      target: test-runner
+    # tests execute at RUN time against the bind-mounted source tree
+    volumes:
+      - __OF_ROOT__:/workspace:ro
+      - go-build-cache:/root/.cache/go-build
+    command: ["unit"]
+    profiles: ["tests"]
+
+  integration-tests:
+    networks:
+      p1net: {}
+    build:
+      context: "__OF_ROOT__"
+      dockerfile: __OF_ROOT__/tools/smoke/business-platform-p1/tests.Dockerfile
+      target: test-runner
+    volumes:
+      - __OF_ROOT__:/workspace:ro
+      - go-build-cache:/root/.cache/go-build
+    environment:
+      # Runtime DSNs through the compose network — no docker socket, no
+      # testcontainers: every integration suite creates/uses databases on
+      # the compose Postgres. migrate_fresh is reset by run.sh
+      # migrate-tests (empty-DB evidence); pipeline and connector suites
+      # create their own fresh databases from the maintenance DB.
+      DATASET_DB_DSN: postgres://openfoundry:${OF_P1_PG_PASSWORD:?}@postgres:5432/migrate_fresh
+      PIPELINE_DB_DSN: postgres://openfoundry:${OF_P1_PG_PASSWORD:?}@postgres:5432/postgres
+      CONNECTOR_DB_DSN: postgres://openfoundry:${OF_P1_PG_PASSWORD:?}@postgres:5432/postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["integration"]
+    profiles: ["tests"]
+
+volumes:
+  dataset-files:
+  postgres-data:
+  go-build-cache:
+
+networks:
+  p1net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.9.0/24

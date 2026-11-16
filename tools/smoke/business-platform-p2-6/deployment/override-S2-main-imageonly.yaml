@@ -1,0 +1,10 @@
+{
+  "services": {
+    "dataset": {
+      "image": "sha256:521f1712c4a0ec239ce0c33411fcf93082fb87312569def2a6a5dac2dc3e95c2"
+    },
+    "connector": {
+      "image": "sha256:ea8244f03a3b07e72b77bd7539e13ae1d39cf91bf90a26d01675f008c64685d6"
+    }
+  }
+}
