@@ -19,7 +19,7 @@
 | P0 | 基线与任务契约 | 保留文件 I/O 验收记录，记录租户兼容策略和数据发布语义 | 原 CSV→Pipeline→下载回归通过，实施范围和未验证项可查 | 基线已完成，计划已建立 |
 | P1 | 租户隔离和真实同步首轮 | P1.1–P1.5 | 两个组织隔离，通过真实分页 REST 获取数据并发布可下载 Dataset，Pipeline 能消费产物 | 已完成当前范围：60 包单测、26 项必需 PG16、HTTP 9/9、零未覆盖；含 Build/Job 分库流程及文件卷重建/重启回归 |
 | P2 | 可恢复的异步同步 | 任务租约、取消、重试、定时调度、增量断点、幂等发布和故障恢复 | 重启后恢复，重复投递无重复发布，发布失败不推进断点，任务超时与取消可观察 | P2.1–P2.6 已完成当前范围；P2.6 验收8/8，最终封存、完整独立离线复验与三处临时副本清理均已通过，P2 当前范围完成 |
-| P3 | 文件和外部推送扩展 | Excel、多文件解析配置、标准 push/manifest、爬虫结果接入、质量规则 | 多 sheet 和类型保真，错误行可追溯，外部任务重传可恢复，全部经过相同租户与发布边界 | 后续阶段，未启动 |
+| P3 | 文件和外部推送扩展 | Excel、多文件解析配置、标准 push/manifest、爬虫结果接入、质量规则 | 多 sheet 和类型保真，错误行可追溯，外部任务重传可恢复，全部经过相同租户与发布边界 | P3.1 已完成（后端/网关/前端/真实浏览器验收）；P3.2 及之后未启动 |
 | P4 | 正式批量处理与查询 | 对象存储、批次读取、产物 manifest、输入版本固定、查询引擎及统一发布 | 首档十万行多文件基准全量正确，输入固定可重现，内存有界，失败不暴露半成品，容量记录可复查 | 依赖 P2/P3，待实施 |
 | P5 | 双行业与客户配置复用 | 电商方案、B2B 贸易方案，版本化模型/映射/流程/页面，客户安装与升级 | 同平台运行两个行业、两个客户，复用内核，分别绑定数据源与配置，独立升级与审计 | 依赖 P1–P4，待实施 |
 
@@ -469,9 +469,27 @@ S2 的 P2.5 完整15项回归已通过；h1–h8中，h5依原契约仅作前序
 - [x] 租户/完整父链/权限、明文与 opaque checkpoint 安全、既有单测/race/PG 与 P1/P2.1–P2.5 相关 HTTP 回归通过。
 - [x] 旧九 Run/八 owner及封存投影无漂移；源码/镜像/真实退出码/秘密扫描/最终归档和完整包离线复验可独立核对；最终临时副本清理已通过，P2.6 验收8/8。
 
+## P3.1 Excel sheet/表头映射（已完成，2026-11-16）
+
+### 最终范围
+
+普通 Dataset 上传一个 .xlsx 工作簿：预创建入口 `POST /v1/datasets/imports/excel/inspect|preview`（JWT，无 dataset 边界）列出 worksheet（chart/dialog 排除）并按 sheet + 1-based 表头行（或无表头）+ 源列物理 index→唯一非空目标名映射完成服务端预览；`POST /v1/datasets/{rid}/excel/import`（写权限 + dataset.format=json 校验）重验证同一配置后规范化为 NDJSON（普通 Dataset format=json，不新增 format=excel），仅登记 .ndjson/.jsonl 为数据文件，原工作簿 SHA/文件名/配置/列/行数记入条目 metadata。Parser 为纯标准库有界 OOXML 实现（zip 中央目录预检、生效 ContentType 拒真实 VBA、坐标/重复/命名空间严格、ST_Xstring 单遍解码、公式仅取缓存且被映射列无缓存即拒、NDJSON 逐 cell 预算 1MiB 行/32MiB 总量与 rows 读端一致）。每次导入写入 UUID 唯一对象，file index 与 catalog 统计（size=Σ全部条目、row_count=Σ excel 条目精确计数）同事务发布，失败全回滚且仅留无害孤儿。/schema 与 /preview 默认从最新可读文件真实字节派生（TEXT/STRING、branch=null）；显式 branch 仅对 excel-import 数据集走与 /files/rows 相同的 committed 字节路径（失败即错误），旧非 Excel 数据集完整保留原 metadata/view 预览。UI：.xlsx 识别进入工作簿导入面板（sheet/header/mapping 配置、服务端预览、generation/abort/canSubmit 防护），非 xlsx 旧流程与 4 个旧 upload 调用方不变。
+
+### 关键验收（隔离 P31 fixture：PG16+DVS+edge-gateway 3931-3933，全部实测）
+
+- 后端：xlsximp 34 项单测、DVS 四包全绿、pipeline handler 全包绿；真实 excelize 生成多 sheet 中文工作簿（说明页/第 3 行表头/007/30 位编号/富文本/空单元格/无表头页）经网关 inspect→preview→create→import→/preview+/schema+/files/rows 三端列值一致；viewer 403、跨组织 404、无认证 401、非法配置 422；缺失 backing/坏 NDJSON 经真实 writer 稳定 422（typed error 回归）；发布阶段精确触发器注入后旧 index/字节/schema/rows/统计全不变仅孤儿 +1；同文件不同映射新 UUID 不覆盖；大 offset 空页；伪造 preview_rows 对默认读取无效且显式 branch 拒样本、index 查询失败 fail-closed 5xx；旧 Parquet metadata 预览与旧 CSV/NDJSON 上传完整兼容；真实 committed branch（committed NDJSON+view schema）可经 ?branch=main 读取并与默认 excel 读数互不混淆。
+- Pipeline：dataset_input 生产路径（execution 与实际 preview 入口）连隔离 DVS 读真实 NDJSON，两路径列值一致（env 门控集成测试实测 PASS，默认 skip 已记录）。
+- 前端与浏览器：UI worker 74 unit + 7 mock UI + 2 真实数据 API 浏览器 workflow 通过；Root ego-browser 终验通过（dataset 56c8d9eb-715e-4ade-997f-6800da83df80：订单表/header3/四 target→2 行 181B，刷新不变，长编号/007/中文/null 预览正确，schema 四 STRING 正确，旧 Excel aside 与假 Transactional 选项已隐藏）。
+
+### 边界与限制
+
+- 网关沿用既有租户请求配额：10MiB envelope（超出 413）；parser 文件上限 32MiB 仅 DVS 层直测，服务上传上限受网关配额约束。
+- 单 worksheet、表头行 1..100 或无表头、≤1000 数据行、≤256 目标列、≤512 源列宽、≤64 表；超出明确拒绝不截断。
+- 单元格一律 raw 字符串（富文本拼接、_xHHHH_ 解码、编号/长数字保真）；blank=null 为本轮固定行为，decimal/日期/时区/空值与标识符规则（P3.2）、.xls/.xlsm、多文件选择、外部批次上传、爬虫来源、质量报告与错误行隔离均未实施，属 P3 后续范围。
+
 ## 后续阶段的具体任务
 
-P2 的六项当前范围依次为任务租约与持久状态、可中断 worker、按 Source 限流、可观察定时调度、发布后推进断点、幂等重试与提交恢复；业务/runtime 验收已通过。验收、封存与临时副本清理均已通过，P2 已完成当前范围。P3 后续工作尚未启动。
+P2 的六项当前范围依次为任务租约与持久状态、可中断 worker、按 Source 限流、可观察定时调度、发布后推进断点、幂等重试与提交恢复；业务/runtime 验收已通过。验收、封存与临时副本清理均已通过，P2 已完成当前范围。P3.1 已完成（见上节）；P3.2 及之后未启动。
 
 P3 的任务依次为 Excel sheet/表头映射、decimal/日期/时区/空值与标识符规则、多文件选择、外部批次上传、爬虫来源和采集时间、质量报告与错误行隔离。每项通过普通上传或 push 入口验证。
 

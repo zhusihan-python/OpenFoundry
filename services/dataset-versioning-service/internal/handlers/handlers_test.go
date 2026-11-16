@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -223,6 +224,9 @@ type fakeStore struct {
 	permissions         map[uuid.UUID][]models.DatasetPermissionEdge
 	lineageLinks        map[uuid.UUID][]models.DatasetLineageLink
 	fileIndex           map[uuid.UUID][]models.DatasetFileIndexEntry
+	catalogStats        map[uuid.UUID][2]int64
+	failListFileIndex   bool
+	previewDataCalls    int
 	stagedFiles         map[uuid.UUID][]models.StageTransactionFile
 	views               map[uuid.UUID][]models.DatasetView
 	schemas             map[uuid.UUID]models.SchemaResponse
@@ -251,7 +255,7 @@ func newFakeStore(owner uuid.UUID) *fakeStore {
 		StoragePath: "s3://bucket/sales", OwnerID: owner, CurrentVersion: 1,
 		Tags: []string{}, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
-	return &fakeStore{datasets: []models.Dataset{ds}, versions: map[uuid.UUID][]models.DatasetVersion{}, branches: map[uuid.UUID][]models.DatasetBranch{}, files: map[uuid.UUID][]models.DatasetFile{}, transactions: map[uuid.UUID]string{}, runtimeTransactions: map[uuid.UUID]models.RuntimeTransaction{}, markings: map[uuid.UUID][]models.EffectiveMarking{}, permissions: map[uuid.UUID][]models.DatasetPermissionEdge{}, lineageLinks: map[uuid.UUID][]models.DatasetLineageLink{}, fileIndex: map[uuid.UUID][]models.DatasetFileIndexEntry{}, stagedFiles: map[uuid.UUID][]models.StageTransactionFile{}, views: map[uuid.UUID][]models.DatasetView{}, schemas: map[uuid.UUID]models.SchemaResponse{}, quality: map[uuid.UUID]*models.DatasetQualityResponse{}, health: map[string]*models.DatasetHealth{}, lint: map[uuid.UUID]*models.DatasetLintSummary{}, fallbacks: map[uuid.UUID][]string{}}
+	return &fakeStore{datasets: []models.Dataset{ds}, versions: map[uuid.UUID][]models.DatasetVersion{}, branches: map[uuid.UUID][]models.DatasetBranch{}, files: map[uuid.UUID][]models.DatasetFile{}, transactions: map[uuid.UUID]string{}, runtimeTransactions: map[uuid.UUID]models.RuntimeTransaction{}, markings: map[uuid.UUID][]models.EffectiveMarking{}, permissions: map[uuid.UUID][]models.DatasetPermissionEdge{}, lineageLinks: map[uuid.UUID][]models.DatasetLineageLink{}, fileIndex: map[uuid.UUID][]models.DatasetFileIndexEntry{}, catalogStats: map[uuid.UUID][2]int64{}, stagedFiles: map[uuid.UUID][]models.StageTransactionFile{}, views: map[uuid.UUID][]models.DatasetView{}, schemas: map[uuid.UUID]models.SchemaResponse{}, quality: map[uuid.UUID]*models.DatasetQualityResponse{}, health: map[string]*models.DatasetHealth{}, lint: map[uuid.UUID]*models.DatasetLintSummary{}, fallbacks: map[uuid.UUID][]string{}}
 }
 
 func (f *fakeStore) ListDatasets(_ context.Context, ownerID *uuid.UUID, _ int) ([]models.Dataset, error) {
@@ -677,7 +681,10 @@ func (f *fakeStore) ReplaceDatasetLineageLinks(_ context.Context, datasetID uuid
 	f.lineageLinks[datasetID] = out
 	return nil
 }
-func (f *fakeStore) ListDatasetFileIndex(_ context.Context, datasetID uuid.UUID) ([]models.DatasetFileIndexEntry, error) {
+func (f *fakeStore) ListDatasetFileIndex(ctx context.Context, datasetID uuid.UUID) ([]models.DatasetFileIndexEntry, error) {
+	if f.failListFileIndex {
+		return nil, errors.New("injected index lookup failure")
+	}
 	return f.fileIndex[datasetID], nil
 }
 func (f *fakeStore) ReplaceDatasetFileIndex(_ context.Context, datasetID uuid.UUID, files []models.PutDatasetFileIndexEntry) error {
@@ -694,6 +701,17 @@ func (f *fakeStore) ReplaceDatasetFileIndex(_ context.Context, datasetID uuid.UU
 		out = append(out, models.DatasetFileIndexEntry{ID: uuid.New(), DatasetID: datasetID, Path: file.Path, StoragePath: file.StoragePath, EntryType: entryType, SizeBytes: size, ContentType: file.ContentType, Metadata: file.Metadata, LastModified: file.LastModified, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
 	}
 	f.fileIndex[datasetID] = out
+	return nil
+}
+
+// ReplaceDatasetFileIndexWithStats mirrors the production method for the
+// Excel import path: the fake applies the same index replacement and
+// remembers the catalog stats it was asked to publish atomically.
+func (f *fakeStore) ReplaceDatasetFileIndexWithStats(ctx context.Context, datasetID uuid.UUID, files []models.PutDatasetFileIndexEntry, rowCount, sizeBytes int64) error {
+	if err := f.ReplaceDatasetFileIndex(ctx, datasetID, files); err != nil {
+		return err
+	}
+	f.catalogStats[datasetID] = [2]int64{rowCount, sizeBytes}
 	return nil
 }
 
@@ -1081,6 +1099,7 @@ func (f *fakeStore) GetCurrentSchema(ctx context.Context, datasetID uuid.UUID, b
 	return nil, nil
 }
 func (f *fakeStore) PreviewData(_ context.Context, datasetID uuid.UUID, _ *uuid.UUID, q models.PreviewQuery) (*models.PreviewDataResponse, error) {
+	f.previewDataCalls++
 	limit := 100
 	if q.Limit != nil {
 		limit = *q.Limit

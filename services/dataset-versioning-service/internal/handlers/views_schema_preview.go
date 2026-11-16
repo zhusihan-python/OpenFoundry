@@ -325,6 +325,42 @@ func (h *Handlers) previewData(w http.ResponseWriter, r *http.Request, scopedVie
 		}
 		viewID = &id
 	}
+	// Excel-imported datasets serve preview from the same real NDJSON bytes
+	// the rows reader and pipelines consume; anything else falls through to
+	// the existing path. A newer non-Excel file is never skipped in favor of
+	// an older import, and explicit view previews or an explicitly requested
+	// branch never take this branch.
+	if !scopedView {
+		if branch := r.URL.Query().Get("branch"); branch == "" {
+			if out, handled, err := h.excelImportedPreview(r.Context(), datasetID, q); err != nil {
+				writeDatasetRowsError(w, err)
+				return
+			} else if handled {
+				writeJSON(w, http.StatusOK, out)
+				return
+			}
+		} else {
+			// The committed-branch byte reader applies only to Excel-imported
+			// datasets (the P3.1 surface); legacy non-Excel datasets keep the
+			// original metadata/view preview. An index lookup error fails the
+			// request immediately — never a fallback that could serve global
+			// metadata samples for a dataset whose scope is unknown.
+			excelScoped, derr := h.datasetIsExcelImported(r.Context(), datasetID)
+			if derr != nil {
+				writeJSONErr(w, http.StatusInternalServerError, "failed to load dataset file index")
+				return
+			}
+			if excelScoped {
+				out, err := h.branchRegisteredPreview(r.Context(), datasetID, branch, q)
+				if err != nil {
+					writeDatasetRowsError(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, out)
+				return
+			}
+		}
+	}
 	out, err := h.Repo.PreviewData(r.Context(), datasetID, viewID, q)
 	if err != nil {
 		writeViewError(w, err)
@@ -341,6 +377,18 @@ func (h *Handlers) GetCurrentSchema(w http.ResponseWriter, r *http.Request) {
 	branch := r.URL.Query().Get("branch")
 	if branch == "" {
 		branch = "master"
+	}
+	// Without an explicitly requested branch, Excel-imported datasets derive
+	// their schema from the same real NDJSON bytes as preview and pipelines
+	// (format TEXT). An explicit ?branch= keeps the committed-view semantics.
+	if r.URL.Query().Get("branch") == "" {
+		if schema, handled, err := h.excelImportedSchema(r.Context(), datasetID); err != nil {
+			writeDatasetRowsError(w, err)
+			return
+		} else if handled {
+			writeJSON(w, http.StatusOK, schema)
+			return
+		}
 	}
 	schema, err := h.Repo.GetCurrentSchema(r.Context(), datasetID, branch)
 	if err != nil {

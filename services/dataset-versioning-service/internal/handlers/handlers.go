@@ -61,6 +61,7 @@ type Store interface {
 	ReplaceDatasetLineageLinks(ctx context.Context, datasetID uuid.UUID, links []models.PutDatasetLineageLink) error
 	ListDatasetFileIndex(ctx context.Context, datasetID uuid.UUID) ([]models.DatasetFileIndexEntry, error)
 	ReplaceDatasetFileIndex(ctx context.Context, datasetID uuid.UUID, files []models.PutDatasetFileIndexEntry) error
+	ReplaceDatasetFileIndexWithStats(ctx context.Context, datasetID uuid.UUID, files []models.PutDatasetFileIndexEntry, rowCount, sizeBytes int64) error
 	ListActiveRuntimeBranches(ctx context.Context, datasetID uuid.UUID) ([]models.RuntimeBranch, error)
 	CreateRuntimeBranch(ctx context.Context, datasetID uuid.UUID, body *models.CreateBranchBody, actor uuid.UUID) (*models.RuntimeBranch, error)
 	GetRuntimeBranch(ctx context.Context, datasetID uuid.UUID, branch string) (*models.RuntimeBranch, error)

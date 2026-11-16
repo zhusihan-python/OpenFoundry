@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent, FormEvent, ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import { createDataset, uploadData } from '@/lib/api/datasets';
+import { createDataset, importExcelWorkbook, uploadData } from '@/lib/api/datasets';
+import { ExcelImportPanel, type ExcelImportPanelState } from '@/lib/components/dataset/ExcelImportPanel';
 import { Glyph } from '@/lib/components/ui/Glyph';
 
 type DatasetFormat = 'parquet' | 'csv' | 'json';
@@ -24,7 +25,7 @@ interface SchemaInference {
   warnings: string[];
 }
 
-const ACCEPTED_EXTENSIONS = '.parquet,.csv,.json,.jsonl,.tsv';
+const ACCEPTED_EXTENSIONS = '.parquet,.csv,.json,.jsonl,.tsv,.xlsx';
 const MAX_SAMPLE_BYTES = 256 * 1024;
 
 const FORMAT_OPTIONS: Array<{ value: DatasetFormat; label: string }> = [
@@ -69,12 +70,22 @@ export function DatasetUploadPage() {
   const [logicalPath, setLogicalPath] = useState('');
   const [writeMode, setWriteMode] = useState<WriteMode>('transactionless');
   const [file, setFile] = useState<File | null>(null);
+  // Bumped on every staged-file change. The Excel panel is keyed by this
+  // revision, not by file metadata: two different Files with identical
+  // name/size/mtime must never reuse the previous panel state (inspect,
+  // mapping, or a late validation response for the old bytes).
+  const [fileRevision, setFileRevision] = useState(0);
   const [inference, setInference] = useState<SchemaInference | null>(null);
   const [inferenceBusy, setInferenceBusy] = useState(false);
+  const [excelState, setExcelState] = useState<ExcelImportPanelState>({ busy: false, validatedConfig: null });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const inferenceRun = useRef(0);
   const navigate = useNavigate();
+
+  const handleExcelState = useCallback((next: ExcelImportPanelState) => {
+    setExcelState(next);
+  }, []);
 
   const tagsList = useMemo(
     () => tags.split(',').map((tag) => tag.trim()).filter(Boolean),
@@ -108,8 +119,24 @@ export function DatasetUploadPage() {
   }
 
   function handleFile(nextFile: File | null) {
+    if (nextFile) {
+      const lowerName = nextFile.name.toLowerCase();
+      // P3.1 accepts plain .xlsx only; legacy .xls and macro-enabled .xlsm
+      // must not silently fall through to the default Parquet flow.
+      if (lowerName.endsWith('.xls') || lowerName.endsWith('.xlsm')) {
+        setError('Only plain .xlsx workbooks are supported. Save the file as .xlsx and try again (.xls/.xlsm are rejected).');
+        return;
+      }
+    }
+    setError('');
     setFile(nextFile);
+    setFileRevision((revision) => revision + 1);
+    // Retire any in-flight local inference (e.g. a CSV sample) so a late
+    // return cannot leak the previous file's columns into the Excel flow.
+    inferenceRun.current += 1;
     setInference(null);
+    setInferenceBusy(false);
+    setExcelState({ busy: false, validatedConfig: null });
     if (!nextFile) {
       setLogicalPath('');
       return;
@@ -117,11 +144,13 @@ export function DatasetUploadPage() {
 
     const detectedFormat = detectFormat(nextFile);
     setFormat(detectedFormat);
-    setLogicalPath(nextFile.name);
+    setLogicalPath(isExcelWorkbook(nextFile) ? `${nextFile.name.replace(/\.[^.]+$/, '')}.ndjson` : nextFile.name);
     if (!name.trim()) {
       setName(datasetNameFromFile(nextFile.name));
     }
-    void inferSelectedFile(nextFile, detectedFormat);
+    if (!isExcelWorkbook(nextFile)) {
+      void inferSelectedFile(nextFile, detectedFormat);
+    }
   }
 
   function handleFormat(nextFormat: DatasetFormat) {
@@ -137,6 +166,7 @@ export function DatasetUploadPage() {
 
     const trimmedName = name.trim();
     const trimmedPath = logicalPath.trim();
+    const excelFile = file !== null && isExcelWorkbook(file);
     if (!trimmedName) {
       setError('Dataset name is required.');
       return;
@@ -149,16 +179,29 @@ export function DatasetUploadPage() {
       setError('Dataset file path is required.');
       return;
     }
+    if (excelFile && !/\.(ndjson|jsonl)$/i.test(trimmedPath)) {
+      setError('Excel imports write normalized NDJSON; the file path must end with .ndjson or .jsonl.');
+      return;
+    }
+    if (excelFile && (!excelState.validatedConfig || excelState.busy)) {
+      setError('Validate the Excel mapping on the server before uploading.');
+      return;
+    }
 
     setBusy(true);
     try {
       const ds = await createDataset({
         name: trimmedName,
         description: description.trim() || undefined,
-        format,
+        // Excel imports normalize to NDJSON, so the dataset must be json.
+        format: excelFile ? 'json' : format,
         tags: tagsList,
       });
-      await uploadData(ds.id, file, { logicalPath: trimmedPath });
+      if (excelFile && excelState.validatedConfig) {
+        await importExcelWorkbook(ds.id, file, excelState.validatedConfig, { logicalPath: trimmedPath });
+      } else {
+        await uploadData(ds.id, file, { logicalPath: trimmedPath });
+      }
       navigate(`/datasets/${ds.id}`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Upload failed');
@@ -167,7 +210,13 @@ export function DatasetUploadPage() {
     }
   }
 
-  const canSubmit = Boolean(file && name.trim() && logicalPath.trim() && !busy);
+  const excelFile = file !== null && isExcelWorkbook(file);
+  const excelPathOk = /\.(ndjson|jsonl)$/i.test(logicalPath.trim());
+  // Excel uploads additionally require a server-validated mapping and no
+  // in-flight parsing; other formats keep the original single-file flow.
+  const canSubmit = Boolean(file && name.trim() && logicalPath.trim() && !busy) && (
+    !excelFile || (Boolean(excelState.validatedConfig) && !excelState.busy && excelPathOk)
+  );
 
   return (
     <section className="of-page" style={{ display: 'grid', gap: 10 }}>
@@ -201,6 +250,16 @@ export function DatasetUploadPage() {
             <DatasetFileUpload file={file} disabled={busy} onFile={handleFile} />
           </section>
 
+          {excelFile && file && (
+            <ExcelImportPanel
+              key={`excel-${fileRevision}`}
+              file={file}
+              logicalPath={logicalPath}
+              disabled={busy}
+              onStateChange={handleExcelState}
+            />
+          )}
+
           <section className="of-panel" style={{ padding: 12, display: 'grid', gap: 12 }}>
             <SectionTitle index={2} title="Configure dataset" />
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 10 }}>
@@ -211,13 +270,24 @@ export function DatasetUploadPage() {
                 <input value={logicalPath} onChange={(e) => setLogicalPath(e.target.value)} required className="of-input" placeholder="data/source.csv" />
               </Field>
             </div>
+            {excelFile && (
+              <p className="of-text-muted" style={{ margin: 0, fontSize: 12 }}>
+                Excel workbooks are imported as JSON (NDJSON); the path must end in .ndjson or .jsonl, and the
+                mapping must pass server validation before upload.
+              </p>
+            )}
             <Field label="Description">
               <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} className="of-input" style={{ minHeight: 72, resize: 'vertical' }} />
             </Field>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 10 }}>
               <Field label="Dataset format">
-                <select value={format} onChange={(e) => handleFormat(e.target.value as DatasetFormat)} className="of-input">
-                  {FORMAT_OPTIONS.map((option) => (
+                <select
+                  value={excelFile ? 'json' : format}
+                  onChange={(e) => handleFormat(e.target.value as DatasetFormat)}
+                  className="of-input"
+                  disabled={excelFile}
+                >
+                  {(excelFile ? FORMAT_OPTIONS.filter((option) => option.value === 'json') : FORMAT_OPTIONS).map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
@@ -233,6 +303,16 @@ export function DatasetUploadPage() {
             )}
           </section>
 
+          {excelFile ? (
+            <section className="of-panel" style={{ padding: 12, display: 'grid', gap: 8 }}>
+              <SectionTitle index={3} title="Import mode" />
+              <p className="of-text-muted" style={{ margin: 0, fontSize: 12 }}>
+                Excel imports apply directly on upload: the validated mapping is re-checked against the workbook on
+                the server and the NDJSON output is written in one step. Transactional staging options do not apply
+                to this flow.
+              </p>
+            </section>
+          ) : (
           <section className="of-panel" style={{ padding: 12, display: 'grid', gap: 12 }}>
             <SectionTitle index={3} title="Write mode" />
             <div style={{ display: 'grid', gap: 8 }}>
@@ -277,6 +357,7 @@ export function DatasetUploadPage() {
               </p>
             )}
           </section>
+          )}
 
           <footer className="of-toolbar" style={{ justifyContent: 'space-between', position: 'sticky', bottom: 0 }}>
             <div className="of-text-muted" style={{ fontSize: 12 }}>
@@ -291,7 +372,12 @@ export function DatasetUploadPage() {
           </footer>
         </div>
 
-        <SchemaInferencePanel file={file} inference={inference} busy={inferenceBusy} />
+        {/* The CSV/Parquet sample-inference aside stays out of the Excel flow:
+            server validation inside the mapping panel is the source of truth,
+            and a permanently "pending" local inference panel would mislead. */}
+        {!excelFile && (
+          <SchemaInferencePanel file={file} inference={inference} busy={inferenceBusy} />
+        )}
       </form>
     </section>
   );
@@ -472,7 +558,7 @@ function DatasetFileUpload({
           </span>
           <div>
             <p style={{ margin: 0, color: 'var(--text-strong)', fontWeight: 600 }}>Drop a data file here</p>
-            <p className="of-text-muted" style={{ margin: '2px 0 0', fontSize: 12 }}>Parquet, CSV, TSV, JSON, or JSONL</p>
+            <p className="of-text-muted" style={{ margin: '2px 0 0', fontSize: 12 }}>Parquet, CSV, TSV, JSON, JSONL, or XLSX (.xlsx only)</p>
           </div>
           <button type="button" className="of-button" onClick={() => inputRef.current?.click()} disabled={disabled}>
             Choose file
@@ -766,10 +852,17 @@ function detectFormat(file: File): DatasetFormat {
   const lower = file.name.toLowerCase();
   if (lower.endsWith('.csv') || lower.endsWith('.tsv')) return 'csv';
   if (lower.endsWith('.json') || lower.endsWith('.jsonl')) return 'json';
+  if (lower.endsWith('.xlsx')) return 'json';
   if (lower.endsWith('.parquet')) return 'parquet';
   if (file.type.includes('json')) return 'json';
   if (file.type.includes('csv') || file.type.includes('text')) return 'csv';
   return 'parquet';
+}
+
+// P3.1 Excel flow gate: extension-based (.xls/.xlsm are rejected earlier in
+// handleFile, so only .xlsx reaches the Excel import panel).
+function isExcelWorkbook(file: File): boolean {
+  return file.name.toLowerCase().endsWith('.xlsx');
 }
 
 function datasetNameFromFile(filename: string) {

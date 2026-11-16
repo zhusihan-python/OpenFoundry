@@ -166,6 +166,10 @@ func New(cfg *config.Config, jwt *authmw.JWTConfig, h *handlers.Handlers, m *obs
 		api.Get("/datasets/{rid}/storage-details", h.StorageDetails)
 		api.Post("/datasets/{rid}/upload", h.UploadData)
 
+		api.Post("/datasets/imports/excel/inspect", h.ExcelInspect)
+		api.Post("/datasets/imports/excel/preview", h.ExcelPreview)
+		api.Post("/datasets/{rid}/excel/import", h.ExcelImport)
+
 		api.Get("/datasets/{rid}/preview", h.PreviewDataset)
 		api.Get("/datasets/{rid}/schema", h.GetCurrentSchema)
 		api.Post("/datasets/{rid}/schema:validate", h.ValidateSchema)

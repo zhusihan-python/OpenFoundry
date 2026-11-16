@@ -1,4 +1,4 @@
-import api from './client';
+import api, { ApiError } from './client';
 
 export interface Dataset {
   id: string;
@@ -602,18 +602,74 @@ export function getDataset(id: string) {
   return api.get<Dataset>(`/datasets/${id}`);
 }
 
-export function previewDataset(datasetId: string, params?: { limit?: number; offset?: number; version?: number; branch?: string }) {
+// The preview backend now also emits the unified rows-reader shape
+// (`columns: string[]` + `rows: JSON[][]`, used by Excel imports and other
+// normalized NDJSON datasets) while older surfaces still return object rows
+// with `{name, ...}` columns. Normalize the positional shape into the
+// object shape every current consumer (VirtualizedPreviewTable, Fusion,
+// Contour, lineage, wizards) expects; object-shaped responses pass through.
+type DatasetPreviewWireResponse = Omit<DatasetPreviewResponse, 'columns' | 'rows'> & {
+  columns?: Array<string | NonNullable<DatasetPreviewResponse['columns']>[number]>;
+  rows?: Array<Record<string, unknown> | unknown[]>;
+};
+
+function normalizeDatasetPreviewResponse(
+  response: DatasetPreviewWireResponse,
+): DatasetPreviewResponse {
+  if (!Array.isArray(response.columns) || !Array.isArray(response.rows)) {
+    return response as DatasetPreviewResponse;
+  }
+  const columns = response.columns.map((column) =>
+    typeof column === 'string' ? { name: column } : column,
+  );
+  const hasPositionalRows =
+    response.rows.length > 0 && Array.isArray(response.rows[0]);
+  if (!hasPositionalRows || columns.length === 0) {
+    // Positional rows without column names cannot be keyed; leave them as-is
+    // rather than inventing names the server never sent.
+    return { ...response, columns } as DatasetPreviewResponse;
+  }
+  const names = columns.map((column) => column.name);
+  const rows = response.rows.map((row) =>
+    // Object.fromEntries defines own properties, so even a `__proto__` column
+    // name survives as data instead of hitting the Object.prototype setter.
+    Object.fromEntries(
+      names.map((name, position) => [
+        name,
+        Array.isArray(row) ? row[position] ?? null : row[name],
+      ]),
+    ) as Record<string, unknown>,
+  );
+  return { ...response, columns, rows } as DatasetPreviewResponse;
+}
+
+export async function previewDataset(datasetId: string, params?: { limit?: number; offset?: number; version?: number; branch?: string }) {
   const query = new URLSearchParams();
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.offset) query.set('offset', String(params.offset));
   if (params?.version !== undefined) query.set('version', String(params.version));
   if (params?.branch) query.set('branch', params.branch);
   const qs = query.toString();
-  return api.get<DatasetPreviewResponse>(`/datasets/${datasetId}/preview${qs ? `?${qs}` : ''}`);
+  const response = await api.get<DatasetPreviewWireResponse>(`/datasets/${datasetId}/preview${qs ? `?${qs}` : ''}`);
+  return normalizeDatasetPreviewResponse(response);
 }
 
-export function getDatasetSchema(datasetId: string) {
-  return api.get<DatasetSchema>(`/datasets/${datasetId}/schema`);
+// GET /datasets/{id}/schema: Excel-imported (and other normalized) datasets
+// return the wrapped `SchemaResponse` shape `{schema: {fields, file_format},
+// dataset_id, ...}` while the legacy route returned flat `{fields}`. Unwrap so
+// `schema.fields` keeps working for every existing consumer; flat payloads
+// pass through unchanged.
+export async function getDatasetSchema(datasetId: string): Promise<DatasetSchema> {
+  const response = await api.get<DatasetSchema | DatasetSchemaResponse>(`/datasets/${datasetId}/schema`);
+  if ('schema' in response && response.schema !== null && !('fields' in response)) {
+    return {
+      id: response.view_id ?? response.dataset_id,
+      dataset_id: response.dataset_id,
+      fields: response.schema.fields,
+      created_at: response.created_at,
+    };
+  }
+  return response as DatasetSchema;
 }
 
 export function getDatasetSchemaForBranch(datasetId: string, branch: string) {
@@ -1157,6 +1213,140 @@ export async function uploadData(datasetId: string, file: File, options: { logic
   });
   if (!response.ok) throw new Error('Upload failed');
   return response.json();
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// P3.1 — Excel (.xlsx) sheet/header mapping import.
+// Mirrors `services/dataset-versioning-service/internal/handlers/excel_import.go`
+// and `internal/xlsximp/parser.go`: inspect lists worksheets, preview
+// validates a config against the real workbook bytes (mapping:null performs
+// layout discovery), and import normalizes the sheet to NDJSON on a
+// format=json dataset. Multipart only — never set Content-Type manually so
+// the browser adds the boundary; errors are `{error: string}` JSON.
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface ExcelSheetInfo {
+  name: string;
+  index: number;
+}
+
+export interface ExcelInspectResult {
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  sheets: ExcelSheetInfo[];
+  max_data_rows: number;
+}
+
+export interface ExcelColumnMap {
+  source_index: number;
+  target: string;
+}
+
+/** `header_row` is the 1-based physical header row, or null when the sheet
+ *  has no header (the first row is data). `mapping: null` requests layout
+ *  discovery instead of validation. */
+export interface ExcelImportConfig {
+  sheet: string;
+  header_row: number | null;
+  mapping: ExcelColumnMap[] | null;
+}
+
+export interface ExcelSourceColumn {
+  index: number;
+  header: string;
+}
+
+export interface ExcelPreviewResult {
+  config: ExcelImportConfig;
+  source_columns: ExcelSourceColumn[];
+  columns: string[];
+  sample_rows: Array<Record<string, string | null>>;
+  row_count: number;
+}
+
+export interface ExcelImportResult {
+  path: string;
+  physical_uri: string;
+  size_bytes: number;
+  row_count: number;
+  columns: string[];
+  ndjson_sha256: string;
+  files: unknown[];
+}
+
+async function postExcelForm<T>(
+  path: string,
+  fields: {
+    file?: File;
+    config?: ExcelImportConfig;
+    sample_rows?: number;
+    logical_path?: string;
+  },
+  signal?: AbortSignal,
+): Promise<T> {
+  const formData = new FormData();
+  if (fields.file !== undefined) formData.append('file', fields.file);
+  if (fields.config !== undefined) formData.append('config', JSON.stringify(fields.config));
+  if (fields.sample_rows !== undefined) formData.append('sample_rows', String(fields.sample_rows));
+  if (fields.logical_path !== undefined && fields.logical_path !== '') {
+    formData.append('logical_path', fields.logical_path);
+  }
+  const headers: Record<string, string> = {};
+  const authHeader = api.authorizationHeaders().Authorization;
+  if (authHeader) {
+    headers.Authorization = authHeader;
+  }
+  const response = await fetch(`/api/v1${path}`, {
+    method: 'POST',
+    headers,
+    body: formData,
+    signal,
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const raw = payload && typeof payload === 'object'
+      ? (payload as { error?: unknown; message?: unknown }).error ?? (payload as { message?: unknown }).message
+      : null;
+    const message = typeof raw === 'string' && raw ? raw : `Excel request failed (${response.status})`;
+    throw new ApiError(response.status, message);
+  }
+  return response.json() as Promise<T>;
+}
+
+/** POST /datasets/imports/excel/inspect — worksheet list for mapping UIs. */
+export function inspectExcelWorkbook(file: File, signal?: AbortSignal) {
+  return postExcelForm<ExcelInspectResult>('/datasets/imports/excel/inspect', { file }, signal);
+}
+
+/** POST /datasets/imports/excel/preview — layout discovery (mapping:null) or
+ *  full config validation with canonical columns + sample rows. */
+export function previewExcelWorkbook(
+  file: File,
+  config: ExcelImportConfig,
+  options: { sampleRows?: number; signal?: AbortSignal } = {},
+) {
+  return postExcelForm<ExcelPreviewResult>(
+    '/datasets/imports/excel/preview',
+    { file, config, sample_rows: options.sampleRows },
+    options.signal,
+  );
+}
+
+/** POST /datasets/{id}/excel/import — 201 with the normalized NDJSON file
+ *  metadata. `logicalPath` must end with .ndjson/.jsonl; the backend derives
+ *  `<workbook-stem>.ndjson` when omitted. */
+export function importExcelWorkbook(
+  datasetId: string,
+  file: File,
+  config: ExcelImportConfig,
+  options: { logicalPath?: string; signal?: AbortSignal } = {},
+) {
+  return postExcelForm<ExcelImportResult>(
+    `/datasets/${encodeURIComponent(datasetId)}/excel/import`,
+    { file, config, logical_path: options.logicalPath },
+    options.signal,
+  );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
