@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ import (
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/adapters"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/handlers"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/models"
-	cmruntime "github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/runtime"
+	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/repo"
 )
 
 func TestConnectionJSONShape(t *testing.T) {
@@ -341,15 +342,101 @@ type fakeStore struct {
 	agents         []models.ConnectorAgent
 	webhookHistory map[uuid.UUID][]models.WebhookHistoryEntry
 	listenerEvents map[uuid.UUID][]models.InboundListenerEvent
+	credentials    map[uuid.UUID]map[string][]byte
+
+	// P2.1 lease emulation. mu guards runs + lease; fault flags inject the
+	// outcomes the handler must not paper over.
+	mu           sync.Mutex
+	lease        map[uuid.UUID]*fakeLease
+	claimFails   bool                                     // claim CAS returns nil (another execution won)
+	denyRenew    bool                                     // renew CAS returns nil (lease lost)
+	renewErr     error                                    // renew returns a storage error
+	renewHook    func(call int) (*repo.LeaseClaim, error) // per-call renew outcome override (call counts every renew)
+	renewCalls   int
+	checkResult  *bool // page-gate probe override (nil = derive from lease)
+	checkHook    func(call int) (bool, error)
+	checkCalls   int
+	denyGate     bool                                    // P2.2 publish gate refuses (fenced)
+	gateHook     func() (*repo.PublishGateResult, error) // per-call gate override (heartbeat ticks excluded)
+	gateCalls    int
+	denyComplete bool  // terminal CAS returns nil (fenced)
+	completeErr  error // terminal write returns a storage error
+	enqueueErr   error
+	// P2.2 test hooks. enqueueBlock gates EnqueueSyncRun (admission barrier,
+	// enqueueEntered signals arrival); cancelBlock gates RequestCancelSyncRun
+	// (stop-budget barrier); claimCalls counts claims for no-replay
+	// assertions.
+	enqueueBlock   chan struct{}
+	enqueueEntered chan struct{}
+	cancelBlock    chan struct{}
+	claimCalls     int
+	claimErr       error // claim COMMITS (row running + lease installed) but returns this error — ack loss
+}
+
+// connectionInTenant mirrors the repository tenant predicate: org callers see
+// only their organization's rows; personal callers see only NULL-org rows they
+// own.
+func (f *fakeStore) connectionInTenant(c *models.Connection, t repo.Tenant) bool {
+	if t.OrgID != nil {
+		return c.OrgID != nil && *c.OrgID == *t.OrgID
+	}
+	return c.OrgID == nil && c.OwnerID == t.OwnerID
+}
+
+// connectionForOwnerLegacy keeps the owner-only lookup the media-set sync
+// surfaces still use (out of the P1.2 first slice).
+func (f *fakeStore) connectionForOwnerLegacy(id, ownerID uuid.UUID) *models.Connection {
+	for i := range f.connections {
+		if f.connections[i].ID == id && f.connections[i].OwnerID == ownerID {
+			return &f.connections[i]
+		}
+	}
+	return nil
 }
 
 func newFakeStore(owner uuid.UUID) *fakeStore {
 	conn := models.Connection{ID: uuid.New(), Name: "pg", ConnectorType: "postgresql", Config: json.RawMessage(`{}`), Status: "connected", OwnerID: owner, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
-	return &fakeStore{connections: []models.Connection{conn}, syncJobs: map[uuid.UUID][]models.SyncJob{}, mediaSyncs: map[uuid.UUID][]models.MediaSetSync{}, runs: map[uuid.UUID][]models.SyncRun{}, links: map[string]models.VirtualTableSourceLink{}, vtables: map[string]models.VirtualTable{}, registrations: map[uuid.UUID][]models.ConnectionRegistration{}, policies: map[uuid.UUID][]models.SourcePolicyBindingResponse{}, agents: []models.ConnectorAgent{}, webhookHistory: map[uuid.UUID][]models.WebhookHistoryEntry{}, listenerEvents: map[uuid.UUID][]models.InboundListenerEvent{}}
+	return &fakeStore{connections: []models.Connection{conn}, syncJobs: map[uuid.UUID][]models.SyncJob{}, mediaSyncs: map[uuid.UUID][]models.MediaSetSync{}, runs: map[uuid.UUID][]models.SyncRun{}, links: map[string]models.VirtualTableSourceLink{}, vtables: map[string]models.VirtualTable{}, registrations: map[uuid.UUID][]models.ConnectionRegistration{}, policies: map[uuid.UUID][]models.SourcePolicyBindingResponse{}, agents: []models.ConnectorAgent{}, webhookHistory: map[uuid.UUID][]models.WebhookHistoryEntry{}, listenerEvents: map[uuid.UUID][]models.InboundListenerEvent{}, credentials: map[uuid.UUID]map[string][]byte{}, lease: map[uuid.UUID]*fakeLease{}}
 }
 
-func (f *fakeStore) ListConnections(_ context.Context, ownerID *uuid.UUID) ([]models.Connection, error) {
-	return f.connections, nil
+// fakeLease mirrors the persisted lease columns for the fake store.
+type fakeLease struct {
+	holder     string
+	token      string
+	generation int
+}
+
+// renewCallCount reports how many renew calls the hook has observed.
+func (f *fakeStore) renewCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.renewCalls
+}
+
+// findRunLocked locates a run; callers must hold f.mu.
+func (f *fakeStore) findRunLocked(runID uuid.UUID) (uuid.UUID, int, bool) {
+	for syncID, runs := range f.runs {
+		for i := range runs {
+			if runs[i].ID == runID {
+				return syncID, i, true
+			}
+		}
+	}
+	return uuid.Nil, -1, false
+}
+
+func (f *fakeStore) ListConnections(_ context.Context, t repo.Tenant, ownerFilter *uuid.UUID) ([]models.Connection, error) {
+	out := []models.Connection{}
+	for i := range f.connections {
+		if !f.connectionInTenant(&f.connections[i], t) {
+			continue
+		}
+		if ownerFilter != nil && f.connections[i].OwnerID != *ownerFilter {
+			continue
+		}
+		out = append(out, f.connections[i])
+	}
+	return out, nil
 }
 func (f *fakeStore) GetConnection(_ context.Context, id uuid.UUID) (*models.Connection, error) {
 	for i := range f.connections {
@@ -359,21 +446,27 @@ func (f *fakeStore) GetConnection(_ context.Context, id uuid.UUID) (*models.Conn
 	}
 	return nil, nil
 }
-func (f *fakeStore) GetConnectionForOwner(_ context.Context, id uuid.UUID, ownerID uuid.UUID) (*models.Connection, error) {
+func (f *fakeStore) GetConnectionForTenant(_ context.Context, id uuid.UUID, t repo.Tenant) (*models.Connection, error) {
 	for i := range f.connections {
-		if f.connections[i].ID == id && f.connections[i].OwnerID == ownerID {
+		if f.connections[i].ID == id && f.connectionInTenant(&f.connections[i], t) {
 			return &f.connections[i], nil
 		}
 	}
 	return nil, nil
 }
-func (f *fakeStore) CreateConnection(_ context.Context, body *models.CreateConnectionRequest, ownerID uuid.UUID) (*models.Connection, error) {
-	c := models.Connection{ID: uuid.New(), Name: body.Name, ConnectorType: body.ConnectorType, Config: body.Config, OwnerID: ownerID}
-	return &c, nil
+func (f *fakeStore) CreateConnection(_ context.Context, body *models.CreateConnectionRequest, t repo.Tenant) (*models.Connection, error) {
+	c := models.Connection{ID: uuid.New(), Name: body.Name, ConnectorType: body.ConnectorType, Config: body.Config, OwnerID: t.OwnerID, OrgID: t.OrgID, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	f.connections = append(f.connections, c)
+	return &f.connections[len(f.connections)-1], nil
 }
-func (f *fakeStore) UpdateConnection(_ context.Context, id uuid.UUID, body *models.UpdateConnectionRequest) (*models.Connection, error) {
+func (f *fakeStore) UpdateConnection(_ context.Context, id uuid.UUID, t repo.Tenant, body *models.UpdateConnectionRequest) (*models.Connection, error) {
 	for i := range f.connections {
-		if f.connections[i].ID == id {
+		if f.connections[i].ID == id && f.connectionInTenant(&f.connections[i], t) {
+			if len(body.Config) > 0 {
+				if active, _ := f.HasActiveSyncRunsForSource(context.Background(), id, t); active {
+					return nil, repo.ErrActiveRuns
+				}
+			}
 			if body.Status != nil {
 				f.connections[i].Status = *body.Status
 			}
@@ -388,19 +481,25 @@ func (f *fakeStore) UpdateConnection(_ context.Context, id uuid.UUID, body *mode
 	}
 	return nil, nil
 }
-func (f *fakeStore) DeleteConnection(_ context.Context, id uuid.UUID) (bool, error) {
-	c, _ := f.GetConnection(context.Background(), id)
-	return c != nil, nil
+func (f *fakeStore) DeleteConnection(_ context.Context, id uuid.UUID, t repo.Tenant) (bool, error) {
+	c, _ := f.GetConnectionForTenant(context.Background(), id, t)
+	if c == nil {
+		return false, nil
+	}
+	if active, _ := f.HasActiveSyncRunsForSource(context.Background(), id, t); active {
+		return false, repo.ErrActiveRuns
+	}
+	return true, nil
 }
-func (f *fakeStore) ListSyncJobs(_ context.Context, sourceID uuid.UUID, ownerID uuid.UUID) ([]models.SyncJob, error) {
-	if c, _ := f.GetConnectionForOwner(context.Background(), sourceID, ownerID); c == nil {
+func (f *fakeStore) ListSyncJobs(_ context.Context, sourceID uuid.UUID, t repo.Tenant) ([]models.SyncJob, error) {
+	if c, _ := f.GetConnectionForTenant(context.Background(), sourceID, t); c == nil {
 		return []models.SyncJob{}, nil
 	}
 	return f.syncJobs[sourceID], nil
 }
-func (f *fakeStore) GetSyncJob(_ context.Context, id uuid.UUID, ownerID uuid.UUID) (*models.SyncJob, error) {
+func (f *fakeStore) GetSyncJob(_ context.Context, id uuid.UUID, t repo.Tenant) (*models.SyncJob, error) {
 	for source, jobs := range f.syncJobs {
-		if c, _ := f.GetConnectionForOwner(context.Background(), source, ownerID); c == nil {
+		if c, _ := f.GetConnectionForTenant(context.Background(), source, t); c == nil {
 			continue
 		}
 		for i := range jobs {
@@ -411,21 +510,27 @@ func (f *fakeStore) GetSyncJob(_ context.Context, id uuid.UUID, ownerID uuid.UUI
 	}
 	return nil, nil
 }
-func (f *fakeStore) CreateSyncJob(_ context.Context, body *models.CreateSyncJobRequest, ownerID uuid.UUID) (*models.SyncJob, error) {
-	if c, _ := f.GetConnectionForOwner(context.Background(), body.SourceID, ownerID); c == nil {
+func (f *fakeStore) CreateSyncJob(_ context.Context, body *models.CreateSyncJobRequest, t repo.Tenant) (*models.SyncJob, error) {
+	c, _ := f.GetConnectionForTenant(context.Background(), body.SourceID, t)
+	if c == nil {
 		return nil, nil
 	}
-	j := models.SyncJob{ID: uuid.New(), SourceID: body.SourceID, OutputDatasetID: body.OutputDatasetID, FileGlob: body.FileGlob, ScheduleCron: body.ScheduleCron, CreatedAt: time.Now().UTC()}
+	j := models.SyncJob{ID: uuid.New(), SourceID: body.SourceID, OutputDatasetID: body.OutputDatasetID, FileGlob: body.FileGlob, ScheduleCron: body.ScheduleCron, OrgID: c.OrgID, CreatedAt: time.Now().UTC()}
 	f.syncJobs[body.SourceID] = append([]models.SyncJob{j}, f.syncJobs[body.SourceID]...)
-	return &j, nil
+	return &f.syncJobs[body.SourceID][0], nil
 }
-func (f *fakeStore) UpdateSyncJob(_ context.Context, id uuid.UUID, body *models.UpdateSyncJobRequest, ownerID uuid.UUID) (*models.SyncJob, error) {
+func (f *fakeStore) UpdateSyncJob(_ context.Context, id uuid.UUID, body *models.UpdateSyncJobRequest, t repo.Tenant) (*models.SyncJob, error) {
 	for source, jobs := range f.syncJobs {
-		if c, _ := f.GetConnectionForOwner(context.Background(), source, ownerID); c == nil {
+		if c, _ := f.GetConnectionForTenant(context.Background(), source, t); c == nil {
 			continue
 		}
 		for i := range jobs {
 			if jobs[i].ID == id {
+				if body.OutputDatasetID != nil && *body.OutputDatasetID != jobs[i].OutputDatasetID {
+					if active, _ := f.HasActiveSyncRunsForDef(context.Background(), id, t); active {
+						return nil, repo.ErrActiveRuns
+					}
+				}
 				if body.OutputDatasetID != nil {
 					jobs[i].OutputDatasetID = *body.OutputDatasetID
 				}
@@ -442,31 +547,52 @@ func (f *fakeStore) UpdateSyncJob(_ context.Context, id uuid.UUID, body *models.
 	}
 	return nil, nil
 }
-func (f *fakeStore) RunSyncJob(_ context.Context, id uuid.UUID, ownerID uuid.UUID) (*models.SyncRun, error) {
-	if _, err := f.GetSyncJob(context.Background(), id, ownerID); err != nil {
-		return nil, err
-	} else if _, _ = f.GetSyncJob(context.Background(), id, ownerID); false {
-	}
-	job, _ := f.GetSyncJob(context.Background(), id, ownerID)
+func (f *fakeStore) RunSyncJob(_ context.Context, id uuid.UUID, t repo.Tenant) (*models.SyncRun, error) {
+	job, _ := f.GetSyncJob(context.Background(), id, t)
 	if job == nil {
 		return nil, nil
 	}
-	run := models.SyncRun{ID: uuid.New(), SyncDefID: id, Status: "running", StartedAt: time.Now().UTC()}
+	run := models.SyncRun{ID: uuid.New(), SyncDefID: id, Status: "running", OrgID: job.OrgID, StartedAt: time.Now().UTC(), ControlMode: models.RunControlLegacy}
 	f.runs[id] = append(f.runs[id], run)
-	return &run, nil
+	return &f.runs[id][len(f.runs[id])-1], nil
 }
-func (f *fakeStore) ListSyncRuns(_ context.Context, syncID uuid.UUID, _ uuid.UUID) ([]models.SyncRun, error) {
-	return f.runs[syncID], nil
+func (f *fakeStore) ListSyncRuns(_ context.Context, syncID uuid.UUID, t repo.Tenant) ([]models.SyncRun, error) {
+	if job, _ := f.GetSyncJob(context.Background(), syncID, t); job == nil {
+		return []models.SyncRun{}, nil
+	}
+	out := []models.SyncRun{}
+	for _, run := range f.runs[syncID] {
+		if t.OrgID != nil {
+			if run.OrgID != nil && *run.OrgID == *t.OrgID {
+				out = append(out, run)
+			}
+			continue
+		}
+		if run.OrgID == nil {
+			out = append(out, run)
+		}
+	}
+	return out, nil
 }
-func (f *fakeStore) CompleteSyncRun(_ context.Context, runID uuid.UUID, _ uuid.UUID, status string, bytesWritten int64, filesWritten int64, errMsg *string, ingestJobID *string, datasetVersionID *uuid.UUID, contentHash *string) (*models.SyncRun, error) {
+
+// CompleteSyncRun mirrors the guarded legacy path: it can only close
+// lease-less running rows exactly once. Leased runs, pending tasks and
+// terminal rows are never mutated through it.
+func (f *fakeStore) CompleteSyncRun(_ context.Context, runID uuid.UUID, _ repo.Tenant, status string, bytesWritten int64, filesWritten int64, rowsWritten int64, errMsg *string, ingestJobID *string, datasetVersionID *uuid.UUID, contentHash *string) (*models.SyncRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for syncID, runs := range f.runs {
 		for i := range runs {
 			if runs[i].ID == runID {
+				if runs[i].Status != "running" || f.lease[runID] != nil {
+					return nil, nil
+				}
 				now := time.Now().UTC()
 				runs[i].Status = status
 				runs[i].FinishedAt = &now
 				runs[i].BytesWritten = bytesWritten
 				runs[i].FilesWritten = filesWritten
+				runs[i].RowsWritten = rowsWritten
 				runs[i].Error = errMsg
 				runs[i].IngestJobID = ingestJobID
 				runs[i].DatasetVersionID = datasetVersionID
@@ -477,6 +603,411 @@ func (f *fakeStore) CompleteSyncRun(_ context.Context, runID uuid.UUID, _ uuid.U
 		}
 	}
 	return nil, nil
+}
+
+func (f *fakeStore) EnqueueSyncRun(ctx context.Context, syncID, sourceID uuid.UUID, t repo.Tenant, requestedBy uuid.UUID) (*models.SyncRun, error) {
+	if f.enqueueErr != nil {
+		return nil, f.enqueueErr
+	}
+	if f.enqueueBlock != nil {
+		if f.enqueueEntered != nil {
+			select {
+			case f.enqueueEntered <- struct{}{}:
+			default:
+			}
+		}
+		select {
+		case <-f.enqueueBlock:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	job, _ := f.GetSyncJob(context.Background(), syncID, t)
+	if job == nil || job.SourceID != sourceID {
+		return nil, nil
+	}
+	owner := t.OwnerID
+	for i := range f.connections {
+		if f.connections[i].ID == sourceID {
+			owner = f.connections[i].OwnerID
+		}
+	}
+	requester := requestedBy
+	run := models.SyncRun{ID: uuid.New(), SyncDefID: syncID, Status: "pending", OrgID: job.OrgID, StartedAt: time.Now().UTC(), RequestedBy: &requester, OwnerID: &owner, ControlMode: models.RunControlControlled}
+	f.mu.Lock()
+	f.runs[syncID] = append(f.runs[syncID], run)
+	f.mu.Unlock()
+	return &run, nil
+}
+
+func (f *fakeStore) ClaimSyncRun(_ context.Context, runID uuid.UUID, _ repo.Tenant, holder, token string, _ time.Duration) (*repo.LeaseClaim, error) {
+	if f.claimFails {
+		return nil, nil
+	}
+	f.mu.Lock()
+	f.claimCalls++
+	defer f.mu.Unlock()
+	defID, idx, ok := f.findRunLocked(runID)
+	if !ok || f.runs[defID][idx].Status != "pending" {
+		return nil, nil
+	}
+	run := &f.runs[defID][idx]
+	run.Status = "running"
+	run.Attempt++
+	run.Generation++
+	run.StartedAt = time.Now().UTC()
+	f.lease[runID] = &fakeLease{holder: holder, token: token, generation: run.Generation}
+	if f.claimErr != nil {
+		// The claim committed; only the acknowledgement was lost.
+		return nil, f.claimErr
+	}
+	return &repo.LeaseClaim{Run: *run, Token: token, Holder: holder, ExpiresAt: time.Now().UTC().Add(time.Minute)}, nil
+}
+
+func (f *fakeStore) RenewSyncRunLease(_ context.Context, runID uuid.UUID, _ repo.Tenant, holder, token string, generation int, _ time.Duration) (*repo.LeaseClaim, error) {
+	// renewErr/denyRenew/renewHook are read under the lock: tests may flip
+	// them from other goroutines mid-run (page handlers, heartbeat races).
+	f.mu.Lock()
+	renewErr := f.renewErr
+	hook := f.renewHook
+	var call int
+	if hook != nil {
+		f.renewCalls++
+		call = f.renewCalls
+	}
+	f.mu.Unlock()
+	if hook != nil {
+		return hook(call)
+	}
+	if renewErr != nil {
+		return nil, renewErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.denyRenew {
+		return nil, nil
+	}
+	defID, idx, ok := f.findRunLocked(runID)
+	if !ok {
+		return nil, nil
+	}
+	run := &f.runs[defID][idx]
+	ls := f.lease[runID]
+	if run.Status != "running" || ls == nil || ls.holder != holder || ls.token != token || ls.generation != generation {
+		return nil, nil
+	}
+	return &repo.LeaseClaim{Run: *run, Token: token, Holder: holder, ExpiresAt: time.Now().UTC().Add(time.Minute)}, nil
+}
+
+func (f *fakeStore) CheckSyncRunLease(_ context.Context, runID uuid.UUID, _ repo.Tenant, holder, token string, generation int) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.checkHook != nil {
+		f.checkCalls++
+		return f.checkHook(f.checkCalls)
+	}
+	if f.checkResult != nil {
+		return *f.checkResult, nil
+	}
+	defID, idx, ok := f.findRunLocked(runID)
+	if !ok {
+		return false, nil
+	}
+	run := &f.runs[defID][idx]
+	ls := f.lease[runID]
+	return run.Status == "running" && ls != nil && ls.holder == holder && ls.token == token && ls.generation == generation, nil
+}
+
+func (f *fakeStore) CompleteLeasedSyncRun(_ context.Context, runID uuid.UUID, _ repo.Tenant, holder, token string, generation int, status string, bytesWritten int64, filesWritten int64, rowsWritten int64, errMsg *string, ingestJobID *string, datasetVersionID *uuid.UUID, contentHash *string) (*models.SyncRun, error) {
+	if f.completeErr != nil {
+		return nil, f.completeErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.denyComplete {
+		return nil, nil
+	}
+	defID, idx, ok := f.findRunLocked(runID)
+	if !ok {
+		return nil, nil
+	}
+	run := &f.runs[defID][idx]
+	ls := f.lease[runID]
+	if run.Status != "running" || ls == nil || ls.holder != holder || ls.token != token || ls.generation != generation {
+		return nil, nil
+	}
+	// P2.2 stage machine for controlled runs (mirrors the SQL guard):
+	// succeeded requires the gate entered and no cancel won; aborted requires
+	// the gate NOT entered; failed is unconstrained; legacy keeps P2.1.
+	if run.ControlMode != models.RunControlLegacy {
+		switch status {
+		case "succeeded":
+			if run.PublishEnteredAt == nil || run.CancelRequestedAt != nil {
+				return nil, nil
+			}
+		case "aborted":
+			if run.PublishEnteredAt != nil {
+				return nil, nil
+			}
+		}
+	}
+	now := time.Now().UTC()
+	run.Status = status
+	run.FinishedAt = &now
+	run.BytesWritten = bytesWritten
+	run.FilesWritten = filesWritten
+	run.RowsWritten = rowsWritten
+	run.Error = errMsg
+	run.IngestJobID = ingestJobID
+	run.DatasetVersionID = datasetVersionID
+	run.ContentHash = contentHash
+	return run, nil
+}
+
+// runTenantVisible mirrors syncRunPredicate for the fake rows: org tenants
+// see rows of their org; personal tenants see NULL-org rows THROUGH the
+// def→source owner chain (a NULL-org row alone proves nothing — the same
+// rule the SQL predicate enforces).
+func (f *fakeStore) runTenantVisible(run *models.SyncRun, t repo.Tenant) bool {
+	if t.OrgID != nil {
+		return run.OrgID != nil && *run.OrgID == *t.OrgID
+	}
+	if run.OrgID != nil {
+		return false
+	}
+	for source, jobs := range f.syncJobs {
+		for i := range jobs {
+			if jobs[i].ID != run.SyncDefID {
+				continue
+			}
+			for c := range f.connections {
+				if f.connections[c].ID == source && f.connections[c].OwnerID == t.OwnerID {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// leaseMaterialOK reports whether the fake row currently holds exactly this
+// lease.
+func (f *fakeStore) leaseMaterialOK(runID uuid.UUID, holder, token string, generation int) bool {
+	run := f.runByAnyID(runID)
+	if run == nil || run.Status != "running" {
+		return false
+	}
+	ls := f.lease[runID]
+	return ls != nil && ls.holder == holder && ls.token == token && ls.generation == generation
+}
+
+func (f *fakeStore) runByAnyID(runID uuid.UUID) *models.SyncRun {
+	for syncID := range f.runs {
+		for i := range f.runs[syncID] {
+			if f.runs[syncID][i].ID == runID {
+				return &f.runs[syncID][i]
+			}
+		}
+	}
+	return nil
+}
+
+// GetSyncRunForTenant mirrors the double-binding single-row read.
+func (f *fakeStore) GetSyncRunForTenant(_ context.Context, syncID, runID uuid.UUID, t repo.Tenant) (*models.SyncRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.runs[syncID] {
+		run := &f.runs[syncID][i]
+		if run.ID == runID && f.runTenantVisible(run, t) {
+			cp := *run
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
+// RequestCancelSyncRun mirrors the durable cancel state machine, including
+// first-request preservation (repeats return the row unchanged).
+func (f *fakeStore) RequestCancelSyncRun(ctx context.Context, runID, syncID uuid.UUID, t repo.Tenant, cancelledBy *uuid.UUID, cause string) (*repo.CancelResult, error) {
+	if f.cancelBlock != nil {
+		select {
+		case <-f.cancelBlock:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	idx := -1
+	for i := range f.runs[syncID] {
+		if f.runs[syncID][i].ID == runID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 || !f.runTenantVisible(&f.runs[syncID][idx], t) {
+		return &repo.CancelResult{Outcome: repo.CancelOutcomeNotVisible}, nil
+	}
+	run := &f.runs[syncID][idx]
+	cp := func() *models.SyncRun { c := *run; return &c }
+	if run.ControlMode != models.RunControlControlled {
+		return &repo.CancelResult{Outcome: repo.CancelOutcomeUnsupported, Run: cp()}, nil
+	}
+	switch run.Status {
+	case "succeeded", "failed", "aborted":
+		return &repo.CancelResult{Outcome: repo.CancelOutcomeAlreadyTerminal, Run: cp()}, nil
+	}
+	if run.PublishEnteredAt != nil {
+		return &repo.CancelResult{Outcome: repo.CancelOutcomeTooLate, Run: cp()}, nil
+	}
+	if run.Status == "pending" {
+		now := time.Now().UTC()
+		run.Status = "aborted"
+		run.FinishedAt = &now
+		msg := cause
+		run.Error = &msg
+		if run.CancelRequestedAt == nil {
+			run.CancelRequestedAt = &now
+			run.CancelledBy = cancelledBy
+		}
+		return &repo.CancelResult{Outcome: repo.CancelOutcomeAborted, Run: cp()}, nil
+	}
+	// running: first write only, verbatim repeats.
+	if run.CancelRequestedAt != nil {
+		return &repo.CancelResult{Outcome: repo.CancelOutcomeRequested, Run: cp()}, nil
+	}
+	now := time.Now().UTC()
+	run.CancelRequestedAt = &now
+	run.CancelledBy = cancelledBy
+	return &repo.CancelResult{Outcome: repo.CancelOutcomeRequested, Run: cp()}, nil
+}
+
+// P2.5 checkpoint surface: legacy tests carry no captured incremental runs,
+// so the incremental views answer nil and the incremental ops delegate to
+// their non-incremental twins (the handler only reaches them for
+// run.cp_mode != "" rows, which these fixtures never build).
+func (f *fakeStore) SyncRunIncrementalInfo(_ context.Context, _ uuid.UUID, _ repo.Tenant) (*models.RunIncrementalView, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) GetCheckpointView(_ context.Context, _ uuid.UUID, _ repo.Tenant) (*repo.CheckpointView, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) BeginIncrementalPublishGate(ctx context.Context, runID uuid.UUID, t repo.Tenant, holder, token string, generation int, ttl time.Duration) (*repo.IncrementalPublishGateResult, error) {
+	res, err := f.BeginPublishGate(ctx, runID, t, holder, token, generation, ttl)
+	if err != nil || res == nil {
+		return nil, err
+	}
+	out := &repo.IncrementalPublishGateResult{Claim: res.Claim, Run: res.Run}
+	switch res.Outcome {
+	case repo.PublishGateEntered:
+		out.Outcome = repo.IncrementalPublishGateEntered
+	case repo.PublishGateCancelled:
+		out.Outcome = repo.IncrementalPublishGateCancelled
+	default:
+		out.Outcome = repo.IncrementalPublishGateFenced
+	}
+	return out, nil
+}
+
+func (f *fakeStore) CompleteIncrementalSyncRun(ctx context.Context, runID uuid.UUID, t repo.Tenant, holder, token string, generation int, adv repo.IncrementalAdvance) (*models.SyncRun, error) {
+	legacy, err := f.CompleteLeasedSyncRun(ctx, runID, t, holder, token, generation, "succeeded", adv.Bytes, 1, adv.Rows, nil, nil, &adv.TxnID, &adv.ContentHash)
+	if err != nil || legacy == nil {
+		return nil, err
+	}
+	return legacy, nil
+}
+
+// BeginPublishGate mirrors the atomic gate decision: entered (with renewed
+// claim), cancelled (only when the caller's material is the valid holder and
+// a request is persisted), or fenced. denyGate/gateHook inject outcomes the
+// handler must not paper over (lease lost at the gate, cancellation races).
+func (f *fakeStore) BeginPublishGate(_ context.Context, runID uuid.UUID, _ repo.Tenant, holder, token string, generation int, ttl time.Duration) (*repo.PublishGateResult, error) {
+	f.mu.Lock()
+	denyGate := f.denyGate
+	hook := f.gateHook
+	if hook != nil {
+		f.gateCalls++
+	}
+	f.mu.Unlock()
+	if hook != nil {
+		return hook()
+	}
+	if denyGate {
+		return &repo.PublishGateResult{Outcome: repo.PublishGateFenced}, nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	defID, idx, ok := f.findRunLocked(runID)
+	if !ok {
+		return &repo.PublishGateResult{Outcome: repo.PublishGateFenced}, nil
+	}
+	run := &f.runs[defID][idx]
+	ls := f.lease[runID]
+	materialOK := run.Status == "running" && run.ControlMode == models.RunControlControlled &&
+		ls != nil && ls.holder == holder && ls.token == token && ls.generation == generation &&
+		run.PublishEnteredAt == nil
+	if materialOK && run.CancelRequestedAt == nil {
+		now := time.Now().UTC()
+		run.PublishEnteredAt = &now
+		claim := &repo.LeaseClaim{Run: *run, Token: token, Holder: holder, ExpiresAt: now.Add(ttl)}
+		return &repo.PublishGateResult{Outcome: repo.PublishGateEntered, Claim: claim}, nil
+	}
+	if materialOK && run.CancelRequestedAt != nil {
+		cp := *run
+		return &repo.PublishGateResult{Outcome: repo.PublishGateCancelled, Run: &cp}, nil
+	}
+	return &repo.PublishGateResult{Outcome: repo.PublishGateFenced}, nil
+}
+
+// CheckSyncRunControl mirrors the combined lease + cancel probe. The P2.1
+// checkResult/checkHook overrides apply here too so the existing page-gate
+// fault injections keep their meaning (cancel always derives from the row).
+func (f *fakeStore) CheckSyncRunControl(_ context.Context, runID uuid.UUID, _ repo.Tenant, holder, token string, generation int) (bool, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	run := f.runByAnyID(runID)
+	if run == nil {
+		return false, false, nil
+	}
+	cancelRequested := run.CancelRequestedAt != nil
+	if f.checkHook != nil {
+		f.checkCalls++
+		ok, err := f.checkHook(f.checkCalls)
+		return ok, cancelRequested, err
+	}
+	if f.checkResult != nil {
+		return *f.checkResult, cancelRequested, nil
+	}
+	ls := f.lease[runID]
+	leaseOK := run.Status == "running" && ls != nil && ls.holder == holder && ls.token == token && ls.generation == generation
+	return leaseOK, cancelRequested, nil
+}
+
+func (f *fakeStore) HasActiveSyncRunsForSource(_ context.Context, sourceID uuid.UUID, t repo.Tenant) (bool, error) {
+	defs, _ := f.ListSyncJobs(context.Background(), sourceID, t)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, job := range defs {
+		for _, run := range f.runs[job.ID] {
+			if run.Status == "pending" || run.Status == "running" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeStore) HasActiveSyncRunsForDef(_ context.Context, defID uuid.UUID, _ repo.Tenant) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, run := range f.runs[defID] {
+		if run.Status == "pending" || run.Status == "running" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 func (f *fakeStore) PreviousDatasetVersionForHash(_ context.Context, syncDefID uuid.UUID, contentHash string) (*uuid.UUID, error) {
 	for _, run := range f.runs[syncDefID] {
@@ -499,16 +1030,31 @@ func (f *fakeStore) RecordDatasetVersionOnRun(_ context.Context, runID uuid.UUID
 	}
 	return nil
 }
-func (f *fakeStore) ListCredentials(_ context.Context, sourceID uuid.UUID, ownerID uuid.UUID) ([]models.CredentialResponse, error) {
-	if c, _ := f.GetConnectionForOwner(context.Background(), sourceID, ownerID); c == nil {
+func (f *fakeStore) ListCredentials(_ context.Context, sourceID uuid.UUID, t repo.Tenant) ([]models.CredentialResponse, error) {
+	if c, _ := f.GetConnectionForTenant(context.Background(), sourceID, t); c == nil {
 		return []models.CredentialResponse{}, nil
 	}
-	return []models.CredentialResponse{}, nil
+	out := []models.CredentialResponse{}
+	for kind := range f.credentials[sourceID] {
+		out = append(out, models.CredentialResponse{ID: uuid.New(), SourceID: sourceID, Kind: kind, CreatedAt: time.Now().UTC()})
+	}
+	return out, nil
 }
-func (f *fakeStore) SetCredential(_ context.Context, sourceID uuid.UUID, ownerID uuid.UUID, kind string, _ []byte, fingerprint string) (*models.CredentialResponse, error) {
-	if c, _ := f.GetConnectionForOwner(context.Background(), sourceID, ownerID); c == nil {
+
+func (f *fakeStore) GetSourceCredentialCiphertext(_ context.Context, sourceID uuid.UUID, t repo.Tenant, kind string) ([]byte, error) {
+	if c, _ := f.GetConnectionForTenant(context.Background(), sourceID, t); c == nil {
 		return nil, nil
 	}
+	return f.credentials[sourceID][kind], nil
+}
+func (f *fakeStore) SetCredential(_ context.Context, sourceID uuid.UUID, t repo.Tenant, kind string, ciphertext []byte, fingerprint string) (*models.CredentialResponse, error) {
+	if c, _ := f.GetConnectionForTenant(context.Background(), sourceID, t); c == nil {
+		return nil, nil
+	}
+	if f.credentials[sourceID] == nil {
+		f.credentials[sourceID] = map[string][]byte{}
+	}
+	f.credentials[sourceID][kind] = ciphertext
 	return &models.CredentialResponse{ID: uuid.New(), SourceID: sourceID, Kind: kind, Fingerprint: fingerprint, CreatedAt: time.Now().UTC()}, nil
 }
 func (f *fakeStore) ListConnectorAgents(_ context.Context, ownerID uuid.UUID) ([]models.ConnectorAgent, error) {
@@ -561,14 +1107,14 @@ func (f *fakeStore) DeleteConnectorAgent(_ context.Context, id uuid.UUID, ownerI
 	}
 	return false, nil
 }
-func (f *fakeStore) ListSourcePolicies(_ context.Context, sourceID uuid.UUID, ownerID uuid.UUID) ([]models.SourcePolicyBindingResponse, error) {
-	if c, _ := f.GetConnectionForOwner(context.Background(), sourceID, ownerID); c == nil {
+func (f *fakeStore) ListSourcePolicies(_ context.Context, sourceID uuid.UUID, t repo.Tenant) ([]models.SourcePolicyBindingResponse, error) {
+	if c, _ := f.GetConnectionForTenant(context.Background(), sourceID, t); c == nil {
 		return []models.SourcePolicyBindingResponse{}, nil
 	}
 	return append([]models.SourcePolicyBindingResponse(nil), f.policies[sourceID]...), nil
 }
-func (f *fakeStore) AttachPolicy(_ context.Context, sourceID uuid.UUID, ownerID uuid.UUID, policyID uuid.UUID, kind string) (*models.SourcePolicyBindingResponse, error) {
-	if c, _ := f.GetConnectionForOwner(context.Background(), sourceID, ownerID); c == nil {
+func (f *fakeStore) AttachPolicy(_ context.Context, sourceID uuid.UUID, t repo.Tenant, policyID uuid.UUID, kind string) (*models.SourcePolicyBindingResponse, error) {
+	if c, _ := f.GetConnectionForTenant(context.Background(), sourceID, t); c == nil {
 		return nil, nil
 	}
 	binding := models.SourcePolicyBindingResponse{SourceID: sourceID, PolicyID: policyID, Kind: kind}
@@ -583,8 +1129,8 @@ func (f *fakeStore) AttachPolicy(_ context.Context, sourceID uuid.UUID, ownerID 
 	f.policies[sourceID] = append(items, binding)
 	return &binding, nil
 }
-func (f *fakeStore) DetachPolicy(_ context.Context, sourceID uuid.UUID, ownerID uuid.UUID, policyID uuid.UUID) (bool, error) {
-	if c, _ := f.GetConnectionForOwner(context.Background(), sourceID, ownerID); c == nil {
+func (f *fakeStore) DetachPolicy(_ context.Context, sourceID uuid.UUID, t repo.Tenant, policyID uuid.UUID) (bool, error) {
+	if c, _ := f.GetConnectionForTenant(context.Background(), sourceID, t); c == nil {
 		return false, nil
 	}
 	items := f.policies[sourceID]
@@ -818,14 +1364,14 @@ func (f *fakeStore) ListIcebergTables(_ context.Context, connectionID uuid.UUID)
 }
 
 func (f *fakeStore) ListMediaSetSyncs(_ context.Context, sourceID uuid.UUID, ownerID uuid.UUID) ([]models.MediaSetSync, error) {
-	if c, _ := f.GetConnectionForOwner(context.Background(), sourceID, ownerID); c == nil {
+	if c := f.connectionForOwnerLegacy(sourceID, ownerID); c == nil {
 		return []models.MediaSetSync{}, nil
 	}
 	return f.mediaSyncs[sourceID], nil
 }
 func (f *fakeStore) GetMediaSetSync(_ context.Context, id uuid.UUID, ownerID uuid.UUID) (*models.MediaSetSync, error) {
 	for source, syncs := range f.mediaSyncs {
-		if c, _ := f.GetConnectionForOwner(context.Background(), source, ownerID); c == nil {
+		if c := f.connectionForOwnerLegacy(source, ownerID); c == nil {
 			continue
 		}
 		for i := range syncs {
@@ -837,7 +1383,7 @@ func (f *fakeStore) GetMediaSetSync(_ context.Context, id uuid.UUID, ownerID uui
 	return nil, nil
 }
 func (f *fakeStore) CreateMediaSetSync(_ context.Context, sourceID uuid.UUID, body *models.CreateMediaSetSyncRequest, ownerID uuid.UUID) (*models.MediaSetSync, error) {
-	if c, _ := f.GetConnectionForOwner(context.Background(), sourceID, ownerID); c == nil {
+	if c := f.connectionForOwnerLegacy(sourceID, ownerID); c == nil {
 		return nil, nil
 	}
 	m := models.MediaSetSync{ID: uuid.New(), SourceID: sourceID, Kind: body.Kind, TargetMediaSetRID: body.TargetMediaSetRID, Subfolder: strings.Trim(body.Subfolder, "/"), Filters: body.Filters, ScheduleCron: body.ScheduleCron, CreatedAt: time.Now().UTC()}
@@ -846,7 +1392,7 @@ func (f *fakeStore) CreateMediaSetSync(_ context.Context, sourceID uuid.UUID, bo
 }
 func (f *fakeStore) UpdateMediaSetSync(_ context.Context, id uuid.UUID, body *models.UpdateMediaSetSyncRequest, ownerID uuid.UUID) (*models.MediaSetSync, error) {
 	for source, syncs := range f.mediaSyncs {
-		if c, _ := f.GetConnectionForOwner(context.Background(), source, ownerID); c == nil {
+		if c := f.connectionForOwnerLegacy(source, ownerID); c == nil {
 			continue
 		}
 		for i := range syncs {
@@ -1022,7 +1568,7 @@ func TestAttachPolicyRejectsEdgeCases(t *testing.T) {
 func TestCreateListGetUpdateSyncJobAndRun(t *testing.T) {
 	owner := uuid.New()
 	store := newFakeStore(owner)
-	h := &handlers.Handlers{Repo: store}
+	h := &handlers.Handlers{Repo: store, DatasetVersioning: &fakeCommitPort{}}
 	source := store.connections[0].ID
 	out := uuid.New()
 	req := authedReq("POST", "/syncs", `{"source_id":"`+source.String()+`","output_dataset_id":"`+out.String()+`","file_glob":"*.csv"}`, owner)
@@ -1054,7 +1600,12 @@ func TestCreateListGetUpdateSyncJobAndRun(t *testing.T) {
 	rec = httptest.NewRecorder()
 	h.RunSyncJob(rec, req)
 	require.Equal(t, 202, rec.Code)
-	assert.Contains(t, rec.Body.String(), "running")
+	var run models.SyncRun
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &run))
+	assert.Equal(t, "failed", run.Status)
+	require.NotNil(t, run.Error)
+	assert.Contains(t, *run.Error, "postgresql")
+	assert.Nil(t, run.DatasetVersionID, "unsupported connector types must not publish anything")
 }
 
 func TestCreateListGetVirtualTable(t *testing.T) {
@@ -1108,7 +1659,7 @@ func TestSyncAndVirtualAuthTenantIsolation(t *testing.T) {
 	h := &handlers.Handlers{Repo: store}
 	source := store.connections[0].ID
 	out := uuid.New()
-	created, err := store.CreateSyncJob(context.Background(), &models.CreateSyncJobRequest{SourceID: source, OutputDatasetID: out}, owner)
+	created, err := store.CreateSyncJob(context.Background(), &models.CreateSyncJobRequest{SourceID: source, OutputDatasetID: out}, repo.Tenant{OwnerID: owner})
 	require.NoError(t, err)
 	req := withRouteParam(authedReq("GET", "/syncs/"+created.ID.String(), "", intruder), "sync_id", created.ID.String())
 	rec := httptest.NewRecorder()
@@ -1318,7 +1869,7 @@ func TestConnectionCapabilitiesCombineContractConfigAndPolicy(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/api/v1/data-connection/sources/{id}/capabilities", h.GetConnectionCapabilities)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/data-connection/sources/"+store.connections[0].ID.String()+"/capabilities", nil)
+	req := authedReq(http.MethodGet, "/api/v1/data-connection/sources/"+store.connections[0].ID.String()+"/capabilities", "", owner)
 	r.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -1675,111 +2226,4 @@ func TestConnectionWebhookAndIcebergHandlers(t *testing.T) {
 	rec = httptest.NewRecorder()
 	h.IcebergLoadTable(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-}
-
-type fakeIngestionPort struct {
-	requests []cmruntime.IngestionRequest
-	result   cmruntime.IngestionResult
-	err      error
-}
-
-func (f *fakeIngestionPort) Dispatch(_ context.Context, req cmruntime.IngestionRequest) (*cmruntime.IngestionResult, error) {
-	f.requests = append(f.requests, req)
-	if f.err != nil {
-		return nil, f.err
-	}
-	result := f.result
-	if result.IngestJobID == "" {
-		result.IngestJobID = "ingest-" + req.RunID.String()
-	}
-	if result.Payload == nil {
-		result.Payload = req.Materialized
-	}
-	if result.BytesWritten == 0 {
-		result.BytesWritten = int64(len(result.Payload))
-	}
-	if result.FilesWritten == 0 {
-		result.FilesWritten = 1
-	}
-	return &result, nil
-}
-
-type fakeDatasetVersioningPort struct {
-	requests []cmruntime.DatasetVersionRequest
-	id       uuid.UUID
-	err      error
-}
-
-func (f *fakeDatasetVersioningPort) Register(_ context.Context, req cmruntime.DatasetVersionRequest) (*cmruntime.DatasetVersionResult, error) {
-	f.requests = append(f.requests, req)
-	if f.err != nil {
-		return nil, f.err
-	}
-	id := f.id
-	if id == uuid.Nil {
-		id = uuid.New()
-	}
-	return &cmruntime.DatasetVersionResult{DatasetVersionID: id}, nil
-}
-
-func TestRunSyncJobDispatchesIngestionAndRegistersDatasetVersion(t *testing.T) {
-	owner := uuid.New()
-	store := newFakeStore(owner)
-	job, err := store.CreateSyncJob(context.Background(), &models.CreateSyncJobRequest{SourceID: store.connections[0].ID, OutputDatasetID: uuid.New()}, owner)
-	require.NoError(t, err)
-	ingestion := &fakeIngestionPort{result: cmruntime.IngestionResult{RowsWritten: 7, Payload: []byte(`{"rows":7}`)}}
-	versionID := uuid.New()
-	versions := &fakeDatasetVersioningPort{id: versionID}
-	h := &handlers.Handlers{Repo: store, IngestionRuntime: ingestion, DatasetVersioning: versions}
-
-	req := withRouteParam(authedReq(http.MethodPost, "/syncs/"+job.ID.String()+"/run", "", owner), "sync_id", job.ID.String())
-	rec := httptest.NewRecorder()
-	h.RunSyncJob(rec, req)
-	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
-
-	var run models.SyncRun
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &run))
-	assert.Equal(t, "succeeded", run.Status)
-	assert.NotNil(t, run.FinishedAt)
-	assert.NotNil(t, run.IngestJobID)
-	assert.Equal(t, versionID, *run.DatasetVersionID)
-	assert.NotEmpty(t, *run.ContentHash)
-	require.Len(t, ingestion.requests, 1)
-	assert.Equal(t, job.ID, ingestion.requests[0].SyncDefID)
-	require.Len(t, versions.requests, 1)
-	assert.Equal(t, job.OutputDatasetID, versions.requests[0].OutputDatasetID)
-	assert.Equal(t, *run.ContentHash, versions.requests[0].ContentHash)
-
-	req = withRouteParam(authedReq(http.MethodGet, "/syncs/"+job.ID.String()+"/runs", "", owner), "sync_id", job.ID.String())
-	rec = httptest.NewRecorder()
-	h.ListRuns(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	var runs []models.SyncRun
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &runs))
-	require.Len(t, runs, 1)
-	assert.Equal(t, "succeeded", runs[0].Status)
-}
-
-func TestRunSyncJobReusesDatasetVersionForSameContentHash(t *testing.T) {
-	owner := uuid.New()
-	store := newFakeStore(owner)
-	job, err := store.CreateSyncJob(context.Background(), &models.CreateSyncJobRequest{SourceID: store.connections[0].ID, OutputDatasetID: uuid.New()}, owner)
-	require.NoError(t, err)
-	payload := []byte(`stable-payload`)
-	ingestion := &fakeIngestionPort{result: cmruntime.IngestionResult{Payload: payload, BytesWritten: int64(len(payload)), FilesWritten: 1}}
-	versions := &fakeDatasetVersioningPort{id: uuid.New()}
-	h := &handlers.Handlers{Repo: store, IngestionRuntime: ingestion, DatasetVersioning: versions}
-
-	for range 2 {
-		req := withRouteParam(authedReq(http.MethodPost, "/syncs/"+job.ID.String()+"/run", "", owner), "sync_id", job.ID.String())
-		rec := httptest.NewRecorder()
-		h.RunSyncJob(rec, req)
-		require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
-	}
-	require.Len(t, versions.requests, 1, "second run should reuse the recorded dataset version for the same content hash")
-	runs := store.runs[job.ID]
-	require.Len(t, runs, 2)
-	require.NotNil(t, runs[0].DatasetVersionID)
-	require.NotNil(t, runs[1].DatasetVersionID)
-	assert.Equal(t, *runs[0].DatasetVersionID, *runs[1].DatasetVersionID)
 }

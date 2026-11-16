@@ -50,10 +50,20 @@ func TestSubmitSparkRunKubeUnavailableShape(t *testing.T) {
 	require.Contains(t, payload["detail"], "SparkApplication endpoints require")
 }
 
+func (f *fakeSparkSubmissionRepo) SparkSubmissionByName(_ context.Context, namespace, name string) (*SparkSubmission, error) {
+	if f.byName == nil {
+		return nil, nil
+	}
+	return f.byName[namespace+"/"+name], nil
+}
+
 func TestGetSparkRunFoundAndNotFound(t *testing.T) {
 	fake := &fakeSparkClient{status: &sparkpkg.SparkRunStatusReport{Status: sparkpkg.SparkRunSucceeded}}
-	restore := SetSparkClient(fake)
-	defer restore()
+	restoreClient := SetSparkClient(fake)
+	defer restoreClient()
+	subRepo := &fakeSparkSubmissionRepo{byName: map[string]*SparkSubmission{"ns/app-1": {PipelineRunID: uuid.New(), Namespace: "ns", SparkAppName: "app-1", Status: sparkpkg.SparkRunSubmitted}}}
+	restoreRepo := SetSparkSubmissionRepository(subRepo)
+	defer restoreRepo()
 	rr := httptest.NewRecorder()
 	GetSparkRun(rr, httptest.NewRequest(http.MethodGet, "/api/v1/data-integration/spark-runs/app-1?namespace=ns", nil))
 	require.Equal(t, http.StatusOK, rr.Result().StatusCode)
@@ -63,10 +73,13 @@ func TestGetSparkRunFoundAndNotFound(t *testing.T) {
 	require.Equal(t, "ns", fake.gotNamespace)
 	require.Equal(t, "SUCCEEDED", payload["status"])
 
+	// A name with no persisted submission in the caller's tenant is
+	// rejected before the Kubernetes probe runs.
 	fake.status = nil
 	rr = httptest.NewRecorder()
 	GetSparkRun(rr, httptest.NewRequest(http.MethodGet, "/api/v1/data-integration/spark-runs/missing", nil))
 	require.Equal(t, http.StatusNotFound, rr.Result().StatusCode)
+	require.Equal(t, "app-1", fake.gotName, "only the persisted submission was probed")
 }
 
 func TestSubmitSparkRunInvalidSpec(t *testing.T) {
@@ -90,9 +103,11 @@ type fakeSparkClient struct {
 	status        *sparkpkg.SparkRunStatusReport
 	gotNamespace  string
 	gotName       string
+	submitCalls   int
 }
 
 func (f *fakeSparkClient) SubmitPipelineRun(_ context.Context, input sparkpkg.PipelineRunInput) (string, error) {
+	f.submitCalls++
 	if err := validateByRendering(input); err != nil {
 		return "", err
 	}
@@ -180,6 +195,7 @@ func TestListSparkRunsRequiresRepositoryInsteadOfEmptyEnvelope(t *testing.T) {
 
 type fakeSparkSubmissionRepo struct {
 	submissions map[string]SparkSubmission
+	byName      map[string]*SparkSubmission
 }
 
 func (f *fakeSparkSubmissionRepo) SaveSparkSubmission(_ context.Context, submission SparkSubmission) error {

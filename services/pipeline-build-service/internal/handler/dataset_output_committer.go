@@ -51,7 +51,10 @@ func (c DatasetServiceOutputCommitter) Commit(ctx context.Context, tx executor.O
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if token := strings.TrimSpace(c.BearerToken); token != "" {
+	// Output commits run as the calling user when the execution context
+	// carries their bearer (manual runs, retries, previews); the static
+	// service token remains the fallback for caller-less contexts.
+	if token := datasetReadBearerToken(ctx, c.BearerToken); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := c.Client
@@ -146,6 +149,12 @@ type datasetOutputFile struct {
 	ContentType *string         `json:"content_type,omitempty"`
 	Metadata    json.RawMessage `json:"metadata,omitempty"`
 	Operation   string          `json:"operation,omitempty"`
+	// ContentBase64 uploads the actual bytes with the commit so the dataset
+	// service can write a real backing-store object. nil keeps the historical
+	// metadata-only registration; an empty non-nil slice commits a
+	// zero-row NDJSON file. No omitempty: absent must stay distinguishable
+	// from empty on the wire.
+	ContentBase64 []byte `json:"content_base64"`
 }
 
 type datasetOutputLineageLink struct {
@@ -158,13 +167,27 @@ type datasetOutputLineageLink struct {
 }
 
 func datasetOutputCommitBody(tx executor.OutputTransaction, result executor.NodeResult) (datasetOutputCommitRequest, error) {
-	rows := resultRows(result.Metadata)
+	rows, hasFullRows := fullResultRows(result.Metadata)
+	if !hasFullRows {
+		rows = resultRows(result.Metadata)
+	}
 	columns := resultColumns(result.Metadata)
 	if len(columns) == 0 {
 		columns = inferResultColumns(rows)
 	}
 	previewRows := orderedPreviewRows(columns, rows, 100)
 	payload := encodeNDJSON(rows)
+	// Only genuine data_rows are uploaded as the full output file — sample
+	// rows must not be promoted to dataset contents. Zero-row outputs still
+	// upload an explicit empty file so downloads return empty content
+	// instead of 404.
+	var content []byte
+	if hasFullRows {
+		content = payload
+		if content == nil {
+			content = []byte{}
+		}
+	}
 	sum := sha256.Sum256(payload)
 	fileMeta, err := json.Marshal(map[string]any{
 		"sha256":              hex.EncodeToString(sum[:]),
@@ -179,10 +202,18 @@ func datasetOutputCommitBody(tx executor.OutputTransaction, result executor.Node
 	if logicalPath == "" {
 		logicalPath = "part-00000.ndjson"
 	}
+	if hasFullRows && !strings.HasSuffix(logicalPath, ".ndjson") {
+		return datasetOutputCommitRequest{}, fmt.Errorf("dataset_output_commit_invalid: logical_path %q must end with .ndjson when full data rows are uploaded as NDJSON", logicalPath)
+	}
 	storagePath := "pipeline-build/" + strings.Trim(strings.TrimSpace(tx.TransactionRID), "/") + "/" + strings.Trim(strings.TrimSpace(tx.OutputNodeID), "/") + "/" + logicalPath
 	storagePath = strings.Trim(strings.ReplaceAll(storagePath, "//", "/"), "/")
 	contentType := "application/x-ndjson"
 	format := normaliseOutputFileFormat(tx.FileFormat)
+	if hasFullRows {
+		// The uploaded bytes are NDJSON regardless of the configured file
+		// format, so schema and format metadata must not claim PARQUET.
+		format = normaliseOutputFileFormat("NDJSON")
+	}
 	bodyMeta, err := json.Marshal(datasetOutputCommitMetadata(tx, result, len(rows), len(payload)))
 	if err != nil {
 		return datasetOutputCommitRequest{}, err
@@ -207,12 +238,13 @@ func datasetOutputCommitBody(tx executor.OutputTransaction, result executor.Node
 		Provenance:      provenance,
 		Schema:          inferOutputSchema(columns, rows, format),
 		Files: []datasetOutputFile{{
-			LogicalPath: logicalPath,
-			StoragePath: storagePath,
-			SizeBytes:   int64(len(payload)),
-			ContentType: &contentType,
-			Metadata:    fileMeta,
-			Operation:   "ADD",
+			LogicalPath:   logicalPath,
+			StoragePath:   storagePath,
+			SizeBytes:     int64(len(payload)),
+			ContentType:   &contentType,
+			Metadata:      fileMeta,
+			Operation:     "ADD",
+			ContentBase64: content,
 		}},
 		PreviewColumns: columns,
 		PreviewRows:    previewRows,
@@ -288,6 +320,20 @@ func resultRows(meta map[string]any) []map[string]json.RawMessage {
 		return rows
 	}
 	return decodeResultRows(meta["sample_rows"])
+}
+
+// fullResultRows reports whether the runner materialised the complete result
+// as data_rows. Only then may the commit upload file contents; sample-only
+// results keep the metadata-only registration.
+func fullResultRows(meta map[string]any) ([]map[string]json.RawMessage, bool) {
+	if meta == nil {
+		return nil, false
+	}
+	raw, ok := meta["data_rows"]
+	if !ok || raw == nil {
+		return nil, false
+	}
+	return decodeResultRows(raw), true
 }
 
 func decodeResultRows(value any) []map[string]json.RawMessage {

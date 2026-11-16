@@ -65,7 +65,10 @@ type ExecutionPorts struct {
 	Transactions executor.TransactionManager
 	Committer    executor.OutputCommitter
 	Audit        executor.AuditSink
-	Parallelism  int
+	// DatasetRows reads registered dataset files for dataset_input nodes in
+	// both preview and lightweight (FASTER) execution.
+	DatasetRows PipelineDatasetRowSource
+	Parallelism int
 }
 
 // ConfigGatedOutputCommitter routes Foundry Iceberg outputs to the ADR-0041
@@ -232,7 +235,7 @@ func ExecutePipeline(w http.ResponseWriter, r *http.Request) {
 	if runner == nil {
 		runner = newRuntimeNodeRunner(ports)
 	}
-	execCtx, cancel := context.WithCancel(r.Context())
+	execCtx, cancel := context.WithCancel(contextWithCallerBearer(r.Context(), callerBearerFromRequest(r)))
 	unregister := registerExecutionCancel(plan.BuildID, cancel)
 	defer unregister()
 	outcome, err := executor.Execute(execCtx, plan, runner, ports.Transactions, ports.Committer, ports.Audit)
@@ -313,7 +316,8 @@ func TriggerPipelineRun(w http.ResponseWriter, r *http.Request) {
 		runner = newRuntimeNodeRunner(ports)
 	}
 	audit := newCapturingAuditSink(ports.Audit)
-	execCtx, cancel := context.WithCancel(r.Context())
+	// Manual trigger: dataset-backed input nodes read as the calling user.
+	execCtx, cancel := context.WithCancel(contextWithCallerBearer(r.Context(), callerBearerFromRequest(r)))
 	unregister := registerExecutionCancel(plan.BuildID, cancel)
 	defer unregister()
 	outcome, err := executor.Execute(execCtx, plan, runner, ports.Transactions, ports.Committer, audit)

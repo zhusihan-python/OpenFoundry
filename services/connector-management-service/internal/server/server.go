@@ -123,6 +123,21 @@ func New(cfg *config.Config, jwt *authmw.JWTConfig, h *handlers.Handlers, m *obs
 		api.Patch("/data-connection/syncs/{id}", h.UpdateSyncJob)
 		api.Post("/data-connection/syncs/{id}/run", h.RunSyncJob)
 		api.Get("/data-connection/syncs/{id}/runs", h.ListRuns)
+		api.Get("/data-connection/syncs/{id}/runs/{run_id}", h.GetSyncRun)
+		api.Post("/data-connection/syncs/{id}/runs/{run_id}/cancel", h.CancelSyncRun)
+		// P2.6 manual fresh-auth recovery (root-decisions-v2 item 7): same
+		// data-connection write permission + full Source→Def→Run parent
+		// chain; the caller's fresh JWT from THIS request is the only remote
+		// credential.
+		api.Post("/data-connection/syncs/{id}/runs/{run_id}/recover", h.RecoverSyncRun)
+		// P2.5 completion-checkpoint view (safe projection: lengths/hashes
+		// only, never the opaque stored value).
+		api.Get("/data-connection/syncs/{id}/checkpoint", h.GetSyncCheckpoint)
+		// P2.4 observable scheduling: explicit per-instance execution
+		// authorization (arm/revoke) and the bounded tick history.
+		api.Post("/data-connection/syncs/{id}/schedule:arm", h.ArmScheduleAuthorization)
+		api.Delete("/data-connection/syncs/{id}/schedule:arm", h.RevokeScheduleAuthorization)
+		api.Get("/data-connection/syncs/{id}/schedule/ticks", h.ListScheduleTicks)
 
 		api.Get("/data-connection/sources/{id}/media-set-syncs", h.ListMediaSetSyncs)
 		api.Post("/data-connection/sources/{id}/media-set-syncs", h.CreateMediaSetSync)

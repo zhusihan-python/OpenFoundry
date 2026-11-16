@@ -31,6 +31,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	authmw "github.com/openfoundry/openfoundry-go/libs/auth-middleware"
 	livellogs "github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/logs"
@@ -56,6 +57,12 @@ var pipelineAuthoringRepository atomic.Value // stores *pipelineAuthoringSlot
 type sparkClientSlot struct {
 	client sparkpkg.SparkClient
 }
+
+// ErrSparkSubmissionDomainConflict marks an upsert that collided with a
+// submission row held by a different tenant (or, in the personal domain,
+// a different owner). The existing row is left untouched; HTTP callers
+// receive 409.
+var ErrSparkSubmissionDomainConflict = errors.New("spark_submission_domain_conflict: pipeline_run_id already belongs to another tenant")
 
 type SparkSubmissionRepository interface {
 	SaveSparkSubmission(ctx context.Context, submission SparkSubmission) error
@@ -265,6 +272,33 @@ func requireJobLogSubscriber(w http.ResponseWriter, detail string) (*livellogs.S
 	return service, true
 }
 
+// jobScopeChecker is implemented by the production log store so live log
+// subscriptions can confirm the job's build belongs to the caller's
+// tenant before any events flow.
+type jobScopeChecker interface {
+	JobRIDInScope(ctx context.Context, jobRID string) (bool, error)
+}
+
+// requireJobInScope gates a log stream on the job being visible under the
+// caller's tenant scope. Stores without the capability (in-memory test
+// doubles) pass through.
+func requireJobInScope(w http.ResponseWriter, r *http.Request, service *livellogs.Service, jobRID string) bool {
+	checker, ok := service.Store.(jobScopeChecker)
+	if !ok {
+		return true
+	}
+	visible, err := checker.JobRIDInScope(r.Context(), jobRID)
+	if err != nil {
+		writeLogStoreUnavailable(w, "log_store_unavailable", err)
+		return false
+	}
+	if !visible {
+		w.WriteHeader(http.StatusNotFound)
+		return false
+	}
+	return true
+}
+
 func writeLogStoreUnavailable(w http.ResponseWriter, errorName string, err error) {
 	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": errorName, "detail": err.Error()})
 }
@@ -370,6 +404,9 @@ func StreamJobLogs(w http.ResponseWriter, r *http.Request) {
 	jobRID := jobRIDFromRequest(r)
 	if jobRID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_job_id"})
+		return
+	}
+	if !requireJobInScope(w, r, service, jobRID) {
 		return
 	}
 	query, err := parseLogsQuery(r)
@@ -805,6 +842,16 @@ func SubmitSparkRun(w http.ResponseWriter, r *http.Request) {
 	if namespace == "" {
 		namespace = "openfoundry-spark"
 	}
+	// Tenant-scoped submissions fail closed BEFORE any Kubernetes side
+	// effect: the body's pipeline/input/output RIDs flow to the runner
+	// without a constrained identity today, so a persisted mapping alone
+	// would not prove execution isolation (see README — distributed
+	// Spark execution under tenants lands with P2/P4). Query endpoints
+	// (status/list) remain tenant-mapped.
+	if TenantScopeFromContext(r.Context()) != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "spark_submission_tenant_unsupported", "detail": "tenant-scoped SparkApplication submission is not supported yet; the runner does not carry a constrained tenant identity"})
+		return
+	}
 	input := sparkpkg.PipelineRunInput{PipelineID: body.PipelineID, RunID: shortRunID, Namespace: namespace, ApplicationType: appType, PipelineRunnerImage: image, InputDatasetRID: body.InputDatasetRID, OutputDatasetRID: body.OutputDatasetRID, Resources: body.Resources}
 	name, err := client.SubmitPipelineRun(r.Context(), input)
 	if err != nil {
@@ -813,6 +860,10 @@ func SubmitSparkRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if repo, ok := currentSparkSubmissionRepository(); ok {
 		if err := repo.SaveSparkSubmission(r.Context(), SparkSubmission{PipelineRunID: runID, Namespace: namespace, SparkAppName: name, Status: sparkpkg.SparkRunSubmitted}); err != nil {
+			if errors.Is(err, ErrSparkSubmissionDomainConflict) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "spark_submission_domain_conflict", "detail": "pipeline_run_id already belongs to another tenant"})
+				return
+			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "spark_submission_persist_failed", "detail": err.Error()})
 			return
 		}
@@ -873,6 +924,10 @@ func GetSparkRun(w http.ResponseWriter, r *http.Request) {
 		writeKubeUnavailable(w)
 		return
 	}
+	repo, ok := requireSparkSubmissionRepository(w, "GetSparkRun requires DATABASE_URL-backed pipeline_run_submissions wiring")
+	if !ok {
+		return
+	}
 	name := chi.URLParam(r, "id")
 	if name == "" {
 		name = strings.TrimPrefix(r.URL.Path[strings.LastIndex(r.URL.Path, "/"):], "/")
@@ -881,7 +936,24 @@ func GetSparkRun(w http.ResponseWriter, r *http.Request) {
 	if namespace == "" {
 		namespace = "openfoundry-spark"
 	}
-	report, err := client.GetPipelineRunStatus(r.Context(), namespace, name)
+	// The cluster-side (namespace, name) pair is only trusted when it
+	// resolves to a submission persisted by this tenant; the probe then
+	// uses the persisted pair, not the self-asserted request values.
+	byName, ok := repo.(SparkSubmissionByNameResolver)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "spark_submission_by_name_not_configured", "detail": "GetSparkRun requires a repository that resolves submissions by name"})
+		return
+	}
+	submission, err := byName.SparkSubmissionByName(r.Context(), namespace, name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "spark_submission_lookup_failed", "detail": err.Error()})
+		return
+	}
+	if submission == nil {
+		writeJSON(w, http.StatusNotFound, nil)
+		return
+	}
+	report, err := client.GetPipelineRunStatus(r.Context(), submission.Namespace, submission.SparkAppName)
 	if err != nil {
 		writeSparkError(w, err)
 		return
@@ -890,7 +962,13 @@ func GetSparkRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"namespace": namespace, "spark_app_name": name, "status": string(report.Status), "error_message": report.ErrorMessage})
+	writeJSON(w, http.StatusOK, map[string]any{"namespace": submission.Namespace, "spark_app_name": submission.SparkAppName, "status": string(report.Status), "error_message": report.ErrorMessage})
+}
+
+// SparkSubmissionByNameResolver resolves persisted submissions by their
+// cluster-side identity under the caller's tenant boundary.
+type SparkSubmissionByNameResolver interface {
+	SparkSubmissionByName(ctx context.Context, namespace, name string) (*SparkSubmission, error)
 }
 
 func GetSpecForRun(w http.ResponseWriter, _ *http.Request) {
@@ -1259,7 +1337,51 @@ func CreateJobSpecV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := strings.ToUpper(chi.URLParam(r, "kind"))
-	published, err := v1.PublishJobSpec(r.Context(), kind, body, "")
+	// The creator identity comes from the trusted tenant scope so a
+	// personal-domain publish is attributed to the real subject (an empty
+	// actor would persist a zero UUID that the publisher can never read
+	// back under owner isolation).
+	ctx := withCallerBearer(r)
+	createdBy := ""
+	if scope := TenantScopeFromContext(ctx); scope != nil {
+		createdBy = scope.Subject.String()
+	}
+	// Full preflight before either table is written: the pipeline parent
+	// must be tenant-visible, and EVERY dataset the spec touches (inputs
+	// and outputs alike) must authorize the caller through the versioning
+	// port carrying the caller's bearer.
+	// Scoped publishes must run the full preflight; a missing lifecycle
+	// wiring is a fail-closed 503, never a bypass. Unscoped legacy
+	// callers (internal harnesses) keep the old direct publish.
+	if TenantScopeFromContext(ctx) != nil {
+		lifecyclePorts, ok := currentBuildLifecyclePorts()
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "build_lifecycle_ports_not_configured", "detail": "tenant-scoped job-spec publishing requires the build lifecycle ports for ownership preflight"})
+			return
+		}
+		if err := validatePipelineParent(ctx, lifecyclePorts, body.PipelineRID); err != nil {
+			writeResolutionHTTPError(w, err)
+			return
+		}
+		datasetRIDs := map[string]struct{}{}
+		for _, output := range body.OutputDatasetRIDs {
+			if output != "" {
+				datasetRIDs[output] = struct{}{}
+			}
+		}
+		for _, input := range body.Inputs {
+			if input.DatasetRID != "" {
+				datasetRIDs[input.DatasetRID] = struct{}{}
+			}
+		}
+		for datasetRID := range datasetRIDs {
+			if _, err := lifecyclePorts.Versioning.ListBranches(ctx, datasetRID); err != nil {
+				writeResolutionHTTPError(w, err)
+				return
+			}
+		}
+	}
+	published, err := v1.PublishJobSpec(ctx, kind, body, createdBy)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, err.Error())
 		return
@@ -1274,6 +1396,18 @@ func EmitJobLogV1(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	rid := chi.URLParam(r, "rid")
+	if strings.TrimSpace(rid) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_job_id"})
+		return
+	}
+	// Log WRITES are subresources of the job: the owning build's tenant
+	// boundary gates them before any row is appended — cross-org admins,
+	// foreign personal users and unknown RIDs answer 404 with zero
+	// writes; only real persistence failures stay 500.
+	if !requireJobInScope(w, r, service, rid) {
+		return
+	}
 	var body struct {
 		Level   livellogs.LogLevel `json:"level"`
 		Message string             `json:"message"`
@@ -1283,8 +1417,12 @@ func EmitJobLogV1(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
 		return
 	}
-	entry, err := appender.AppendLogByRID(r.Context(), chi.URLParam(r, "rid"), body.Level, body.Message, body.Params)
+	entry, err := appender.AppendLogByRID(r.Context(), rid, body.Level, body.Message, body.Params)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "job_not_found", "detail": "no visible job matches the rid"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "emit_log_failed", "detail": err.Error()})
 		return
 	}
@@ -1299,6 +1437,9 @@ func StreamJobLogsV1(w http.ResponseWriter, r *http.Request) { StreamJobLogs(w, 
 func WSJobLogsV1(w http.ResponseWriter, r *http.Request) {
 	service, ok := requireJobLogSubscriber(w, "websocket logs require a subscriber")
 	if !ok {
+		return
+	}
+	if !requireJobInScope(w, r, service, chi.URLParam(r, "rid")) {
 		return
 	}
 	conn, err := websocket.Accept(w, r, nil)

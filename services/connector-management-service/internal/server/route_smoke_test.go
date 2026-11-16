@@ -19,6 +19,11 @@ func TestRouteSmokeMountsDataConnectionRoutes(t *testing.T) {
 		{http.MethodGet, "/api/v1/webhooks/{id}/history"},
 		{http.MethodPost, "/api/v1/listeners/{id}/events"},
 		{http.MethodGet, "/api/v1/data-connection/catalog"},
+		// P2.2 per-run surface.
+		{http.MethodPost, "/api/v1/data-connection/syncs/{id}/run"},
+		{http.MethodGet, "/api/v1/data-connection/syncs/{id}/runs"},
+		{http.MethodGet, "/api/v1/data-connection/syncs/{id}/runs/{run_id}"},
+		{http.MethodPost, "/api/v1/data-connection/syncs/{id}/runs/{run_id}/cancel"},
 	})
 }
 

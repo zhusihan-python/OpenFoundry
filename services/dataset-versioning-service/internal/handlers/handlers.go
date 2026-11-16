@@ -24,11 +24,16 @@ import (
 
 type Store interface {
 	ListDatasets(ctx context.Context, ownerID *uuid.UUID, limit int) ([]models.Dataset, error)
+	ListDatasetsForTenant(ctx context.Context, scope repo.TenantScope, ownerID *uuid.UUID, limit int) ([]models.Dataset, error)
 	GetDataset(ctx context.Context, id uuid.UUID) (*models.Dataset, error)
+	GetDatasetForTenant(ctx context.Context, id uuid.UUID, scope repo.TenantScope) (*models.Dataset, error)
 	GetDatasetForOwner(ctx context.Context, id uuid.UUID, ownerID uuid.UUID) (*models.Dataset, error)
+	ResolveDatasetForTenant(ctx context.Context, raw string, scope repo.TenantScope) (*models.Dataset, error)
 	GetCatalogFacets(ctx context.Context) (*models.CatalogFacets, error)
+	GetCatalogFacetsForTenant(ctx context.Context, scope repo.TenantScope) (*models.CatalogFacets, error)
 	GetInternalDatasetMetadata(ctx context.Context, datasetID uuid.UUID) (*models.InternalDatasetMetadata, error)
 	CreateDataset(ctx context.Context, body *models.CreateDatasetRequest, ownerID uuid.UUID) (*models.Dataset, error)
+	CreateDatasetForTenant(ctx context.Context, body *models.CreateDatasetRequest, ownerID uuid.UUID, orgID *uuid.UUID) (*models.Dataset, error)
 	UpdateDataset(ctx context.Context, id uuid.UUID, body *models.UpdateDatasetRequest) (*models.Dataset, error)
 	DeleteDataset(ctx context.Context, id uuid.UUID) (bool, error)
 	ListVersions(ctx context.Context, datasetID uuid.UUID) ([]models.DatasetVersion, error)
@@ -44,6 +49,7 @@ type Store interface {
 	ResolveDatasetID(ctx context.Context, raw string) (uuid.UUID, error)
 	DatasetExists(ctx context.Context, datasetID uuid.UUID) (bool, error)
 	DatasetViewBelongsToDataset(ctx context.Context, datasetID uuid.UUID, viewID uuid.UUID) (bool, error)
+	GetDatasetViewOwner(ctx context.Context, viewID uuid.UUID) (*uuid.UUID, error)
 	GetCatalogDataset(ctx context.Context, datasetID uuid.UUID) (*models.CatalogDataset, error)
 	GetDatasetRichModel(ctx context.Context, datasetID uuid.UUID) (*models.DatasetRichModel, error)
 	PatchDatasetMetadata(ctx context.Context, datasetID uuid.UUID, body *models.DatasetMetadataPatch) (*models.CatalogDataset, error)
@@ -89,7 +95,10 @@ type Store interface {
 	GetRuntimeTransaction(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID) (*models.RuntimeTransaction, error)
 	ListRuntimeTransactions(ctx context.Context, datasetID uuid.UUID, branch *string, before *time.Time, limit int) ([]models.RuntimeTransaction, error)
 	CommitTransaction(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID) error
+	CommitTransactionWithPublish(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID, files []models.PutDatasetFileIndexEntry, links []models.PutDatasetLineageLink) (*repo.PublishSnapshot, error)
 	AbortTransaction(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID) error
+	WithIdempotentOutputCommit(ctx context.Context, scope repo.TenantScope, datasetID uuid.UUID, key string, fingerprint string, build func(ctx context.Context, tx repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error)) (*models.OutputCommitReceipt, bool, error)
+	GetOutputCommitReceipt(ctx context.Context, scope repo.TenantScope, datasetID uuid.UUID, key string) (*models.OutputCommitReceipt, error)
 	GetDatasetQuality(ctx context.Context, datasetID uuid.UUID) (*models.DatasetQualityResponse, error)
 	UpsertQualityRule(ctx context.Context, datasetID uuid.UUID, body *models.CreateQualityRuleRequest) (*models.DatasetQualityRule, error)
 	UpdateQualityRule(ctx context.Context, datasetID uuid.UUID, ruleID uuid.UUID, body *models.UpdateQualityRuleRequest) error
@@ -103,6 +112,10 @@ type Handlers struct {
 	BackingFS  storageabstraction.BackingFS
 	PresignTTL time.Duration
 	AuditSink  func(context.Context, AuditEvent)
+	// MaxOutputCommitContentBytes caps the total content bytes accepted in a
+	// single outputs:commit request. Zero falls back to
+	// DefaultMaxOutputCommitContentBytes.
+	MaxOutputCommitContentBytes int64
 	// Resolver computes effective dataset markings by walking lineage
 	// upstream. When nil, marking endpoints fall back to the direct rows
 	// returned by Repo.ListDatasetMarkings — keeps tests light and lets
@@ -141,7 +154,8 @@ func transactionIDParam(r *http.Request) string {
 }
 
 func (h *Handlers) ListDatasets(w http.ResponseWriter, r *http.Request) {
-	if _, ok := authmw.FromContext(r.Context()); !ok {
+	claims, ok := authmw.FromContext(r.Context())
+	if !ok {
 		writeJSONErr(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -160,7 +174,8 @@ func (h *Handlers) ListDatasets(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	items, err := h.Repo.ListDatasets(r.Context(), ownerID, limit)
+	// The tenant predicate is always applied; owner_id can only narrow it.
+	items, err := h.Repo.ListDatasetsForTenant(r.Context(), tenantScopeFromClaims(claims), ownerID, limit)
 	if err != nil {
 		slog.Error("list datasets", slog.String("error", err.Error()))
 		writeJSONErr(w, http.StatusInternalServerError, "failed to list datasets")
@@ -170,7 +185,8 @@ func (h *Handlers) ListDatasets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) GetDataset(w http.ResponseWriter, r *http.Request) {
-	if _, ok := authmw.FromContext(r.Context()); !ok {
+	claims, ok := authmw.FromContext(r.Context())
+	if !ok {
 		writeJSONErr(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -179,7 +195,10 @@ func (h *Handlers) GetDataset(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	v, err := h.Repo.GetDataset(r.Context(), id)
+	// Tenant visibility runs before anything is returned: a dataset in
+	// another organization (or another user's personal domain) is
+	// indistinguishable from a missing one.
+	v, err := h.Repo.GetDatasetForTenant(r.Context(), id, tenantScopeFromClaims(claims))
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -230,7 +249,9 @@ func (h *Handlers) CreateDataset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.HealthStatus = &health
-	v, err := h.Repo.CreateDataset(r.Context(), &body, caller.Sub)
+	// Tenant ownership is assigned from the verified claims only — the
+	// request body carries no org field to honor.
+	v, err := h.Repo.CreateDatasetForTenant(r.Context(), &body, caller.Sub, caller.OrgID)
 	if err != nil {
 		slog.Error("create dataset", slog.String("error", err.Error()))
 		writeJSONErr(w, http.StatusInternalServerError, "create failed")
@@ -247,8 +268,9 @@ func (h *Handlers) CreateDataset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, v)
 }
 
-// UpdateDataset ports Rust `update_dataset`: RBAC gate, name/health
-// validation and a `dataset.update` audit emission listing changed fields.
+// UpdateDataset ports Rust `update_dataset`: tenant visibility, RBAC
+// gate, name/health validation and a `dataset.update` audit emission
+// listing changed fields.
 func (h *Handlers) UpdateDataset(w http.ResponseWriter, r *http.Request) {
 	caller, ok := authmw.FromContext(r.Context())
 	if !ok {
@@ -258,6 +280,18 @@ func (h *Handlers) UpdateDataset(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(datasetIDParam(r))
 	if err != nil {
 		writeJSONErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	// Tenant check first: cross-tenant datasets 404 regardless of the
+	// caller's scopes. Body-supplied owner_id changes can never widen
+	// visibility because org ownership is not request-settable.
+	existing, err := h.Repo.GetDatasetForTenant(r.Context(), id, tenantScopeFromClaims(caller))
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil {
+		writeJSONErr(w, http.StatusNotFound, "dataset not found")
 		return
 	}
 	if !canWriteDataset(caller) {
@@ -308,14 +342,22 @@ func (h *Handlers) DeleteDataset(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	// Tenant check first: cross-tenant datasets 404 regardless of the
+	// caller's scopes (admins included).
+	existing, err := h.Repo.GetDatasetForTenant(r.Context(), id, tenantScopeFromClaims(caller))
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil {
+		writeJSONErr(w, http.StatusNotFound, "dataset not found")
+		return
+	}
 	if !canWriteDataset(caller) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "required_scope": "dataset.write", "dataset_rid": id.String()})
 		return
 	}
-	storagePath := "unknown"
-	if existing, _ := h.Repo.GetDataset(r.Context(), id); existing != nil {
-		storagePath = existing.StoragePath
-	}
+	storagePath := existing.StoragePath
 	deleted, err := h.Repo.DeleteDataset(r.Context(), id)
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, err.Error())
@@ -412,6 +454,12 @@ func encodeCursor(offset int) string {
 	return base64.RawURLEncoding.EncodeToString([]byte("of:" + strconv.Itoa(offset)))
 }
 
+// ownedDataset loads the route's dataset under the tenant rule. Personal
+// (org-less) datasets keep their owner-only read boundary — the tenant
+// predicate requires the caller to be the owner. Organization datasets
+// are reachable by any caller of the same org, matching the tenant model
+// where the organization, not the individual, is the access domain.
+// Downstream write paths still apply their own scope checks.
 func (h *Handlers) ownedDataset(w http.ResponseWriter, r *http.Request) (*authmw.Claims, *models.Dataset, bool) {
 	caller, ok := authmw.FromContext(r.Context())
 	if !ok {
@@ -423,7 +471,7 @@ func (h *Handlers) ownedDataset(w http.ResponseWriter, r *http.Request) (*authmw
 		writeJSONErr(w, http.StatusBadRequest, "invalid id")
 		return nil, nil, false
 	}
-	dataset, err := h.Repo.GetDatasetForOwner(r.Context(), id, caller.Sub)
+	dataset, err := h.Repo.GetDatasetForTenant(r.Context(), id, tenantScopeFromClaims(caller))
 	if err != nil {
 		slog.Error("load dataset", slog.String("error", err.Error()))
 		writeJSONErr(w, http.StatusInternalServerError, "failed to load dataset")

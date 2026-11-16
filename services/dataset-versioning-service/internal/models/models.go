@@ -31,14 +31,19 @@ type Page[T any] struct {
 // Dataset mirrors the `datasets` row, byte-compatible with Rust
 // `data_asset_catalog::models::dataset::Dataset`.
 type Dataset struct {
-	ID             uuid.UUID       `json:"id"`
-	Name           string          `json:"name"`
-	Description    string          `json:"description"`
-	Format         string          `json:"format"`
-	StoragePath    string          `json:"storage_path"`
-	SizeBytes      int64           `json:"size_bytes"`
-	RowCount       int64           `json:"row_count"`
-	OwnerID        uuid.UUID       `json:"owner_id"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Format      string    `json:"format"`
+	StoragePath string    `json:"storage_path"`
+	SizeBytes   int64     `json:"size_bytes"`
+	RowCount    int64     `json:"row_count"`
+	OwnerID     uuid.UUID `json:"owner_id"`
+	// OrgID is the owning organization (tenant), assigned from the verified
+	// JWT OrgID at creation time and never taken from request input. NULL
+	// keeps the dataset in the owner's personal domain — legacy rows stay
+	// there until they are explicitly migrated into an organization.
+	OrgID          *uuid.UUID      `json:"org_id,omitempty"`
 	Tags           []string        `json:"tags"`
 	CurrentVersion int32           `json:"current_version"`
 	ActiveBranch   string          `json:"active_branch"`
@@ -1093,7 +1098,12 @@ type PutSchemaBody struct {
 }
 
 type CommitDatasetOutputRequest struct {
-	CreateIfMissing bool                    `json:"create_if_missing"`
+	CreateIfMissing bool `json:"create_if_missing"`
+	// IdempotencyKey opts the commit into the P2.6 keyed path: the exact
+	// raw body is fingerprinted by the service, and a replay of the same
+	// key with byte-identical body returns the stored immutable response.
+	// Empty keeps the historical non-idempotent behavior.
+	IdempotencyKey  string                  `json:"idempotency_key,omitempty"`
 	DatasetName     string                  `json:"dataset_name,omitempty"`
 	Description     *string                 `json:"description,omitempty"`
 	Format          *string                 `json:"format,omitempty"`
@@ -1116,6 +1126,12 @@ type CommitOutputFile struct {
 	ContentType *string       `json:"content_type,omitempty"`
 	Metadata    JSONValue     `json:"metadata,omitempty"`
 	Operation   FileOperation `json:"operation,omitempty"`
+	// ContentBase64 carries the actual file bytes for a server-side write.
+	// nil (field absent or JSON null) keeps the historical metadata-only
+	// commit; a non-nil slice — including an empty one for zero-row
+	// outputs — asks the service to write the bytes to its backing store
+	// before the transaction is committed.
+	ContentBase64 []byte `json:"content_base64"`
 }
 
 type CommitDatasetOutputResponse struct {
@@ -1127,6 +1143,27 @@ type CommitDatasetOutputResponse struct {
 	Files        []DatasetFileIndexEntry `json:"files"`
 	Preview      PreviewDataResponse     `json:"preview"`
 	LineageLinks []DatasetLineageLink    `json:"lineage_links,omitempty"`
+	// IdempotencyKey and RequestFingerprint echo the keyed commit's key and
+	// the service-computed SHA256 over the exact raw request body. Both are
+	// omitempty so non-keyed commits keep their historical response shape.
+	IdempotencyKey     string `json:"idempotency_key,omitempty"`
+	RequestFingerprint string `json:"request_fingerprint,omitempty"`
+}
+
+// OutputCommitReceipt is the durable record of the first COMMITTED keyed
+// outputs:commit for one (dataset, idempotency_key). ResponseBody holds the
+// exact serialized bytes returned to the first caller; replays and the GET
+// endpoint serve these bytes verbatim — never a rebuild from current
+// head/index/lineage. The receipt carries no JWT/subject material: any
+// principal whose tenant scope covers the dataset may replay the key.
+type OutputCommitReceipt struct {
+	DatasetID          uuid.UUID          `json:"dataset_id"`
+	IdempotencyKey     string             `json:"idempotency_key"`
+	RequestFingerprint string             `json:"request_fingerprint"`
+	Branch             string             `json:"branch"`
+	Transaction        RuntimeTransaction `json:"transaction"`
+	ResponseBody       json.RawMessage    `json:"response_body"`
+	CreatedAt          time.Time          `json:"created_at"`
 }
 
 type ValidateRequest struct {

@@ -29,6 +29,7 @@ import (
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/adapters"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/domain"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/models"
+	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/repo"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/workers"
 )
 
@@ -119,12 +120,17 @@ func boolValue(m map[string]any, key string, fallback bool) bool {
 	return fallback
 }
 
+// sourceForClaims loads a source inside the caller's tenant domain and applies
+// the management grant (owner, admin, or connections:write). The tenant match
+// comes from the tenant-scoped repository lookup, so neither the grant nor any
+// client-supplied header can widen access across organizations — admins
+// included.
 func (h *Handlers) sourceForClaims(w http.ResponseWriter, r *http.Request, id uuid.UUID) (*models.Connection, bool) {
 	claims, ok := requireClaims(w, r)
 	if !ok {
 		return nil, false
 	}
-	c, err := h.Repo.GetConnection(r.Context(), id)
+	c, err := h.Repo.GetConnectionForTenant(r.Context(), id, tenantFromClaims(claims))
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "connection lookup failed")
 		return nil, false
@@ -133,7 +139,7 @@ func (h *Handlers) sourceForClaims(w http.ResponseWriter, r *http.Request, id uu
 		writeJSONErr(w, http.StatusNotFound, "connection not found")
 		return nil, false
 	}
-	if c.OwnerID != claims.Sub && !claims.HasRole("admin") && !claims.HasPermission("connections", "write") {
+	if !canWriteSource(c, claims) {
 		writeJSONErr(w, http.StatusForbidden, "forbidden")
 		return nil, false
 	}
@@ -379,6 +385,14 @@ func (h *Handlers) UpdateAutoRegistration(w http.ResponseWriter, r *http.Request
 	b, _ := json.Marshal(cfg)
 	updated, err := h.Repo.UpdateConnectionConfig(r.Context(), id, b)
 	if err != nil {
+		if errors.Is(err, repo.ErrIncrementalOwnerUnresolved) {
+			writeJSONErr(w, http.StatusConflict, "sync has an unresolved incremental checkpoint owner: "+err.Error())
+			return
+		}
+		if errors.Is(err, repo.ErrActiveRuns) {
+			writeJSONErr(w, http.StatusConflict, "source config cannot change while pending or running sync runs exist")
+			return
+		}
 		writeJSONErr(w, http.StatusInternalServerError, "failed to update auto registration")
 		return
 	}
@@ -449,6 +463,10 @@ func (h *Handlers) QueryRegistrationArrow(w http.ResponseWriter, r *http.Request
 		h.QueryRegistration(w, r)
 		return
 	}
+	claims, ok := requireClaims(w, r)
+	if !ok {
+		return
+	}
 	sid, _, err := routeUUIDParam(r, "source_id", "id")
 	if err != nil {
 		writeJSONErr(w, http.StatusBadRequest, "invalid source_id")
@@ -476,7 +494,7 @@ func (h *Handlers) QueryRegistrationArrow(w http.ResponseWriter, r *http.Request
 	if r.Body != nil && json.NewDecoder(r.Body).Decode(&body) == nil && body.Limit != nil {
 		limit = *body.Limit
 	}
-	c, err := h.Repo.GetConnection(r.Context(), sid)
+	c, err := h.Repo.GetConnectionForTenant(r.Context(), sid, tenantFromClaims(claims))
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "connection lookup failed")
 		return
@@ -634,7 +652,8 @@ type connectionTestAdapter interface {
 }
 
 func (h *Handlers) TestConnection(w http.ResponseWriter, r *http.Request) {
-	if _, ok := requireClaims(w, r); !ok {
+	claims, ok := requireClaims(w, r)
+	if !ok {
 		return
 	}
 	id, _, err := routeUUIDParam(r, "id", "source_id")
@@ -642,13 +661,18 @@ func (h *Handlers) TestConnection(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	c, err := h.Repo.GetConnection(r.Context(), id)
+	tenant := tenantFromClaims(claims)
+	c, err := h.Repo.GetConnectionForTenant(r.Context(), id, tenant)
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "connection lookup failed")
 		return
 	}
 	if c == nil {
 		writeJSONErr(w, http.StatusNotFound, "connection not found")
+		return
+	}
+	if !canWriteSource(c, claims) {
+		writeJSONErr(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
@@ -676,7 +700,7 @@ func (h *Handlers) TestConnection(w http.ResponseWriter, r *http.Request) {
 	if result.Success {
 		status = "connected"
 	}
-	_, _ = h.Repo.UpdateConnection(r.Context(), id, &models.UpdateConnectionRequest{Status: &status})
+	_, _ = h.Repo.UpdateConnection(r.Context(), id, tenant, &models.UpdateConnectionRequest{Status: &status})
 	var latency any
 	if result.Success || result.LatencyMS != 0 {
 		latency = result.LatencyMS

@@ -35,6 +35,8 @@ type RESTAPISourceConfig struct {
 	Secrets      map[string]string           `json:"secrets,omitempty"`
 	Runtime      RESTAPIRuntimePolicy        `json:"runtime"`
 	Permissions  RESTAPIPermissions          `json:"permissions"`
+	Egress       *RESTAPIEgressConfig        `json:"egress,omitempty"`
+	Sync         *RESTAPISyncConfig          `json:"sync,omitempty"`
 	Webhook      *RESTAPIWebhookConfig       `json:"webhook,omitempty"`
 	Listener     *InboundListenerDefinition  `json:"listener,omitempty"`
 	Listeners    []InboundListenerDefinition `json:"listeners,omitempty"`
@@ -149,6 +151,22 @@ func normalizeRESTAPISourceConfig(cfg *RESTAPISourceConfig, hasPermissions bool)
 		return err
 	}
 	cfg.Permissions = normalizeRESTAPIPermissions(cfg.Permissions, cfg.Domain, hasPermissions)
+	if cfg.Egress != nil {
+		// Host lists are trimmed/deduplicated like every other string set.
+		// Absent keys stay absent so the service-level egress defaults
+		// (including rejecting insecure HTTP) keep applying; only an explicit
+		// source override can relax them.
+		cfg.Egress.AllowedHosts = normalizeStringSet(cfg.Egress.AllowedHosts)
+		cfg.Egress.BlockedHosts = normalizeStringSet(cfg.Egress.BlockedHosts)
+	}
+	if cfg.Sync != nil {
+		if err := NormalizeRESTAPISyncConfig(cfg.Sync); err != nil {
+			return err
+		}
+		if err := ValidateRESTAPISourceIncremental(cfg); err != nil {
+			return err
+		}
+	}
 	if cfg.Webhook != nil {
 		cfg.Webhook.Method = strings.ToUpper(strings.TrimSpace(cfg.Webhook.Method))
 		if cfg.Webhook.Method == "" {
@@ -158,6 +176,33 @@ func normalizeRESTAPISourceConfig(cfg *RESTAPISourceConfig, hasPermissions bool)
 			return fmt.Errorf("rest_api source webhook method %q is not supported", cfg.Webhook.Method)
 		}
 		cfg.Webhook.Path = strings.TrimSpace(cfg.Webhook.Path)
+	}
+	return nil
+}
+
+// ValidateRESTAPISourceIncremental checks the P2.5 cross-block conflicts that
+// are only visible at Source level: when sync.incremental is enabled, its
+// fixed request_param must not collide with the source auth's query placement.
+// The collision mirrors the runtime's ACTUAL query-writing behavior
+// (RESTSnapshotAuth.applyToQuery sets the query parameter only for api_key
+// auth with a query_param), so a leftover query_param on a bearer/none auth
+// never falsely rejects a valid incremental key (source review item 3).
+// Called from the typed roundtrip here AND from the authoritative Repo
+// admission/write paths after the Source lock.
+func ValidateRESTAPISourceIncremental(source *RESTAPISourceConfig) error {
+	if source == nil || source.Sync == nil {
+		return nil
+	}
+	inc := source.Sync.Incremental
+	if inc == nil || !inc.Enabled {
+		return nil
+	}
+	if source.Auth.Type != RESTAPIAuthAPIKey {
+		return nil
+	}
+	authQuery := strings.TrimSpace(source.Auth.QueryParam)
+	if authQuery != "" && authQuery == strings.TrimSpace(inc.RequestParam) {
+		return fmt.Errorf("rest_api source sync.incremental.request_param %q collides with the auth query placement", inc.RequestParam)
 	}
 	return nil
 }

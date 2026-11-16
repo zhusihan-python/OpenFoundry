@@ -91,15 +91,19 @@ func BuildRouter(cfg *config.Config, m *observability.Metrics, probes ...capabil
 
 	jwt := authmw.NewJWTConfig(cfg.JWTSecret)
 	// Rust-compatible SparkApplication submission surface from the Rust /api/v1/pipeline nest.
-	// Rust mounted these routes outside the JWT-protected data-integration/v1 groups;
-	// the gateway can still enforce auth upstream.
+	// Rust mounted these routes outside the JWT-protected groups and relied
+	// on the gateway; the P1.1 tenant boundary requires the verified JWT
+	// here as well, so both auth and tenant scope are enforced locally.
 	r.Route("/api/v1/pipeline", func(pipeline chi.Router) {
+		pipeline.Use(authmw.Middleware(jwt))
+		pipeline.Use(handler.TenantScopeMiddleware())
 		pipeline.Post("/builds/run", handler.SubmitPipelineBuildRun)
 		pipeline.Get("/builds/{run_id}/status", handler.GetPipelineBuildRunStatus)
 	})
 
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Use(authmw.Middleware(jwt))
+		api.Use(handler.TenantScopeMiddleware())
 
 		// Builds (v1).
 		api.Get("/builds", handler.ListBuilds)
@@ -167,6 +171,7 @@ func BuildRouter(cfg *config.Config, m *observability.Metrics, probes ...capabil
 
 	r.Route("/v1", func(v1 chi.Router) {
 		v1.Use(authmw.Middleware(jwt))
+		v1.Use(handler.TenantScopeMiddleware())
 		v1.Get("/builds", handler.ListBuildsV1)
 		v1.Post("/builds", handler.CreateBuildV1)
 		v1.Get("/builds/{rid}", handler.GetBuildV1)

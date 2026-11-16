@@ -198,6 +198,16 @@ func (h *Handlers) ListViewFiles(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "invalid view_id")
 		return
 	}
+	// The view must belong to the tenant-resolved dataset — a foreign
+	// view id (possibly another dataset's, in the same or another tenant)
+	// must not shape this dataset's reads.
+	if foreign, err := h.viewForeignToDataset(r.Context(), datasetID, viewID); err != nil {
+		writeViewError(w, err)
+		return
+	} else if foreign {
+		writeJSONErr(w, http.StatusNotFound, "view not found")
+		return
+	}
 	files, err := h.Repo.ListViewFiles(r.Context(), datasetID, viewID)
 	if err != nil {
 		writeViewError(w, err)
@@ -207,7 +217,8 @@ func (h *Handlers) ListViewFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) GetViewSchema(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.resolveDatasetForCatalog(w, r); !ok {
+	datasetID, ok := h.resolveDatasetForCatalog(w, r)
+	if !ok {
 		return
 	}
 	viewID, err := uuid.Parse(viewIDParam(r))
@@ -221,6 +232,15 @@ func (h *Handlers) GetViewSchema(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if schema == nil {
+		writeJSONErr(w, http.StatusNotFound, "schema not found")
+		return
+	}
+	// View ids are global: a schema stored for another dataset (possibly
+	// another tenant's) must not be readable through this route.
+	if foreign, err := h.viewForeignToDataset(r.Context(), datasetID, viewID); err != nil {
+		writeViewError(w, err)
+		return
+	} else if foreign {
 		writeJSONErr(w, http.StatusNotFound, "schema not found")
 		return
 	}
@@ -238,6 +258,16 @@ func (h *Handlers) PutViewSchema(w http.ResponseWriter, r *http.Request) {
 	viewID, err := uuid.Parse(viewIDParam(r))
 	if err != nil {
 		writeJSONErr(w, http.StatusBadRequest, "invalid view_id")
+		return
+	}
+	// PutViewSchema upserts on view_id: an existing view or schema row
+	// owned by another dataset (possibly another tenant's) must not be
+	// overwritten through this route.
+	if foreign, err := h.viewForeignToDataset(r.Context(), datasetID, viewID); err != nil {
+		writeViewError(w, err)
+		return
+	} else if foreign {
+		writeJSONErr(w, http.StatusNotFound, "view not found")
 		return
 	}
 	var body models.PutSchemaBody
@@ -282,6 +312,15 @@ func (h *Handlers) previewData(w http.ResponseWriter, r *http.Request, scopedVie
 		id, err := uuid.Parse(viewIDParam(r))
 		if err != nil {
 			writeJSONErr(w, http.StatusBadRequest, "invalid view_id")
+			return
+		}
+		// A view from another dataset (possibly another tenant's) must not
+		// shape the preview, not even through its schema columns.
+		if foreign, err := h.viewForeignToDataset(r.Context(), datasetID, id); err != nil {
+			writeViewError(w, err)
+			return
+		} else if foreign {
+			writeJSONErr(w, http.StatusNotFound, "view not found")
 			return
 		}
 		viewID = &id

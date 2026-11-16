@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,7 +39,43 @@ type txBeginner interface {
 }
 
 // Repository implements the production persistence ports used by the handlers.
-type Repository struct{ db DB }
+type Repository struct {
+	db DB
+	// datasetOrgOnce lazily probes whether the co-located dataset schema
+	// carries the org/owner columns (dataset-versioning P1.1). Until that
+	// migration has been applied — or in a split-database deployment where
+	// the dataset tables are foreign — the dataset-touching helpers keep
+	// their legacy SQL instead of referencing a column that may not exist.
+	datasetOrgOnce    sync.Once
+	datasetOrgCapable bool
+}
+
+// DatasetTenantBoundarySupported reports whether this repository can
+// enforce the tenant boundary on the co-located dataset schema (the
+// columns exist and the probe succeeded). Handlers use it to reject
+// scoped build-resolution requests with a stable 503 BEFORE any database
+// write when the deployment cannot enforce the boundary.
+func (r *Repository) DatasetTenantBoundarySupported(ctx context.Context) bool {
+	return r.datasetOrgColumns(ctx)
+}
+
+// datasetOrgColumns reports whether datasets.org_id / datasets.owner_id
+// exist in the current schema. Probed once per repository instance; a
+// failed probe falls back to the legacy unfiltered SQL.
+func (r *Repository) datasetOrgColumns(ctx context.Context) bool {
+	r.datasetOrgOnce.Do(func() {
+		const probe = `SELECT EXISTS (
+  SELECT 1 FROM information_schema.columns
+  WHERE table_schema = current_schema() AND table_name = 'datasets'
+    AND column_name IN ('org_id', 'owner_id')
+  HAVING COUNT(*) = 2)`
+		var capable bool
+		if err := r.db.QueryRow(ctx, probe).Scan(&capable); err == nil {
+			r.datasetOrgCapable = capable
+		}
+	})
+	return r.datasetOrgCapable
+}
 
 func NewRepository(db DB) *Repository { return &Repository{db: db} }
 
@@ -64,13 +101,20 @@ func (r *Repository) Lookup(ctx context.Context, pipelineRID, outputDatasetRID, 
 }
 
 func (r *Repository) lookupJobSpecOnBranch(ctx context.Context, pipelineRID, outputDatasetRID, branch string) (*models.JobSpec, error) {
-	const q = `SELECT rid, pipeline_rid, branch_name, inputs, output_dataset_rid, job_spec_json, content_hash
-FROM pipeline_job_specs
-WHERE pipeline_rid=$1 AND output_dataset_rid=$2 AND branch_name=$3`
+	where := "pipeline_rid=$1 AND output_dataset_rid=$2 AND branch_name=$3"
+	args := []any{pipelineRID, outputDatasetRID, branch}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "pipeline_job_specs")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	var spec models.JobSpec
 	var inputsRaw, jobSpecRaw []byte
 	var singleOutput string
-	err := r.db.QueryRow(ctx, q, pipelineRID, outputDatasetRID, branch).Scan(&spec.RID, &spec.PipelineRID, &spec.BranchName, &inputsRaw, &singleOutput, &jobSpecRaw, &spec.ContentHash)
+	err := r.db.QueryRow(ctx, `SELECT COALESCE(job_spec_rid, rid), pipeline_rid, branch_name, inputs, output_dataset_rid, job_spec_json, content_hash
+FROM pipeline_job_specs
+WHERE `+where, args...).Scan(&spec.RID, &spec.PipelineRID, &spec.BranchName, &inputsRaw, &singleOutput, &jobSpecRaw, &spec.ContentHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -104,11 +148,37 @@ WHERE pipeline_rid=$1 AND output_dataset_rid=$2 AND branch_name=$3`
 // ListBranches implements resolver.DatasetVersioningRepository using the
 // dataset-versioning schema when it is co-located in the same database.
 func (r *Repository) ListBranches(ctx context.Context, datasetRID string) ([]models.BranchSnapshot, error) {
-	const q = `SELECT b.name, COALESCE('ri.foundry.main.transaction.' || b.head_transaction_id::text, '')
+	where := "b.dataset_rid=$1 AND b.deleted_at IS NULL"
+	args := []any{datasetRID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		if !r.datasetOrgColumns(ctx) {
+			return nil, handler.ErrDatasetTenantBoundaryUnsupported
+		}
+		sb := &sqlBuilder{args: args}
+		appendDatasetOrgClause(sb, scope)
+		where += sb.whereSQL()
+		args = sb.args
+		// Explicit ownership check: a scoped caller referencing a
+		// dataset that is not visible (foreign tenant / absent) gets a
+		// precise 404 — an empty-but-legitimate branch list for an OWNED
+		// dataset still returns an empty slice, never an error.
+		dsBuilder := &sqlBuilder{args: []any{datasetRID}}
+		dsWhere := "d.rid=$1"
+		appendDatasetOrgClause(dsBuilder, scope)
+		dsWhere += dsBuilder.whereSQL()
+		var visible bool
+		if err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM datasets d WHERE `+dsWhere+`)`, dsBuilder.args...).Scan(&visible); err != nil {
+			return nil, err
+		}
+		if !visible {
+			return nil, &handler.DatasetHTTPError{Status: 404, Code: "dataset_not_found", Detail: "dataset is not visible in the caller's tenant"}
+		}
+	}
+	rows, err := r.db.Query(ctx, `SELECT b.name, COALESCE('ri.foundry.main.transaction.' || b.head_transaction_id::text, '')
 FROM dataset_branches b
-WHERE b.dataset_rid=$1 AND b.deleted_at IS NULL
-ORDER BY b.name`
-	rows, err := r.db.Query(ctx, q, datasetRID)
+JOIN datasets d ON d.id = b.dataset_id
+WHERE `+where+`
+ORDER BY b.name`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -130,11 +200,21 @@ ORDER BY b.name`
 
 func (r *Repository) OpenTransaction(ctx context.Context, datasetRID, branch string) (string, error) {
 	txID := uuid.New()
-	const q = `INSERT INTO dataset_transactions (id, dataset_id, branch_id, branch_name, tx_type, status, operation)
+	where := "d.rid=$2 AND b.name=$3 AND b.deleted_at IS NULL"
+	args := []any{txID, datasetRID, branch}
+	if scope := scopeFromContext(ctx); scope != nil {
+		if !r.datasetOrgColumns(ctx) {
+			return "", handler.ErrDatasetTenantBoundaryUnsupported
+		}
+		sb := &sqlBuilder{args: args}
+		appendDatasetOrgClause(sb, scope)
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	tag, err := r.db.Exec(ctx, `INSERT INTO dataset_transactions (id, dataset_id, branch_id, branch_name, tx_type, status, operation)
 SELECT $1, d.id, b.id, b.name, 'UPDATE', 'OPEN', 'pipeline-build'
 FROM datasets d JOIN dataset_branches b ON b.dataset_id=d.id
-WHERE d.rid=$2 AND b.name=$3 AND b.deleted_at IS NULL`
-	tag, err := r.db.Exec(ctx, q, txID, datasetRID, branch)
+WHERE `+where, args...)
 	if err != nil {
 		return "", err
 	}
@@ -145,15 +225,25 @@ WHERE d.rid=$2 AND b.name=$3 AND b.deleted_at IS NULL`
 }
 
 func (r *Repository) ViewSchema(ctx context.Context, datasetRID, branch string) (json.RawMessage, error) {
-	const q = `SELECT COALESCE(v.metadata->'schema', '{}'::jsonb)
+	where := "d.rid=$1 AND b.name=$2 AND b.deleted_at IS NULL"
+	args := []any{datasetRID, branch}
+	if scope := scopeFromContext(ctx); scope != nil {
+		if !r.datasetOrgColumns(ctx) {
+			return nil, handler.ErrDatasetTenantBoundaryUnsupported
+		}
+		sb := &sqlBuilder{args: args}
+		appendDatasetOrgClause(sb, scope)
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	var raw []byte
+	err := r.db.QueryRow(ctx, `SELECT COALESCE(v.metadata->'schema', '{}'::jsonb)
 FROM datasets d
 JOIN dataset_branches b ON b.dataset_id=d.id
 LEFT JOIN dataset_views v ON v.dataset_id=d.id AND v.branch_id=b.id
-WHERE d.rid=$1 AND b.name=$2 AND b.deleted_at IS NULL
+WHERE `+where+`
 ORDER BY v.computed_at DESC NULLS LAST
-LIMIT 1`
-	var raw []byte
-	err := r.db.QueryRow(ctx, q, datasetRID, branch).Scan(&raw)
+LIMIT 1`, args...).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return json.RawMessage(`{}`), nil
 	}
@@ -184,18 +274,166 @@ func (r *Repository) TryAcquire(ctx context.Context, outputDatasetRID string, bu
 	return holder, false, nil
 }
 
+// ReleaseLock implements resolver.LockReleaser: it drops ONLY the lock
+// row this build holds for the given output dataset (build_id is unique
+// per build, so a foreign build's or tenant's lock can never be touched).
+func (r *Repository) ReleaseLock(ctx context.Context, outputDatasetRID string, buildID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `DELETE FROM build_input_locks WHERE build_id=$1 AND output_dataset_rid=$2`, buildID, outputDatasetRID)
+	return err
+}
+
+// RecordPendingTxn implements resolver.PendingTxnRecorder: persists the
+// build↔transaction association the moment the transaction is opened.
+func (r *Repository) RecordPendingTxn(ctx context.Context, buildID uuid.UUID, datasetRID, branch, transactionRID string) error {
+	guard := "id=$1"
+	args := []any{buildID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds")
+		guard += sb.whereSQL()
+		args = sb.args
+	}
+	var ok bool
+	if err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM builds WHERE `+guard+`)`, args...).Scan(&ok); err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("build %s not visible in caller tenant", buildID)
+	}
+	_, err := r.db.Exec(ctx, `INSERT INTO build_pending_output_txns (build_id, dataset_rid, branch, transaction_rid) VALUES ($1,$2,$3,$4) ON CONFLICT (build_id, transaction_rid) DO NOTHING`, buildID, datasetRID, branch, transactionRID)
+	return err
+}
+
+// ClearPendingTxn removes the association only after a confirmed abort,
+// and only when the build is visible under the caller's tenant.
+func (r *Repository) ClearPendingTxn(ctx context.Context, buildID uuid.UUID, transactionRID string) error {
+	where := `b.id = p.build_id AND p.build_id = $1 AND p.transaction_rid = $2`
+	args := []any{buildID, transactionRID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds b")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	_, err := r.db.Exec(ctx, `DELETE FROM build_pending_output_txns p USING builds b WHERE `+where, args...)
+	return err
+}
+
+// ListPendingTxns returns the build's retryable remote transactions,
+// tenant-guarded through the parent build.
+func (r *Repository) ListPendingTxns(ctx context.Context, buildID uuid.UUID) ([]handler.PendingOutputTxn, error) {
+	where := "p.build_id = $1"
+	args := []any{buildID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds b")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	rows, err := r.db.Query(ctx, `SELECT p.dataset_rid, p.branch, p.transaction_rid
+FROM build_pending_output_txns p JOIN builds b ON b.id = p.build_id
+WHERE `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []handler.PendingOutputTxn{}
+	for rows.Next() {
+		var item handler.PendingOutputTxn
+		if err := rows.Scan(&item.DatasetRID, &item.Branch, &item.TransactionRID); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// ClearPendingTxnsForBuild drops every pending association of the build
+// at once (used after the main abort path confirmed all transactions);
+// tenant-guarded through the parent build.
+func (r *Repository) ClearPendingTxnsForBuild(ctx context.Context, buildID uuid.UUID) error {
+	where := "b.id = p.build_id AND p.build_id = $1"
+	args := []any{buildID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds b")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	_, err := r.db.Exec(ctx, `DELETE FROM build_pending_output_txns p USING builds b WHERE `+where, args...)
+	return err
+}
+
+// AbortTransaction implements handler.TransactionAborter against the
+// co-located dataset schema. The row must match the parent dataset RID,
+// the branch name and the caller's tenant boundary; scoped callers fail
+// closed when the dataset org columns are unavailable.
+func (r *Repository) AbortTransaction(ctx context.Context, datasetRID, branch, transactionRID string) error {
+	txID := strings.TrimPrefix(transactionRID, "ri.foundry.main.transaction.")
+	if _, err := uuid.Parse(txID); err != nil {
+		return fmt.Errorf("invalid transaction rid: %w", err)
+	}
+	where := "t.id=$1 AND t.branch_name=$2 AND d.rid=$3"
+	args := []any{txID, branch, datasetRID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		if !r.datasetOrgColumns(ctx) {
+			return handler.ErrDatasetTenantBoundaryUnsupported
+		}
+		sb := &sqlBuilder{args: args}
+		appendDatasetOrgClause(sb, scope)
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	// Terminal-state semantics, race-safe: a single conditional UPDATE
+	// transitions only status='OPEN' rows; zero affected rows are then
+	// classified by re-reading the committed state (ABORTED is
+	// idempotent success, anything else conflicts, missing is 404).
+	tag, err := r.db.Exec(ctx, `UPDATE dataset_transactions t
+SET status='ABORTED', aborted_at=NOW()
+FROM datasets d
+WHERE d.id = t.dataset_id AND `+where+` AND t.status='OPEN'`, args...)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var status string
+	err = r.db.QueryRow(ctx, `SELECT t.status
+FROM dataset_transactions t
+JOIN datasets d ON d.id = t.dataset_id
+WHERE `+where, args...).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return handler.ErrTransactionNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status == "ABORTED" {
+		return nil
+	}
+	return handler.ErrTransactionConflict
+}
+
 func (r *Repository) HasUpstreamInProgress(ctx context.Context, inputDatasetRIDs []string, selfBuildID uuid.UUID) (bool, error) {
 	if len(inputDatasetRIDs) == 0 {
 		return false, nil
 	}
-	const q = `SELECT EXISTS (
+	where := `jo.output_dataset_rid = ANY($1) AND b.id<>$2 AND b.state IN ('BUILD_RESOLUTION','BUILD_QUEUED','BUILD_RUNNING','BUILD_ABORTING')`
+	args := []any{inputDatasetRIDs, selfBuildID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds b")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	var exists bool
+	if err := r.db.QueryRow(ctx, `SELECT EXISTS (
   SELECT 1 FROM job_outputs jo
   JOIN jobs j ON j.id=jo.job_id
   JOIN builds b ON b.id=j.build_id
-  WHERE jo.output_dataset_rid = ANY($1) AND b.id<>$2 AND b.state IN ('BUILD_RESOLUTION','BUILD_QUEUED','BUILD_RUNNING','BUILD_ABORTING')
-)`
-	var exists bool
-	if err := r.db.QueryRow(ctx, q, inputDatasetRIDs, selfBuildID).Scan(&exists); err != nil {
+  WHERE `+where+`
+)`, args...).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil
@@ -206,12 +444,18 @@ func (r *Repository) OpenBuild(ctx context.Context, args resolver.ResolveBuildAr
 	if args.TriggerKind == "" {
 		args.TriggerKind = "MANUAL"
 	}
+	if args.JobSpecFallback == nil {
+		// A nil slice binds as SQL NULL, violating the NOT NULL
+		// DEFAULT '{}' column (SQLSTATE 23502) when the request omits
+		// the optional job_spec_fallback — bind the empty array instead.
+		args.JobSpecFallback = []string{}
+	}
 	if args.AbortPolicy == "" {
 		args.AbortPolicy = string(models.AbortDependentOnly)
 	}
-	_, err := r.db.Exec(ctx, `INSERT INTO builds (id, pipeline_rid, build_branch, job_spec_fallback, state, trigger_kind, force_build, requested_by, abort_policy)
-VALUES ($1,$2,$3,$4,'BUILD_RESOLUTION',$5,$6,$7,$8)
-ON CONFLICT (id) DO NOTHING`, buildID, args.PipelineRID, args.BuildBranch, args.JobSpecFallback, args.TriggerKind, args.ForceBuild, args.RequestedBy, args.AbortPolicy)
+	_, err := r.db.Exec(ctx, `INSERT INTO builds (id, pipeline_rid, build_branch, job_spec_fallback, state, trigger_kind, force_build, requested_by, abort_policy, tenant_id)
+VALUES ($1,$2,$3,$4,'BUILD_RESOLUTION',$5,$6,$7,$8,$9)
+ON CONFLICT (id) DO NOTHING`, buildID, args.PipelineRID, args.BuildBranch, args.JobSpecFallback, args.TriggerKind, args.ForceBuild, args.RequestedBy, args.AbortPolicy, tenantValueForInsert(ctx))
 	return err
 }
 
@@ -304,13 +548,21 @@ func (r *Repository) ListBuilds(ctx context.Context, q models.ListBuildsQuery) (
 			cursor = &parsed
 		}
 	}
+	where := `($1='' OR pipeline_rid=$1) AND ($2='' OR state=$2) AND ($3='' OR build_branch=$3)
+  AND ($4::timestamptz IS NULL OR created_at >= $4)
+  AND ($5::timestamptz IS NULL OR created_at < $5)`
+	args := []any{q.PipelineRID, q.Status, q.Branch, q.Since, cursor, limit}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	rows, err := r.db.Query(ctx, `SELECT id, rid, pipeline_rid, build_branch, job_spec_fallback, state, trigger_kind, force_build, abort_policy, queued_at, started_at, finished_at, error_message, requested_by, created_at
 FROM builds
-WHERE ($1='' OR pipeline_rid=$1) AND ($2='' OR state=$2) AND ($3='' OR build_branch=$3)
-  AND ($4::timestamptz IS NULL OR created_at >= $4)
-  AND ($5::timestamptz IS NULL OR created_at < $5)
+WHERE `+where+`
 ORDER BY created_at DESC
-LIMIT $6`, q.PipelineRID, q.Status, q.Branch, q.Since, cursor, limit)
+LIMIT $6`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -327,9 +579,20 @@ LIMIT $6`, q.PipelineRID, q.Status, q.Branch, q.Since, cursor, limit)
 }
 
 func (r *Repository) GetBuild(ctx context.Context, idOrRID string) (*models.BuildEnvelope, error) {
+	where := "WHERE id::text=$1 OR rid=$1"
+	args := []any{idOrRID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		// Parenthesize: AND binds tighter than OR, so the tenant clause
+		// must guard BOTH the UUID and the RID branch. The WHERE keyword
+		// stays outside the parentheses.
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds")
+		where = "WHERE (id::text=$1 OR rid=$1)" + sb.whereSQL()
+		args = sb.args
+	}
 	var b models.Build
 	err := r.db.QueryRow(ctx, `SELECT id, rid, pipeline_rid, build_branch, job_spec_fallback, state, trigger_kind, force_build, abort_policy, queued_at, started_at, finished_at, error_message, requested_by, created_at
-FROM builds WHERE id::text=$1 OR rid=$1`, idOrRID).Scan(&b.ID, &b.RID, &b.PipelineRID, &b.BuildBranch, &b.JobSpecFallback, &b.State, &b.TriggerKind, &b.ForceBuild, &b.AbortPolicy, &b.QueuedAt, &b.StartedAt, &b.FinishedAt, &b.ErrorMessage, &b.RequestedBy, &b.CreatedAt)
+FROM builds `+where, args...).Scan(&b.ID, &b.RID, &b.PipelineRID, &b.BuildBranch, &b.JobSpecFallback, &b.State, &b.TriggerKind, &b.ForceBuild, &b.AbortPolicy, &b.QueuedAt, &b.StartedAt, &b.FinishedAt, &b.ErrorMessage, &b.RequestedBy, &b.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -350,8 +613,18 @@ func scanBuild(rows pgx.Rows) (models.Build, error) {
 }
 
 func (r *Repository) ListJobsForBuildID(ctx context.Context, idOrRID string) ([]models.Job, error) {
+	where := "WHERE id::text=$1 OR rid=$1"
+	args := []any{idOrRID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		// Parenthesized so the tenant clause guards both id branches;
+		// the WHERE keyword stays outside.
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds")
+		where = "WHERE (id::text=$1 OR rid=$1)" + sb.whereSQL()
+		args = sb.args
+	}
 	var buildID uuid.UUID
-	err := r.db.QueryRow(ctx, `SELECT id FROM builds WHERE id::text=$1 OR rid=$1`, idOrRID).Scan(&buildID)
+	err := r.db.QueryRow(ctx, `SELECT id FROM builds `+where, args...).Scan(&buildID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -362,9 +635,21 @@ func (r *Repository) ListJobsForBuildID(ctx context.Context, idOrRID string) ([]
 }
 
 func (r *Repository) GetJob(ctx context.Context, idOrRID string) (*models.Job, error) {
+	where := "WHERE id::text=$1 OR rid=$1"
+	args := []any{idOrRID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		// Jobs are subresources of their build: the build's tenant
+		// boundary decides visibility, guarding BOTH id branches —
+		// AND binds tighter than an unparenthesized OR, and the WHERE
+		// keyword stays outside the parentheses.
+		sb := &sqlBuilder{args: args}
+		appendBuildParentClause(sb, scope, "jobs")
+		where = "WHERE (id::text=$1 OR rid=$1)" + sb.whereSQL()
+		args = sb.args
+	}
 	var j models.Job
 	err := r.db.QueryRow(ctx, `SELECT id, rid, build_id, job_spec_rid, state, output_transaction_rids, state_changed_at, attempt, stale_skipped, failure_reason, output_content_hash, created_at
-FROM jobs WHERE id::text=$1 OR rid=$1`, idOrRID).Scan(&j.ID, &j.RID, &j.BuildID, &j.JobSpecRID, &j.State, &j.OutputTransactionRIDs, &j.StateChangedAt, &j.Attempt, &j.StaleSkipped, &j.FailureReason, &j.OutputContentHash, &j.CreatedAt)
+FROM jobs `+where, args...).Scan(&j.ID, &j.RID, &j.BuildID, &j.JobSpecRID, &j.State, &j.OutputTransactionRIDs, &j.StateChangedAt, &j.Attempt, &j.StaleSkipped, &j.FailureReason, &j.OutputContentHash, &j.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -392,10 +677,18 @@ func (r *Repository) listJobsForBuild(ctx context.Context, buildID uuid.UUID) ([
 }
 
 func (r *Repository) LoadPlan(ctx context.Context, buildID uuid.UUID) (executor.Plan, error) {
+	where := "WHERE id=$1"
+	args := []any{buildID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	var plan executor.Plan
 	var abortPolicy string
 	var forceBuild bool
-	err := r.db.QueryRow(ctx, `SELECT id, build_branch, abort_policy, force_build FROM builds WHERE id=$1`, buildID).Scan(&plan.BuildID, &plan.BuildBranch, &abortPolicy, &forceBuild)
+	err := r.db.QueryRow(ctx, `SELECT id, build_branch, abort_policy, force_build FROM builds `+where, args...).Scan(&plan.BuildID, &plan.BuildBranch, &abortPolicy, &forceBuild)
 	if err != nil {
 		return executor.Plan{}, err
 	}
@@ -540,8 +833,16 @@ func (r *Repository) outputsForJob(ctx context.Context, jobID uuid.UUID) ([]exec
 }
 
 func (r *Repository) LoadPipeline(ctx context.Context, pipelineID uuid.UUID) (*models.Pipeline, error) {
+	where := "WHERE id=$1"
+	args := []any{pipelineID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "pipelines")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	var p models.Pipeline
-	err := r.db.QueryRow(ctx, `SELECT `+pipelineSelectColumns+` FROM pipelines WHERE id=$1`, pipelineID).Scan(pipelineScanDest(&p)...)
+	err := r.db.QueryRow(ctx, `SELECT `+pipelineSelectColumns+` FROM pipelines `+where, args...).Scan(pipelineScanDest(&p)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -586,12 +887,28 @@ func (r *Repository) ListPipelineRuns(ctx context.Context, pipelineID uuid.UUID,
 	if perPage > 100 {
 		perPage = 100
 	}
-	return r.queryPipelineRuns(ctx, `SELECT id, pipeline_id, status, trigger_type, started_by, attempt_number, started_from_node_id, retry_of_run_id, execution_context, node_results, error_message, started_at, finished_at FROM pipeline_runs WHERE pipeline_id=$1 ORDER BY started_at DESC LIMIT $2 OFFSET $3`, pipelineID, perPage, (page-1)*perPage)
+	where := "WHERE pipeline_id=$1"
+	args := []any{pipelineID, perPage, (page - 1) * perPage}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendPipelineParentClause(sb, scope, "pipeline_runs.pipeline_id")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	return r.queryPipelineRuns(ctx, `SELECT id, pipeline_id, status, trigger_type, started_by, attempt_number, started_from_node_id, retry_of_run_id, execution_context, node_results, error_message, started_at, finished_at FROM pipeline_runs `+where+` ORDER BY started_at DESC LIMIT $2 OFFSET $3`, args...)
 }
 
 func (r *Repository) GetPipelineRun(ctx context.Context, pipelineID, runID uuid.UUID) (*models.PipelineRun, error) {
+	where := "WHERE id=$1 AND pipeline_id=$2"
+	args := []any{runID, pipelineID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendPipelineParentClause(sb, scope, "pipeline_runs.pipeline_id")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	var run models.PipelineRun
-	err := r.db.QueryRow(ctx, `SELECT id, pipeline_id, status, trigger_type, started_by, attempt_number, started_from_node_id, retry_of_run_id, execution_context, node_results, error_message, started_at, finished_at FROM pipeline_runs WHERE id=$1 AND pipeline_id=$2`, runID, pipelineID).Scan(&run.ID, &run.PipelineID, &run.Status, &run.TriggerType, &run.StartedBy, &run.AttemptNumber, &run.StartedFromNodeID, &run.RetryOfRunID, &run.ExecutionContext, &run.NodeResults, &run.ErrorMessage, &run.StartedAt, &run.FinishedAt)
+	err := r.db.QueryRow(ctx, `SELECT id, pipeline_id, status, trigger_type, started_by, attempt_number, started_from_node_id, retry_of_run_id, execution_context, node_results, error_message, started_at, finished_at FROM pipeline_runs `+where, args...).Scan(&run.ID, &run.PipelineID, &run.Status, &run.TriggerType, &run.StartedBy, &run.AttemptNumber, &run.StartedFromNodeID, &run.RetryOfRunID, &run.ExecutionContext, &run.NodeResults, &run.ErrorMessage, &run.StartedAt, &run.FinishedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -608,25 +925,57 @@ func (r *Repository) ListBuildQueue(ctx context.Context, query handler.BuildQueu
 	if query.PerPage > 200 {
 		query.PerPage = 200
 	}
-	return r.queryPipelineRuns(ctx, `SELECT id, pipeline_id, status, trigger_type, started_by, attempt_number, started_from_node_id, retry_of_run_id, execution_context, node_results, error_message, started_at, finished_at FROM pipeline_runs WHERE ($1='' OR status=$1) AND ($2='' OR trigger_type=$2) AND ($3::uuid IS NULL OR pipeline_id=$3) ORDER BY started_at DESC LIMIT $4 OFFSET $5`, query.Status, query.TriggerType, query.PipelineID, query.PerPage, (query.Page-1)*query.PerPage)
+	where := "($1='' OR status=$1) AND ($2='' OR trigger_type=$2) AND ($3::uuid IS NULL OR pipeline_id=$3)"
+	args := []any{query.Status, query.TriggerType, query.PipelineID, query.PerPage, (query.Page - 1) * query.PerPage}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendPipelineParentClause(sb, scope, "pipeline_runs.pipeline_id")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	return r.queryPipelineRuns(ctx, `SELECT id, pipeline_id, status, trigger_type, started_by, attempt_number, started_from_node_id, retry_of_run_id, execution_context, node_results, error_message, started_at, finished_at FROM pipeline_runs WHERE `+where+` ORDER BY started_at DESC LIMIT $4 OFFSET $5`, args...)
 }
 
 func (r *Repository) AbortPipelineRun(ctx context.Context, runID uuid.UUID) (*models.PipelineRun, bool, error) {
+	cancelWhere := "id=$1 AND status IN ('queued','pending','running','BUILD_QUEUED','BUILD_RUNNING')"
+	cancelArgs := []any{runID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: cancelArgs}
+		appendPipelineParentClause(sb, scope, "pipeline_runs.pipeline_id")
+		cancelWhere += sb.whereSQL()
+		cancelArgs = sb.args
+	}
 	var run models.PipelineRun
-	err := r.db.QueryRow(ctx, `UPDATE pipeline_runs SET status='cancelled', error_message=COALESCE(error_message, 'cancelled by user'), finished_at=NOW() WHERE id=$1 AND status IN ('queued','pending','running','BUILD_QUEUED','BUILD_RUNNING') RETURNING id, pipeline_id, status, trigger_type, started_by, attempt_number, started_from_node_id, retry_of_run_id, execution_context, node_results, error_message, started_at, finished_at`, runID).Scan(&run.ID, &run.PipelineID, &run.Status, &run.TriggerType, &run.StartedBy, &run.AttemptNumber, &run.StartedFromNodeID, &run.RetryOfRunID, &run.ExecutionContext, &run.NodeResults, &run.ErrorMessage, &run.StartedAt, &run.FinishedAt)
+	err := r.db.QueryRow(ctx, `UPDATE pipeline_runs SET status='cancelled', error_message=COALESCE(error_message, 'cancelled by user'), finished_at=NOW() WHERE `+cancelWhere+` RETURNING id, pipeline_id, status, trigger_type, started_by, attempt_number, started_from_node_id, retry_of_run_id, execution_context, node_results, error_message, started_at, finished_at`, cancelArgs...).Scan(&run.ID, &run.PipelineID, &run.Status, &run.TriggerType, &run.StartedBy, &run.AttemptNumber, &run.StartedFromNodeID, &run.RetryOfRunID, &run.ExecutionContext, &run.NodeResults, &run.ErrorMessage, &run.StartedAt, &run.FinishedAt)
 	if err == nil {
 		return &run, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, err
 	}
+	existsWhere := "id=$1"
+	existsArgs := []any{runID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: existsArgs}
+		appendPipelineParentClause(sb, scope, "pipeline_runs.pipeline_id")
+		existsWhere += sb.whereSQL()
+		existsArgs = sb.args
+	}
 	var exists bool
-	err = r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_runs WHERE id=$1)`, runID).Scan(&exists)
+	err = r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_runs WHERE `+existsWhere+`)`, existsArgs...).Scan(&exists)
 	return nil, exists, err
 }
 
 func (r *Repository) QueueSummary(ctx context.Context) (map[string]int64, error) {
-	rows, err := r.db.Query(ctx, `SELECT status, COUNT(*)::bigint FROM pipeline_runs WHERE started_at > NOW() - INTERVAL '24 hours' GROUP BY status`)
+	where := "started_at > NOW() - INTERVAL '24 hours'"
+	args := []any{}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendPipelineParentClause(sb, scope, "pipeline_runs.pipeline_id")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	rows, err := r.db.Query(ctx, `SELECT status, COUNT(*)::bigint FROM pipeline_runs WHERE `+where+` GROUP BY status`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -644,7 +993,15 @@ func (r *Repository) QueueSummary(ctx context.Context) (map[string]int64, error)
 }
 
 func (r *Repository) ListDuePipelines(ctx context.Context) ([]models.Pipeline, error) {
-	rows, err := r.db.Query(ctx, `SELECT `+pipelineSelectColumns+` FROM pipelines WHERE status='active' AND next_run_at IS NOT NULL AND next_run_at <= NOW() ORDER BY next_run_at ASC`)
+	where := "status='active' AND next_run_at IS NOT NULL AND next_run_at <= NOW()"
+	args := []any{}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "pipelines")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	rows, err := r.db.Query(ctx, `SELECT `+pipelineSelectColumns+` FROM pipelines WHERE `+where+` ORDER BY next_run_at ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -661,7 +1018,15 @@ func (r *Repository) ListDuePipelines(ctx context.Context) ([]models.Pipeline, e
 }
 
 func (r *Repository) UpdatePipelineNextRun(ctx context.Context, pipelineID uuid.UUID, nextRunAt *time.Time) error {
-	_, err := r.db.Exec(ctx, `UPDATE pipelines SET next_run_at=$2, updated_at=NOW() WHERE id=$1`, pipelineID, nextRunAt)
+	where := "id=$1"
+	args := []any{pipelineID, nextRunAt}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "pipelines")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	_, err := r.db.Exec(ctx, `UPDATE pipelines SET next_run_at=$2, updated_at=NOW() WHERE `+where, args...)
 	return err
 }
 
@@ -688,8 +1053,16 @@ func (r *Repository) FinishPipelineRun(ctx context.Context, runID uuid.UUID, sta
 }
 
 func (r *Repository) LoadBuildForAbort(ctx context.Context, id string) (*handler.AbortBuildSnapshot, error) {
+	where := "id::text=$1 OR rid=$1"
+	args := []any{id}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds")
+		where = "(" + where + ")" + sb.whereSQL()
+		args = sb.args
+	}
 	var snap handler.AbortBuildSnapshot
-	err := r.db.QueryRow(ctx, `SELECT id, rid, state FROM builds WHERE id::text=$1 OR rid=$1`, id).Scan(&snap.ID, &snap.RID, &snap.State)
+	err := r.db.QueryRow(ctx, `SELECT id, rid, state, COALESCE(build_branch, 'main'), COALESCE(error_message, '') FROM builds WHERE `+where, args...).Scan(&snap.ID, &snap.RID, &snap.State, &snap.BuildBranch, &snap.ErrorMessage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -749,15 +1122,12 @@ func (r *Repository) MarkBuildAborted(ctx context.Context, buildID uuid.UUID, re
 }
 
 func (r *Repository) History(ctx context.Context, jobRID string, query livellogs.Query) ([]livellogs.LogEntry, error) {
-	jobID, err := uuid.Parse(jobRID)
+	jobID, err := r.resolveJobID(ctx, jobRID)
 	if err != nil {
-		err = r.db.QueryRow(ctx, `SELECT id FROM jobs WHERE rid=$1`, jobRID).Scan(&jobID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
+	}
+	if jobID == uuid.Nil {
+		return nil, nil
 	}
 	limit := query.Limit
 	if limit <= 0 || limit > 5000 {
@@ -859,13 +1229,21 @@ func (r *Repository) ListDatasetBuilds(ctx context.Context, datasetRID string, l
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	where := "jo.output_dataset_rid=$1"
+	args := []any{datasetRID, limit}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "builds b")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	rows, err := r.db.Query(ctx, `SELECT DISTINCT b.id, b.rid, b.pipeline_rid, b.build_branch, b.job_spec_fallback, b.state, b.trigger_kind, b.force_build, b.abort_policy, b.queued_at, b.started_at, b.finished_at, b.error_message, b.requested_by, b.created_at
 FROM builds b
 JOIN jobs j ON j.build_id=b.id
 JOIN job_outputs jo ON jo.job_id=j.id
-WHERE jo.output_dataset_rid=$1
+WHERE `+where+`
 ORDER BY b.created_at DESC
-LIMIT $2`, datasetRID, limit)
+LIMIT $2`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -882,10 +1260,18 @@ LIMIT $2`, datasetRID, limit)
 }
 
 func (r *Repository) GetJobOutputs(ctx context.Context, jobRID string) (*handler.JobOutputsResponse, error) {
+	where := "rid=$1 OR id::text=$1"
+	args := []any{jobRID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendBuildParentClause(sb, scope, "jobs")
+		where = "(" + where + ")" + sb.whereSQL()
+		args = sb.args
+	}
 	var jobID uuid.UUID
 	var state string
 	var stale bool
-	err := r.db.QueryRow(ctx, `SELECT id, state, stale_skipped FROM jobs WHERE rid=$1 OR id::text=$1`, jobRID).Scan(&jobID, &state, &stale)
+	err := r.db.QueryRow(ctx, `SELECT id, state, stale_skipped FROM jobs WHERE `+where, args...).Scan(&jobID, &state, &stale)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -909,8 +1295,16 @@ func (r *Repository) GetJobOutputs(ctx context.Context, jobRID string) (*handler
 }
 
 func (r *Repository) GetJobInputResolutions(ctx context.Context, jobRID string) (json.RawMessage, error) {
+	where := "rid=$1 OR id::text=$1"
+	args := []any{jobRID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendBuildParentClause(sb, scope, "jobs")
+		where = "(" + where + ")" + sb.whereSQL()
+		args = sb.args
+	}
 	var raw []byte
-	err := r.db.QueryRow(ctx, `SELECT input_view_resolutions FROM jobs WHERE rid=$1 OR id::text=$1`, jobRID).Scan(&raw)
+	err := r.db.QueryRow(ctx, `SELECT input_view_resolutions FROM jobs WHERE `+where, args...).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -945,13 +1339,13 @@ func (r *Repository) PublishJobSpec(ctx context.Context, kind string, req handle
 	if len(outputs) > 0 {
 		keyOutput = outputs[0]
 	}
-	var existing handler.PublishedJobSpec
-	err := r.db.QueryRow(ctx, `SELECT rid, logic_kind, content_hash FROM job_specs WHERE pipeline_rid=$1 AND branch_name=$2 AND logic_kind=$3 AND output_dataset_rids=$4 AND content_hash=$5 ORDER BY created_at DESC LIMIT 1`, req.PipelineRID, req.BranchName, kind, outputs, contentHash).Scan(&existing.RID, &existing.LogicKind, &existing.ContentHash)
-	if err == nil {
-		return existing, nil
-	}
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return handler.PublishedJobSpec{}, err
+	dedupWhere := "pipeline_rid=$1 AND branch_name=$2 AND logic_kind=$3 AND output_dataset_rids=$4 AND content_hash=$5"
+	dedupArgs := []any{req.PipelineRID, req.BranchName, kind, outputs, contentHash}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: dedupArgs}
+		appendTenantClause(sb, scope, "job_specs")
+		dedupWhere += sb.whereSQL()
+		dedupArgs = sb.args
 	}
 	id := uuid.New()
 	rid := "ri.foundry.main.job_spec." + id.String()
@@ -966,44 +1360,169 @@ func (r *Repository) PublishJobSpec(ctx context.Context, kind string, req handle
 	if createdBy == "" {
 		createdBy = uuid.Nil.String()
 	}
-	_, err = r.db.Exec(ctx, `INSERT INTO job_specs (id, rid, pipeline_rid, branch_name, logic_kind, inputs, output_dataset_rids, logic_payload, content_hash, created_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, id, rid, req.PipelineRID, req.BranchName, kind, inputsRaw, outputs, payload, contentHash, createdBy)
-	if err != nil {
-		return handler.PublishedJobSpec{}, err
-	}
+	tenantID := tenantValueForInsert(ctx)
 	jobSpecJSON, _ := json.Marshal(map[string]any{"logic_kind": kind, "logic_payload": json.RawMessage(payload), "output_dataset_rids": outputs})
 	publisher, _ := uuid.Parse(createdBy)
-	if publisher == uuid.Nil {
-		publisher = uuid.Nil
+	var existing handler.PublishedJobSpec
+	dedupErr := r.db.QueryRow(ctx, `SELECT rid, logic_kind, content_hash FROM job_specs WHERE `+dedupWhere+` ORDER BY created_at DESC LIMIT 1`, dedupArgs...).Scan(&existing.RID, &existing.LogicKind, &existing.ContentHash)
+	if dedupErr != nil && !errors.Is(dedupErr, pgx.ErrNoRows) {
+		return handler.PublishedJobSpec{}, dedupErr
 	}
-	if keyOutput != "" {
-		_, err = r.db.Exec(ctx, `INSERT INTO pipeline_job_specs (id, pipeline_rid, branch_name, output_dataset_rid, output_branch, job_spec_json, inputs, content_hash, published_by)
-VALUES ($1,$2,$3,$4,$3,$5,$6,$7,$8)
-ON CONFLICT (pipeline_rid, branch_name, output_dataset_rid) DO UPDATE SET
-  job_spec_json=EXCLUDED.job_spec_json,
-  inputs=EXCLUDED.inputs,
-  content_hash=EXCLUDED.content_hash,
-  version=CASE WHEN pipeline_job_specs.content_hash=EXCLUDED.content_hash THEN pipeline_job_specs.version ELSE pipeline_job_specs.version + 1 END,
-  published_at=NOW()
-`, id, req.PipelineRID, req.BranchName, keyOutput, jobSpecJSON, inputsRaw, contentHash, publisher)
+	if dedupErr == nil {
+		// Identical content was published before (A→B→A): reuse the
+		// historical job_specs row BUT rebind the branch mapping to it —
+		// returning early would leave pipeline_job_specs bound to the
+		// intervening definition while the API answered with this rid.
+		if keyOutput == "" {
+			return existing, nil
+		}
+		if beginner, ok := r.db.(txBeginner); ok {
+			tx, err := beginner.Begin(ctx)
+			if err != nil {
+				return handler.PublishedJobSpec{}, err
+			}
+			defer tx.Rollback(ctx) //nolint:errcheck
+			txCtx := context.WithValue(ctx, ctxTxKey{}, tx.(DB))
+			if err := r.upsertPipelineJobSpecMapping(txCtx, req, keyOutput, outputs, inputsRaw, jobSpecJSON, existing.ContentHash, existing.RID, publisher, tenantID); err != nil {
+				return handler.PublishedJobSpec{}, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return handler.PublishedJobSpec{}, err
+			}
+			return existing, nil
+		}
+		if err := r.upsertPipelineJobSpecMapping(ctx, req, keyOutput, outputs, inputsRaw, jobSpecJSON, existing.ContentHash, existing.RID, publisher, tenantID); err != nil {
+			return handler.PublishedJobSpec{}, err
+		}
+		return existing, nil
+	}
+	if keyOutput == "" {
+		if _, err := r.db.Exec(ctx, `INSERT INTO job_specs (id, rid, pipeline_rid, branch_name, logic_kind, inputs, output_dataset_rids, logic_payload, content_hash, created_by, tenant_id)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, rid, req.PipelineRID, req.BranchName, kind, inputsRaw, outputs, payload, contentHash, createdBy, tenantID); err != nil {
+			return handler.PublishedJobSpec{}, err
+		}
+		return handler.PublishedJobSpec{RID: rid, LogicKind: kind, ContentHash: contentHash}, nil
+	}
+	// Dual-table publish in ONE local transaction so the branch-mapping
+	// row and the canonical job_specs row land (or roll back) together.
+	// pipeline_job_specs.job_spec_rid carries the CURRENT canonical
+	// job_specs.rid: a same-key definition change rebinds new builds to
+	// the new rid while jobs already persisted keep the old one.
+	execInTx := func(db DB) error {
+		txCtx := context.WithValue(ctx, ctxTxKey{}, db)
+		if _, err := db.Exec(txCtx, `INSERT INTO job_specs (id, rid, pipeline_rid, branch_name, logic_kind, inputs, output_dataset_rids, logic_payload, content_hash, created_by, tenant_id)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, rid, req.PipelineRID, req.BranchName, kind, inputsRaw, outputs, payload, contentHash, createdBy, tenantID); err != nil {
+			return err
+		}
+		return r.upsertPipelineJobSpecMapping(txCtx, req, keyOutput, outputs, inputsRaw, jobSpecJSON, contentHash, rid, publisher, tenantID)
+	}
+	if beginner, ok := r.db.(txBeginner); ok {
+		tx, err := beginner.Begin(ctx)
 		if err != nil {
 			return handler.PublishedJobSpec{}, err
 		}
+		defer tx.Rollback(ctx) //nolint:errcheck
+		if err := execInTx(tx); err != nil {
+			return handler.PublishedJobSpec{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return handler.PublishedJobSpec{}, err
+		}
+	} else if err := execInTx(r.db); err != nil {
+		return handler.PublishedJobSpec{}, err
 	}
 	return handler.PublishedJobSpec{RID: rid, LogicKind: kind, ContentHash: contentHash}, nil
 }
 
+// upsertPipelineJobSpecMapping rebinds the branch mapping row to the
+// given canonical job_spec rid (used for fresh publishes AND dedup hits
+// so A→B→A republishes leave the mapping pointing at the rid the API
+// returned). db must be the surrounding transaction when one is open.
+func (r *Repository) upsertPipelineJobSpecMapping(ctx context.Context, req handler.CreateJobSpecRequest, keyOutput string, outputs []string, inputsRaw []byte, jobSpecJSON []byte, contentHash, canonicalRID string, publisher uuid.UUID, tenantID *uuid.UUID) error {
+	db := r.db
+	if tx, ok := txFromContext(ctx); ok {
+		db = tx
+	}
+	_, err := db.Exec(ctx, `INSERT INTO pipeline_job_specs (id, pipeline_rid, branch_name, output_dataset_rid, output_branch, job_spec_json, inputs, content_hash, published_by, tenant_id, job_spec_rid)
+VALUES ($1,$2,$3,$4,$3,$5,$6,$7,$8,$9,$10)
+ON CONFLICT (pipeline_rid, branch_name, output_dataset_rid,
+    COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid),
+    (CASE WHEN tenant_id IS NULL THEN published_by ELSE '00000000-0000-0000-0000-000000000000'::uuid END)) DO UPDATE SET
+  job_spec_json=EXCLUDED.job_spec_json,
+  inputs=EXCLUDED.inputs,
+  content_hash=EXCLUDED.content_hash,
+  job_spec_rid=EXCLUDED.job_spec_rid,
+  version=CASE WHEN pipeline_job_specs.content_hash=EXCLUDED.content_hash THEN pipeline_job_specs.version ELSE pipeline_job_specs.version + 1 END,
+  published_at=NOW()
+`, uuid.New(), req.PipelineRID, req.BranchName, keyOutput, jobSpecJSON, inputsRaw, contentHash, publisher, tenantID, canonicalRID)
+	return err
+}
+
+// txFromContext lets helpers join the caller's open transaction.
+type ctxTxKey struct{}
+
+func txFromContext(ctx context.Context) (DB, bool) {
+	tx, ok := ctx.Value(ctxTxKey{}).(DB)
+	return tx, ok
+}
+
 func (r *Repository) AppendLogByRID(ctx context.Context, jobRID string, level livellogs.LogLevel, message string, params json.RawMessage) (livellogs.LogEntry, error) {
-	var jobID uuid.UUID
-	if parsed, err := uuid.Parse(jobRID); err == nil {
-		jobID = parsed
-	} else {
-		err := r.db.QueryRow(ctx, `SELECT id FROM jobs WHERE rid=$1`, jobRID).Scan(&jobID)
-		if err != nil {
-			return livellogs.LogEntry{}, err
-		}
+	jobID, err := r.resolveJobID(ctx, jobRID)
+	if err != nil {
+		return livellogs.LogEntry{}, err
+	}
+	if jobID == uuid.Nil {
+		return livellogs.LogEntry{}, pgx.ErrNoRows
 	}
 	return r.AppendLog(ctx, jobID, level, message, params)
+}
+
+// JobRIDInScope reports whether jobRID resolves to a job that is visible
+// under the caller's tenant scope. Used to gate live log subscriptions.
+func (r *Repository) JobRIDInScope(ctx context.Context, jobRID string) (bool, error) {
+	id, err := r.resolveJobID(ctx, jobRID)
+	if err != nil {
+		return false, err
+	}
+	return id != uuid.Nil, nil
+}
+
+// resolveJobID maps a job RID (or bare UUID) to its job id, enforcing the
+// owning build's tenant boundary for scoped callers. uuid.Nil with a nil
+// error means "no such job in this scope".
+func (r *Repository) resolveJobID(ctx context.Context, jobRID string) (uuid.UUID, error) {
+	scope := scopeFromContext(ctx)
+	if parsed, err := uuid.Parse(jobRID); err == nil {
+		if scope == nil {
+			return parsed, nil
+		}
+		// A bare job UUID is still a subresource of its build: verify
+		// the build boundary before resolving it.
+		where := "id=$1"
+		args := []any{parsed}
+		sb := &sqlBuilder{args: args}
+		appendBuildParentClause(sb, scope, "jobs")
+		var id uuid.UUID
+		err := r.db.QueryRow(ctx, `SELECT id FROM jobs WHERE `+where+sb.whereSQL(), sb.args...).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, nil
+		}
+		return id, err
+	}
+	where := "rid=$1"
+	args := []any{jobRID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendBuildParentClause(sb, scope, "jobs")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	var id uuid.UUID
+	err := r.db.QueryRow(ctx, `SELECT id FROM jobs WHERE `+where, args...).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, nil
+	}
+	return id, err
 }
 
 func deriveJobSpecHash(kind string, req handler.CreateJobSpecRequest) string {
@@ -1023,26 +1542,72 @@ func deriveJobSpecHash(kind string, req handler.CreateJobSpecRequest) string {
 }
 
 // SaveSparkSubmission upserts the Rust-compatible SparkApplication submission row.
+// The DO UPDATE arm only fires within the caller's own domain, so a
+// caller-supplied pipeline_run_id cannot hijack a foreign tenant's row.
 func (r *Repository) SaveSparkSubmission(ctx context.Context, submission handler.SparkSubmission) error {
-	_, err := r.db.Exec(ctx, `INSERT INTO pipeline_run_submissions
-    (pipeline_run_id, spark_app_name, namespace, status, error_message)
-VALUES ($1, $2, $3, $4, $5)
+	tag, err := r.db.Exec(ctx, `INSERT INTO pipeline_run_submissions
+    (pipeline_run_id, spark_app_name, namespace, status, error_message, tenant_id, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (pipeline_run_id) DO UPDATE
 SET spark_app_name=EXCLUDED.spark_app_name,
     namespace=EXCLUDED.namespace,
     status=EXCLUDED.status,
     error_message=EXCLUDED.error_message,
     submitted_at=NOW(),
-    last_observed_at=NOW()`, submission.PipelineRunID, submission.SparkAppName, submission.Namespace, string(submission.Status), submission.ErrorMessage)
-	return err
+    last_observed_at=NOW()
+WHERE pipeline_run_submissions.tenant_id IS NOT DISTINCT FROM EXCLUDED.tenant_id
+  AND (EXCLUDED.tenant_id IS NOT NULL
+       OR pipeline_run_submissions.created_by IS NOT DISTINCT FROM EXCLUDED.created_by)`,
+		submission.PipelineRunID, submission.SparkAppName, submission.Namespace, string(submission.Status), submission.ErrorMessage, tenantValueForInsert(ctx), submitterForInsert(ctx))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return handler.ErrSparkSubmissionDomainConflict
+	}
+	return nil
 }
 
 // GetSparkSubmission loads the persisted SparkApplication control-plane mapping.
 func (r *Repository) GetSparkSubmission(ctx context.Context, pipelineRunID uuid.UUID) (*handler.SparkSubmission, error) {
+	where := "pipeline_run_id=$1"
+	args := []any{pipelineRunID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "pipeline_run_submissions")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	var sub handler.SparkSubmission
 	var status string
 	err := r.db.QueryRow(ctx, `SELECT pipeline_run_id, namespace, spark_app_name, status, error_message, submitted_at, last_observed_at
-FROM pipeline_run_submissions WHERE pipeline_run_id=$1`, pipelineRunID).Scan(&sub.PipelineRunID, &sub.Namespace, &sub.SparkAppName, &status, &sub.ErrorMessage, &sub.SubmittedAt, &sub.LastObservedAt)
+FROM pipeline_run_submissions WHERE `+where, args...).Scan(&sub.PipelineRunID, &sub.Namespace, &sub.SparkAppName, &status, &sub.ErrorMessage, &sub.SubmittedAt, &sub.LastObservedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sub.Status = sparkStatus(status)
+	return &sub, nil
+}
+
+// SparkSubmissionByName resolves a submission by its cluster-side
+// (namespace, spark_app_name) pair under the caller's tenant boundary, so
+// Spark status lookups cannot probe foreign tenants by guessing names.
+func (r *Repository) SparkSubmissionByName(ctx context.Context, namespace, name string) (*handler.SparkSubmission, error) {
+	where := "namespace=$1 AND spark_app_name=$2"
+	args := []any{namespace, name}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "pipeline_run_submissions")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	var sub handler.SparkSubmission
+	var status string
+	err := r.db.QueryRow(ctx, `SELECT pipeline_run_id, namespace, spark_app_name, status, error_message, submitted_at, last_observed_at
+FROM pipeline_run_submissions WHERE `+where, args...).Scan(&sub.PipelineRunID, &sub.Namespace, &sub.SparkAppName, &status, &sub.ErrorMessage, &sub.SubmittedAt, &sub.LastObservedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -1055,9 +1620,17 @@ FROM pipeline_run_submissions WHERE pipeline_run_id=$1`, pipelineRunID).Scan(&su
 
 // UpdateSparkSubmissionStatus refreshes the observed SparkApplication status.
 func (r *Repository) UpdateSparkSubmissionStatus(ctx context.Context, pipelineRunID uuid.UUID, status sparkpkg.SparkRunStatus, errorMessage *string) error {
+	where := "pipeline_run_id=$1"
+	args := []any{pipelineRunID, string(status), errorMessage}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "pipeline_run_submissions")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	_, err := r.db.Exec(ctx, `UPDATE pipeline_run_submissions
 SET status=$2, error_message=$3, last_observed_at=NOW()
-WHERE pipeline_run_id=$1`, pipelineRunID, string(status), errorMessage)
+WHERE `+where, args...)
 	return err
 }
 
@@ -1066,10 +1639,19 @@ func (r *Repository) ListSparkSubmissions(ctx context.Context, limit int64) ([]h
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
+	where := "TRUE"
+	args := []any{limit}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "pipeline_run_submissions")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	rows, err := r.db.Query(ctx, `SELECT pipeline_run_id, namespace, spark_app_name, status, error_message, submitted_at, last_observed_at
 FROM pipeline_run_submissions
+WHERE `+where+`
 ORDER BY submitted_at DESC
-LIMIT $1`, limit)
+LIMIT $1`, args...)
 	if err != nil {
 		return nil, err
 	}

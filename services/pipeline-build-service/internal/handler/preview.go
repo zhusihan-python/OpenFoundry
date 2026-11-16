@@ -92,7 +92,10 @@ func PreviewPipelineNode(w http.ResponseWriter, r *http.Request) {
 		writePipelinePreviewError(w, pipelineID, nodeID, sampleSize, nil, http.StatusBadRequest, pipelineNodePreviewError{Kind: "invalid_pipeline_graph", NodeID: nodeID, Message: err.Error()})
 		return
 	}
-	response, err := executeLocalPipelinePreview(r.Context(), pipelineID, nodeID, nodes, sampleSize)
+	// Dataset-backed input nodes read as the calling user, not as the
+	// service account.
+	previewCtx := contextWithCallerBearer(r.Context(), callerBearerFromRequest(r))
+	response, err := executeLocalPipelinePreview(previewCtx, pipelineID, nodeID, nodes, sampleSize)
 	if err != nil {
 		var execErr previewExecutionError
 		if errors.As(err, &execErr) {
@@ -144,6 +147,8 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 		return pipelineNodePreviewResponse{}, err
 	}
 	runtime := newLightweightTableRuntime()
+	runtime.datasets = ports.DatasetRows
+	runtime.datasetRowsPreview = true
 	runner := runtimeNodeRunner{Table: runtime, LLM: ports.LLM}
 	for _, node := range chain {
 		transform := strings.TrimSpace(node.TransformType)

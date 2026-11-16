@@ -9,7 +9,8 @@ import (
 )
 
 func (h *Handlers) GetCatalogFacets(w http.ResponseWriter, r *http.Request) {
-	if _, ok := authmw.FromContext(r.Context()); !ok {
+	claims, ok := authmw.FromContext(r.Context())
+	if !ok {
 		writeJSONErr(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -17,7 +18,8 @@ func (h *Handlers) GetCatalogFacets(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusInternalServerError, "repository unavailable")
 		return
 	}
-	facets, err := h.Repo.GetCatalogFacets(r.Context())
+	// Facets aggregate only datasets visible to the caller's tenant.
+	facets, err := h.Repo.GetCatalogFacetsForTenant(r.Context(), tenantScopeFromClaims(claims))
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "failed to list catalog facets")
 		return
@@ -26,7 +28,8 @@ func (h *Handlers) GetCatalogFacets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) GetDatasetMetadata(w http.ResponseWriter, r *http.Request) {
-	if _, ok := authmw.FromContext(r.Context()); !ok {
+	claims, ok := authmw.FromContext(r.Context())
+	if !ok {
 		writeJSONErr(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -34,7 +37,7 @@ func (h *Handlers) GetDatasetMetadata(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusInternalServerError, "repository unavailable")
 		return
 	}
-	datasetID, err := h.Repo.ResolveDatasetID(r.Context(), datasetIDParam(r))
+	dataset, err := h.Repo.ResolveDatasetForTenant(r.Context(), datasetIDParam(r), tenantScopeFromClaims(claims))
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
 			writeJSONErr(w, http.StatusNotFound, "dataset not found")
@@ -43,7 +46,11 @@ func (h *Handlers) GetDatasetMetadata(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusInternalServerError, "failed to resolve dataset")
 		return
 	}
-	metadata, err := h.Repo.GetInternalDatasetMetadata(r.Context(), datasetID)
+	if dataset == nil {
+		writeJSONErr(w, http.StatusNotFound, "dataset not found")
+		return
+	}
+	metadata, err := h.Repo.GetInternalDatasetMetadata(r.Context(), dataset.ID)
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "failed to load dataset metadata")
 		return

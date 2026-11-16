@@ -56,10 +56,16 @@ type DB interface {
 }
 
 // Repo wraps the SQL surface for datasets, versions, branches and files.
-type Repo struct{ Pool DB }
+type Repo struct {
+	Pool DB
+	// OutputCommitLockTimeout bounds the keyed outputs:commit wait on the
+	// datasets row lock (PG lock_timeout). Zero falls back to
+	// DefaultOutputCommitLockTimeout.
+	OutputCommitLockTimeout time.Duration
+}
 
 const datasetSelect = `SELECT id, name, description, format, storage_path,
-	size_bytes, row_count, owner_id, tags, current_version, active_branch,
+	size_bytes, row_count, owner_id, org_id, tags, current_version, active_branch,
 	metadata, health_status, current_view_id, created_at, updated_at
 	FROM datasets`
 
@@ -117,45 +123,11 @@ func BuildDatasetStoragePath(prefix string, datasetID uuid.UUID) string {
 // CreateDataset inserts a fresh dataset row with declarative-only
 // defaults (storage path under the Bronze lakehouse prefix, format
 // `parquet`, health `unknown`, metadata `{}`). Runtime version rows are
-// owned by the versioning pipeline, not by this insert.
+// owned by the versioning pipeline, not by this insert. The dataset lands
+// in the owner's personal domain (org_id NULL); organization ownership is
+// assigned by CreateDatasetForTenant from verified claims.
 func (r *Repo) CreateDataset(ctx context.Context, body *models.CreateDatasetRequest, ownerID uuid.UUID) (*models.Dataset, error) {
-	id := uuid.New()
-	if body.ID != nil && *body.ID != uuid.Nil {
-		id = *body.ID
-	}
-	format := "parquet"
-	if body.Format != nil && *body.Format != "" {
-		format = strings.ToLower(*body.Format)
-	}
-	tags := body.Tags
-	if tags == nil {
-		tags = []string{}
-	}
-	description := ""
-	if body.Description != nil {
-		description = *body.Description
-	}
-	metadata := []byte(`{}`)
-	if len(body.Metadata) > 0 {
-		metadata = body.Metadata
-	}
-	health := "unknown"
-	if body.HealthStatus != nil && *body.HealthStatus != "" {
-		health = *body.HealthStatus
-	}
-	storagePath := BuildDatasetStoragePath("bronze", id)
-	row := r.Pool.QueryRow(ctx,
-		`INSERT INTO datasets
-		    (id, rid, name, description, format, storage_path, owner_id, tags,
-		     active_branch, metadata, health_status)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'main', $9, $10)
-		 RETURNING id, name, description, format, storage_path, size_bytes,
-		           row_count, owner_id, tags, current_version, active_branch,
-		           metadata, health_status, current_view_id, created_at, updated_at`,
-		id, "ri.foundry.main.dataset."+id.String(), strings.TrimSpace(body.Name), description,
-		format, storagePath, ownerID, tags, metadata, health,
-	)
-	return scanDataset(row)
+	return r.CreateDatasetForTenant(ctx, body, ownerID, nil)
 }
 
 // UpdateDataset mirrors Rust's PATCH semantics: every column is folded
@@ -173,7 +145,7 @@ func (r *Repo) UpdateDataset(ctx context.Context, id uuid.UUID, body *models.Upd
 		    updated_at     = NOW()
 		  WHERE id = $1
 		  RETURNING id, name, description, format, storage_path, size_bytes,
-		            row_count, owner_id, tags, current_version, active_branch,
+		            row_count, owner_id, org_id, tags, current_version, active_branch,
 		            metadata, health_status, current_view_id, created_at, updated_at`,
 		id, body.Name, body.Description, body.Tags, body.OwnerID,
 		jsonOrNil(body.Metadata), body.HealthStatus, body.CurrentViewID,
@@ -205,7 +177,7 @@ type rowLikeT interface{ Scan(...any) error }
 func scanDataset(r rowLikeT) (*models.Dataset, error) {
 	v := &models.Dataset{}
 	if err := r.Scan(&v.ID, &v.Name, &v.Description, &v.Format, &v.StoragePath,
-		&v.SizeBytes, &v.RowCount, &v.OwnerID, &v.Tags, &v.CurrentVersion,
+		&v.SizeBytes, &v.RowCount, &v.OwnerID, &v.OrgID, &v.Tags, &v.CurrentVersion,
 		&v.ActiveBranch, &v.Metadata, &v.HealthStatus, &v.CurrentViewID,
 		&v.CreatedAt, &v.UpdatedAt); err != nil {
 		return nil, err
@@ -313,9 +285,12 @@ func (r *Repo) EnsureDefaultBranch(ctx context.Context, dataset *models.Dataset)
 	if exists {
 		return nil
 	}
+	// $2::uuid::text pins $2 to uuid before the text concatenation — a
+	// bare $2::text makes PG deduce both text and uuid for $2 (42804).
+	// CreateBranch below shares the same pattern.
 	_, err := r.Pool.Exec(ctx,
 		`INSERT INTO dataset_branches (id, dataset_id, dataset_rid, name, version, base_version, description, is_default)
-		 VALUES ($1, $2, 'ri.foundry.main.dataset.' || $2::text, 'main', $3, $3, 'Default branch', TRUE)`,
+		 VALUES ($1, $2, 'ri.foundry.main.dataset.' || $2::uuid::text, 'main', $3, $3, 'Default branch', TRUE)`,
 		uuid.New(), dataset.ID, dataset.CurrentVersion,
 	)
 	if IsConflict(err) {
@@ -365,8 +340,12 @@ func (r *Repo) CreateBranch(ctx context.Context, dataset *models.Dataset, body *
 		}
 	}
 	row := r.Pool.QueryRow(ctx,
-		`INSERT INTO dataset_branches (id, dataset_id, dataset_rid, name, version, base_version, description, is_default)
-		 VALUES ($1, $2, 'ri.foundry.main.dataset.' || $2::text, $3, $4, $4, $5, FALSE)
+		`INSERT INTO dataset_branches (id, dataset_id, dataset_rid, name, version, base_version, description, is_default, parent_branch_id)
+		 VALUES ($1, $2, 'ri.foundry.main.dataset.' || $2::uuid::text, $3, $4, $4, $5, FALSE,
+		         (SELECT root.id FROM dataset_branches root
+		           WHERE root.dataset_id = $2 AND root.parent_branch_id IS NULL
+		             AND root.deleted_at IS NULL
+		           ORDER BY root.created_at LIMIT 1))
 		 RETURNING id, COALESCE(rid, 'ri.foundry.main.branch.' || id::text), dataset_id,
 		           COALESCE(dataset_rid, 'ri.foundry.main.dataset.' || dataset_id::text), name,
 		           parent_branch_id, head_transaction_id, created_from_transaction_id,

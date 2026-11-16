@@ -21,6 +21,13 @@ type lightweightTableRuntime struct {
 	mu        sync.Mutex
 	tables    map[string][]pipelineexpression.Row
 	functions PipelineFunctionRegistry
+	// datasets reads registered dataset files for input-shaped nodes. When
+	// nil, a node that references a dataset fails explicitly instead of
+	// falling back to synthetic rows.
+	datasets PipelineDatasetRowSource
+	// datasetRowsPreview marks preview runs, which may read a truncated
+	// sample; formal execution keeps strict no-truncation semantics.
+	datasetRowsPreview bool
 }
 
 type tableRuntimeConfig struct {
@@ -38,6 +45,12 @@ type tableRuntimeConfig struct {
 		SourceColumn string `json:"source_column"`
 		TargetColumn string `json:"target_column"`
 	} `json:"column_mappings,omitempty"`
+	DatasetID           string                    `json:"dataset_id,omitempty"`
+	DatasetRID          string                    `json:"dataset_rid,omitempty"`
+	DatasetPath         string                    `json:"dataset_path,omitempty"`
+	DatasetBranch       string                    `json:"dataset_branch,omitempty"`
+	DatasetVersion      string                    `json:"dataset_version,omitempty"`
+	InputDatasetIDs     []string                  `json:"input_dataset_ids,omitempty"`
 	SQL                 string                    `json:"sql,omitempty"`
 	SampleSize          int                       `json:"sample_size,omitempty"`
 	FunctionID          string                    `json:"function_id,omitempty"`
@@ -168,11 +181,13 @@ func newRuntimeNodeRunner(ports ExecutionPorts) runtimeNodeRunner {
 	if distributed == nil {
 		distributed = NewSparkFlinkDistributedRunner(DistributedRuntimeConfig{})
 	}
+	table := newLightweightTableRuntime(ports.Functions)
+	table.datasets = ports.DatasetRows
 	return runtimeNodeRunner{
 		JobRunner: ports.JobRunner,
 		Python:    ports.Python,
 		LLM:       ports.LLM,
-		Table:     newLightweightTableRuntime(ports.Functions),
+		Table:     table,
 		Dist:      distributed,
 	}
 }
@@ -205,11 +220,12 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 
 	kind := normaliseTableTransform(transformType)
 	var rows []pipelineexpression.Row
+	var datasetMeta map[string]any
 	switch kind {
 	case "input":
 		rows = cfg.inlineRows()
 		if rows == nil {
-			rows = syntheticRows(node.Node.ID, cfg.SampleSize)
+			rows, datasetMeta, err = rt.datasetInputRows(ctx, node, cfg)
 		}
 	case "filter":
 		rows, err = rt.runFilter(node, cfg)
@@ -223,7 +239,7 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		if len(node.Node.DependsOn) == 0 {
 			rows = cfg.inlineRows()
 			if rows == nil {
-				rows = syntheticRows(node.Node.ID, cfg.SampleSize)
+				rows, datasetMeta, err = rt.datasetInputRows(ctx, node, cfg)
 			}
 			break
 		}
@@ -256,6 +272,9 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		"columns":        deriveRuntimeColumns(rows),
 		"sample_rows":    rowsToMaps(metaRows),
 		"data_rows":      rowsToMaps(rows),
+	}
+	for key, value := range datasetMeta {
+		meta[key] = value
 	}
 	if kind == "function" {
 		meta["function_id"] = cfg.FunctionID
@@ -340,6 +359,50 @@ func (cfg tableRuntimeConfig) inlineRows() []pipelineexpression.Row {
 		}
 	}
 	return nil
+}
+
+// datasetInputRows loads rows for an input-shaped node that references a
+// dataset. Nodes without a dataset reference keep the existing synthetic
+// sample behaviour and return (rows, nil, nil). A referenced dataset that
+// cannot be loaded is a hard error — the runtime never fabricates rows for
+// an explicit dataset reference. Formal execution reads in strict mode
+// (no truncation, no implicit file choice); preview runs
+// (datasetRowsPreview) may truncate.
+func (rt *lightweightTableRuntime) datasetInputRows(ctx context.Context, node executor.NodeContext, cfg tableRuntimeConfig) ([]pipelineexpression.Row, map[string]any, error) {
+	ref, ok := datasetInputReferenceFrom(node, cfg)
+	if !ok {
+		return syntheticRows(node.Node.ID, cfg.SampleSize), nil, nil
+	}
+	if ref.Version != "" {
+		return nil, nil, fmt.Errorf("dataset_input_version_not_supported: node %q pins dataset version %q; historical dataset versions are not readable yet — clear dataset_version or pin dataset_branch instead of silently reading the latest rows", node.Node.ID, ref.Version)
+	}
+	if rt.datasets == nil {
+		return nil, nil, fmt.Errorf("dataset_input_source_not_configured: node %q references dataset %s but no dataset row source is wired (set DATASET_SERVICE_URL)", node.Node.ID, ref.DatasetRID)
+	}
+	result, err := rt.datasets.ReadDatasetRows(ctx, DatasetRowsRequest{
+		DatasetRID:      ref.DatasetRID,
+		Path:            ref.Path,
+		Branch:          ref.Branch,
+		Limit:           clampDatasetInputRows(cfg.SampleSize),
+		AllowTruncation: rt.datasetRowsPreview,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("dataset_input_load_failed: node %q failed to load dataset %s: %w", node.Node.ID, ref.DatasetRID, err)
+	}
+	rows := make([]pipelineexpression.Row, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		rows = append(rows, cloneRow(pipelineexpression.Row(row)))
+	}
+	meta := map[string]any{
+		"dataset_rid":            ref.DatasetRID,
+		"dataset_file_path":      result.Path,
+		"dataset_file_format":    result.Format,
+		"dataset_rows_truncated": result.Truncated,
+	}
+	if ref.Branch != "" {
+		meta["dataset_branch"] = ref.Branch
+	}
+	return rows, meta, nil
 }
 
 func (rt *lightweightTableRuntime) runFilter(node executor.NodeContext, cfg tableRuntimeConfig) ([]pipelineexpression.Row, error) {

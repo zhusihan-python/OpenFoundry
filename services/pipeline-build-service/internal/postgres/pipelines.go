@@ -14,7 +14,7 @@ import (
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/models"
 )
 
-const pipelineSelectColumns = `id, name, description, owner_id, COALESCE(draft_dag, dag) AS dag, status,
+const pipelineSelectColumns = `id, name, description, owner_id, tenant_id, COALESCE(draft_dag, dag) AS dag, status,
 	COALESCE(pipeline_type, 'BATCH') AS pipeline_type,
 	COALESCE(lifecycle, 'DRAFT') AS lifecycle,
 	schedule_config, retry_policy, next_run_at,
@@ -46,15 +46,36 @@ func (r *Repository) ListPipelines(ctx context.Context, query models.ListPipelin
 	if query.Status != nil {
 		status = strings.TrimSpace(*query.Status)
 	}
+	filter := "($1='' OR name ILIKE '%' || $1 || '%' OR description ILIKE '%' || $1 || '%') AND ($2='' OR status=$2)"
+	countArgs := []any{search, status}
+	limitSQL := `SELECT ` + pipelineSelectColumns + `
+FROM pipelines
+WHERE ` + filter + `
+ORDER BY updated_at DESC, created_at DESC
+LIMIT $3 OFFSET $4`
+	selectArgs := []any{search, status, perPage, (page - 1) * perPage}
+	if scope := scopeFromContext(ctx); scope != nil {
+		// Tenant boundary first: search/status filters only apply
+		// inside the caller's own tenant slice.
+		b := &sqlBuilder{args: []any{search, status}}
+		appendTenantClause(b, scope, "pipelines")
+		filter += b.whereSQL()
+		countArgs = append([]any{search, status}, b.args[2:]...)
+
+		sb := &sqlBuilder{args: []any{search, status}}
+		appendTenantClause(sb, scope, "pipelines")
+		limitSQL = `SELECT ` + pipelineSelectColumns + `
+FROM pipelines
+WHERE ` + filter + `
+ORDER BY updated_at DESC, created_at DESC
+LIMIT ` + sb.placeholder(perPage) + ` OFFSET ` + sb.placeholder((page-1)*perPage)
+		selectArgs = sb.args
+	}
 	var total int64
-	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM pipelines WHERE ($1='' OR name ILIKE '%' || $1 || '%' OR description ILIKE '%' || $1 || '%') AND ($2='' OR status=$2)`, search, status).Scan(&total); err != nil {
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM pipelines WHERE `+filter, countArgs...).Scan(&total); err != nil {
 		return models.ListPipelinesResponse{}, err
 	}
-	rows, err := r.db.Query(ctx, `SELECT `+pipelineSelectColumns+`
-FROM pipelines
-WHERE ($1='' OR name ILIKE '%' || $1 || '%' OR description ILIKE '%' || $1 || '%') AND ($2='' OR status=$2)
-ORDER BY updated_at DESC, created_at DESC
-LIMIT $3 OFFSET $4`, search, status, perPage, (page-1)*perPage)
+	rows, err := r.db.Query(ctx, limitSQL, selectArgs...)
 	if err != nil {
 		return models.ListPipelinesResponse{}, err
 	}
@@ -133,7 +154,7 @@ func (r *Repository) CreatePipeline(ctx context.Context, req models.CreatePipeli
 		return nil, fmt.Errorf("encode retry_policy: %w", err)
 	}
 	id := uuid.New()
-	pipeline, err := r.insertPipeline(ctx, id, req.Name, description, ownerID, dag, status, pipelineType, lifecycle, branchName, scheduleConfig, retryPolicyRaw, externalConfig, incrementalConfig, streamingConfig, distributedConfig, req.ComputeProfile, req.ProjectID)
+	pipeline, err := r.insertPipeline(ctx, id, req.Name, description, ownerID, tenantValueForInsert(ctx), dag, status, pipelineType, lifecycle, branchName, scheduleConfig, retryPolicyRaw, externalConfig, incrementalConfig, streamingConfig, distributedConfig, req.ComputeProfile, req.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -247,12 +268,20 @@ func (r *Repository) UpdatePipeline(ctx context.Context, id uuid.UUID, req model
 		}
 	}
 	var p models.Pipeline
+	updateWhere := "WHERE id=$1"
+	updateArgs := []any{id, name, description, dag, status, scheduleConfig, retryPolicy, branchName, pipelineType, lifecycle, externalConfig, incrementalConfig, streamingConfig, distributedConfig, computeProfileID, projectID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: updateArgs}
+		appendTenantClause(sb, scope, "pipelines")
+		updateWhere += sb.whereSQL()
+		updateArgs = sb.args
+	}
 	err = r.db.QueryRow(ctx, `UPDATE pipelines
 SET name=$2, description=$3, dag=$4, draft_dag=$4, status=$5, schedule_config=$6, retry_policy=$7, branch_name=$8,
     pipeline_type=$9, lifecycle=$10, external_config=$11, incremental_config=$12, streaming_config=$13, distributed_config=$14, compute_profile_id=$15, project_id=$16,
     draft_updated_at=NOW(), updated_at=NOW()
-WHERE id=$1
-RETURNING `+pipelineSelectColumns, id, name, description, dag, status, scheduleConfig, retryPolicy, branchName, pipelineType, lifecycle, externalConfig, incrementalConfig, streamingConfig, distributedConfig, computeProfileID, projectID).Scan(pipelineScanDest(&p)...)
+`+updateWhere+`
+RETURNING `+pipelineSelectColumns, updateArgs...).Scan(pipelineScanDest(&p)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -268,7 +297,15 @@ RETURNING `+pipelineSelectColumns, id, name, description, dag, status, scheduleC
 }
 
 func (r *Repository) DeletePipeline(ctx context.Context, id uuid.UUID) (bool, error) {
-	tag, err := r.db.Exec(ctx, `DELETE FROM pipelines WHERE id=$1`, id)
+	where := "WHERE id=$1"
+	args := []any{id}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendTenantClause(sb, scope, "pipelines")
+		where += sb.whereSQL()
+		args = sb.args
+	}
+	tag, err := r.db.Exec(ctx, `DELETE FROM pipelines `+where, args...)
 	if err != nil {
 		return false, err
 	}
@@ -276,10 +313,20 @@ func (r *Repository) DeletePipeline(ctx context.Context, id uuid.UUID) (bool, er
 }
 
 func (r *Repository) ListPipelineVersions(ctx context.Context, pipelineID uuid.UUID) ([]models.PipelineVersion, error) {
+	where := "WHERE pipeline_id=$1"
+	args := []any{pipelineID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		// Versions are subresources: they inherit the owning
+		// pipeline's tenant boundary.
+		sb := &sqlBuilder{args: args}
+		appendPipelineParentClause(sb, scope, "pipeline_versions.pipeline_id")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	rows, err := r.db.Query(ctx, `SELECT id, pipeline_id, version_number, branch_name, version_kind, dag, name, description, schedule_config, retry_policy, created_by, created_at, message, restored_from_version_id
 FROM pipeline_versions
-WHERE pipeline_id=$1
-ORDER BY version_number DESC`, pipelineID)
+`+where+`
+ORDER BY version_number DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -314,12 +361,20 @@ func (r *Repository) PublishPipeline(ctx context.Context, id uuid.UUID, req mode
 	}
 	title := req.ProposalTitle
 	description := req.ProposalDescription
+	publishWhere := "WHERE id=$1"
+	publishArgs := []any{id, current.DAG, version.ID, branchName, title, description}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: publishArgs}
+		appendTenantClause(sb, scope, "pipelines")
+		publishWhere += sb.whereSQL()
+		publishArgs = sb.args
+	}
 	var pipeline models.Pipeline
 	err = r.db.QueryRow(ctx, `UPDATE pipelines
 SET published_dag=$2, active_version_id=$3, published_at=NOW(), branch_name=$4, status='active',
     proposal_state='merged', proposal_title=$5, proposal_description=$6, updated_at=NOW()
-WHERE id=$1
-RETURNING `+pipelineSelectColumns, id, current.DAG, version.ID, branchName, title, description).Scan(pipelineScanDest(&pipeline)...)
+`+publishWhere+`
+RETURNING `+pipelineSelectColumns, publishArgs...).Scan(pipelineScanDest(&pipeline)...)
 	if err != nil {
 		return nil, err
 	}
@@ -347,11 +402,19 @@ func (r *Repository) CreatePipelineProposal(ctx context.Context, id uuid.UUID, r
 	if err != nil {
 		return nil, err
 	}
+	proposalWhere := "WHERE id=$1"
+	proposalArgs := []any{id, branchName, title, req.Description}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: proposalArgs}
+		appendTenantClause(sb, scope, "pipelines")
+		proposalWhere += sb.whereSQL()
+		proposalArgs = sb.args
+	}
 	var pipeline models.Pipeline
 	err = r.db.QueryRow(ctx, `UPDATE pipelines
 SET branch_name=$2, proposal_state='open', proposal_title=$3, proposal_description=$4, updated_at=NOW()
-WHERE id=$1
-RETURNING `+pipelineSelectColumns, id, branchName, title, req.Description).Scan(pipelineScanDest(&pipeline)...)
+`+proposalWhere+`
+RETURNING `+pipelineSelectColumns, proposalArgs...).Scan(pipelineScanDest(&pipeline)...)
 	if err != nil {
 		return nil, err
 	}
@@ -380,20 +443,39 @@ func (r *Repository) RestorePipelineVersion(ctx context.Context, pipelineID, ver
 	if err != nil {
 		return nil, err
 	}
+	// The draft and publish UPDATEs have different argument arities
+	// ($7 vs $8), so each needs its own tenant WHERE with its own
+	// placeholder numbering — sharing one clause would bind the tenant
+	// comparison against the wrong argument.
+	draftWhere := "WHERE id=$1"
+	publishWhere := "WHERE id=$1"
+	draftArgs := []any{pipelineID, version.Name, version.Description, version.DAG, version.ScheduleConfig, version.RetryPolicy, version.BranchName}
+	publishArgs := append(append([]any(nil), draftArgs...), restoredVersion.ID)
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: draftArgs}
+		appendTenantClause(sb, scope, "pipelines")
+		draftWhere += sb.whereSQL()
+		draftArgs = sb.args
+
+		pb := &sqlBuilder{args: publishArgs}
+		appendTenantClause(pb, scope, "pipelines")
+		publishWhere += pb.whereSQL()
+		publishArgs = pb.args
+	}
 	var pipeline models.Pipeline
 	if req.AsDraft {
 		err = r.db.QueryRow(ctx, `UPDATE pipelines
 SET name=$2, description=$3, dag=$4, draft_dag=$4, schedule_config=$5, retry_policy=$6,
     branch_name=$7, draft_updated_at=NOW(), proposal_state='none', proposal_title=NULL, proposal_description=NULL, updated_at=NOW()
-WHERE id=$1
-RETURNING `+pipelineSelectColumns, pipelineID, version.Name, version.Description, version.DAG, version.ScheduleConfig, version.RetryPolicy, version.BranchName).Scan(pipelineScanDest(&pipeline)...)
+`+draftWhere+`
+RETURNING `+pipelineSelectColumns, draftArgs...).Scan(pipelineScanDest(&pipeline)...)
 	} else {
 		err = r.db.QueryRow(ctx, `UPDATE pipelines
 SET name=$2, description=$3, dag=$4, draft_dag=$4, published_dag=$4, schedule_config=$5, retry_policy=$6,
     branch_name=$7, active_version_id=$8, published_at=NOW(), status='active',
     proposal_state='none', proposal_title=NULL, proposal_description=NULL, draft_updated_at=NOW(), updated_at=NOW()
-WHERE id=$1
-RETURNING `+pipelineSelectColumns, pipelineID, version.Name, version.Description, version.DAG, version.ScheduleConfig, version.RetryPolicy, version.BranchName, restoredVersion.ID).Scan(pipelineScanDest(&pipeline)...)
+`+publishWhere+`
+RETURNING `+pipelineSelectColumns, publishArgs...).Scan(pipelineScanDest(&pipeline)...)
 	}
 	if err != nil {
 		return nil, err
@@ -401,12 +483,12 @@ RETURNING `+pipelineSelectColumns, pipelineID, version.Name, version.Description
 	return &models.PipelinePublishResponse{Pipeline: pipeline, Version: restoredVersion}, nil
 }
 
-func (r *Repository) insertPipeline(ctx context.Context, id uuid.UUID, name, description string, ownerID uuid.UUID, dag json.RawMessage, status string, pipelineType string, lifecycle string, branchName string, scheduleConfig json.RawMessage, retryPolicy json.RawMessage, externalConfig any, incrementalConfig any, streamingConfig any, distributedConfig any, computeProfileID *string, projectID *uuid.UUID) (*models.Pipeline, error) {
+func (r *Repository) insertPipeline(ctx context.Context, id uuid.UUID, name, description string, ownerID uuid.UUID, tenantID *uuid.UUID, dag json.RawMessage, status string, pipelineType string, lifecycle string, branchName string, scheduleConfig json.RawMessage, retryPolicy json.RawMessage, externalConfig any, incrementalConfig any, streamingConfig any, distributedConfig any, computeProfileID *string, projectID *uuid.UUID) (*models.Pipeline, error) {
 	var p models.Pipeline
 	err := r.db.QueryRow(ctx, `INSERT INTO pipelines
-	(id, name, description, owner_id, dag, draft_dag, status, pipeline_type, lifecycle, branch_name, schedule_config, retry_policy, external_config, incremental_config, streaming_config, distributed_config, compute_profile_id, project_id, draft_updated_at)
-VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
-RETURNING `+pipelineSelectColumns, id, name, description, ownerID, dag, status, pipelineType, lifecycle, branchName, scheduleConfig, retryPolicy, externalConfig, incrementalConfig, streamingConfig, distributedConfig, computeProfileID, projectID).Scan(pipelineScanDest(&p)...)
+	(id, name, description, owner_id, tenant_id, dag, draft_dag, status, pipeline_type, lifecycle, branch_name, schedule_config, retry_policy, external_config, incremental_config, streaming_config, distributed_config, compute_profile_id, project_id, draft_updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+RETURNING `+pipelineSelectColumns, id, name, description, ownerID, tenantID, dag, status, pipelineType, lifecycle, branchName, scheduleConfig, retryPolicy, externalConfig, incrementalConfig, streamingConfig, distributedConfig, computeProfileID, projectID).Scan(pipelineScanDest(&p)...)
 	return &p, err
 }
 
@@ -436,10 +518,18 @@ func (r *Repository) nextPipelineVersionNumber(ctx context.Context, pipelineID u
 }
 
 func (r *Repository) getPipelineVersion(ctx context.Context, pipelineID, versionID uuid.UUID) (*models.PipelineVersion, error) {
+	where := "WHERE pipeline_id=$1 AND id=$2"
+	args := []any{pipelineID, versionID}
+	if scope := scopeFromContext(ctx); scope != nil {
+		sb := &sqlBuilder{args: args}
+		appendPipelineParentClause(sb, scope, "pipeline_versions.pipeline_id")
+		where += sb.whereSQL()
+		args = sb.args
+	}
 	var version models.PipelineVersion
 	err := r.db.QueryRow(ctx, `SELECT id, pipeline_id, version_number, branch_name, version_kind, dag, name, description, schedule_config, retry_policy, created_by, created_at, message, restored_from_version_id
 FROM pipeline_versions
-WHERE pipeline_id=$1 AND id=$2`, pipelineID, versionID).Scan(pipelineVersionScanDest(&version)...)
+`+where, args...).Scan(pipelineVersionScanDest(&version)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -464,7 +554,7 @@ func scanPipelineVersion(row pipelineScanner) (models.PipelineVersion, error) {
 
 func pipelineScanDest(p *models.Pipeline) []any {
 	return []any{
-		&p.ID, &p.Name, &p.Description, &p.OwnerID, &p.DAG, &p.Status,
+		&p.ID, &p.Name, &p.Description, &p.OwnerID, &p.TenantID, &p.DAG, &p.Status,
 		&p.PipelineType, &p.Lifecycle,
 		&p.ScheduleConfig, &p.RetryPolicy, &p.NextRunAt,
 		&p.ExternalConfig, &p.IncrementalConfig, &p.StreamingConfig, &p.DistributedConfig, &p.ComputeProfileID, &p.ProjectID,

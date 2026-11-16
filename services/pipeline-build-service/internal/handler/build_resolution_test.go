@@ -57,9 +57,11 @@ func TestCreateBuildMissingJobSpec(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, rr.Result().StatusCode)
 	require.Contains(t, rr.Body.String(), "missing JobSpec")
-	require.Equal(t, 1, builds.opened)
+	// Missing specs are deterministic: the preflight rejects before the
+	// build row is ever opened.
+	require.Equal(t, 0, builds.opened)
 	require.Equal(t, 0, builds.persisted)
-	require.Equal(t, 1, builds.failed)
+	require.Equal(t, 0, builds.failed)
 }
 
 func TestCreateBuildLockHeld(t *testing.T) {
@@ -96,7 +98,11 @@ func TestCreateBuildInputBranchMissing(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, rr.Result().StatusCode)
 	require.Contains(t, rr.Body.String(), "has no branch matching")
-	require.Equal(t, 1, builds.failed)
+	// Deterministic resolution errors are rejected by the read-only
+	// preflight BEFORE the build row exists, so nothing is ever marked
+	// failed.
+	require.Equal(t, 0, builds.failed)
+	require.Equal(t, 0, builds.opened)
 }
 
 func TestDryRunResolveDoesNotPersist(t *testing.T) {

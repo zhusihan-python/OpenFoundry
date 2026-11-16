@@ -96,3 +96,22 @@ go test ./services/pipeline-build-service/...
 | `KUBERNETES_BEARER_TOKEN` | unset |
 | `FOUNDRY_ICEBERG_CATALOG_URL` | unset (boot-time warning matches Rust) |
 | `FOUNDRY_ICEBERG_CATALOG_BEARER` | unset |
+
+## Tenant isolation (P1.1) — capability boundaries
+
+- Pipelines, versions, runs, builds, jobs, job logs and job specs are
+  tenant-isolated from the verified JWT (OrgID → organization domain;
+  no OrgID → personal domain with owner isolation). Lists, id-based
+  lookups (UUID and RID), subresources and live log streams all enforce
+  the boundary in SQL.
+- **SparkApplication submission is NOT supported for tenant-scoped
+  callers** (`POST /api/v1/data-integration/spark-runs`,
+  `POST /api/v1/pipeline/builds/run`): the runner does not yet carry a
+  constrained tenant identity, so scoped submissions fail closed with
+  503 `spark_submission_tenant_unsupported` before any Kubernetes side
+  effect. Status/list queries stay tenant-mapped. Distributed execution
+  under tenants lands with P2/P4.
+- Build resolution helpers that read the co-located dataset schema
+  (branch list / transaction open / view schema) fail closed for scoped
+  callers until the dataset schema exposes its org columns; route
+  through the dataset service HTTP API in split-database deployments.

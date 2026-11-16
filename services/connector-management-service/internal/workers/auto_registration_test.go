@@ -23,7 +23,7 @@ type fakeAutoStore struct {
 	upserts     []models.DiscoveredSource
 }
 
-func (s *fakeAutoStore) ListConnections(context.Context, *uuid.UUID) ([]models.Connection, error) {
+func (s *fakeAutoStore) ListAllConnections(context.Context) ([]models.Connection, error) {
 	return s.connections, nil
 }
 func (s *fakeAutoStore) UpsertRegistration(_ context.Context, _ uuid.UUID, source models.DiscoveredSource, _ string, _ bool, _ bool, _ *uuid.UUID, _ json.RawMessage) (*models.ConnectionRegistration, error) {

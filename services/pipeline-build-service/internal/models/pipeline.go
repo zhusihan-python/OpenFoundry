@@ -12,10 +12,14 @@ import (
 
 // Pipeline is the legacy `pipelines` table row.
 type Pipeline struct {
-	ID                  uuid.UUID       `json:"id"`
-	Name                string          `json:"name"`
-	Description         string          `json:"description"`
-	OwnerID             uuid.UUID       `json:"owner_id"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	OwnerID     uuid.UUID `json:"owner_id"`
+	// TenantID mirrors the tenant_id column: organization domain when
+	// set, personal domain of OwnerID when NULL. Derived from the
+	// verified JWT at creation; never accepted from request bodies.
+	TenantID            *uuid.UUID      `json:"tenant_id,omitempty"`
 	DAG                 json.RawMessage `json:"dag"`
 	Status              string          `json:"status"`
 	PipelineType        string          `json:"pipeline_type"`

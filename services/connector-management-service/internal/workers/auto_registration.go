@@ -13,7 +13,11 @@ import (
 )
 
 type AutoRegistrationStore interface {
-	ListConnections(ctx context.Context, ownerID *uuid.UUID) ([]models.Connection, error)
+	// ListAllConnections enumerates every source for the background
+	// registration sweep. It is deliberately tenant-agnostic: auto
+	// registration is a per-source opt-in executed by the service, not a
+	// user request surface (the HTTP list endpoints stay tenant-scoped).
+	ListAllConnections(ctx context.Context) ([]models.Connection, error)
 	UpsertRegistration(ctx context.Context, sourceID uuid.UUID, source models.DiscoveredSource, mode string, autoSync bool, updateDetection bool, targetDatasetID *uuid.UUID, metadata json.RawMessage) (*models.ConnectionRegistration, error)
 	GetRegistrationSignature(ctx context.Context, sourceID uuid.UUID, selector string) (*string, error)
 	RecordRegistrationSignature(ctx context.Context, sourceID uuid.UUID, selector string, signature *string) error
@@ -136,7 +140,7 @@ func AutoRegistrationSettingsViewFromConfig(config json.RawMessage) *AutoRegistr
 
 func (w *AutoRegistrationWorker) RunOnce(ctx context.Context) (AutoRegistrationSummary, error) {
 	var summary AutoRegistrationSummary
-	connections, err := w.Store.ListConnections(ctx, nil)
+	connections, err := w.Store.ListAllConnections(ctx)
 	if err != nil {
 		return summary, err
 	}

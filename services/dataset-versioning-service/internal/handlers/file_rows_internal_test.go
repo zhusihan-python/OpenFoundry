@@ -1,0 +1,117 @@
+package handlers
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestCSVCellValuePreservesLeadingZeros(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		cell string
+		want string
+	}{
+		{"007", `"007"`}, // SKU keeps leading zeros as a string
+		{"0", `0`},       // zero stays numeric
+		{"0.5", `0.5`},   // fractional without leading zero
+		{"-0.5", `-0.5`}, // negative fraction
+		{"42", `42`},     // plain integer
+		{"3.14", `3.14`}, // decimal
+		{"-17", `-17`},   // negative integer
+		{"+5", `"+5"`},   // explicit sign is not a plain literal
+		{"1e5", `"1e5"`}, // exponent notation stays a string
+		{" 12 ", `12`},   // surrounding whitespace trimmed
+		{"", `null`},     // empty cell is null
+		{"  ", `null`},   // whitespace-only cell is null
+		{"abc", `"abc"`}, // text stays text
+		{"0012345678901234567", `"0012345678901234567"`},   // leading zeros always string
+		{"12345678901234567890", `"12345678901234567890"`}, // >int64, >15 digits: exact string
+		{"1234567890123456", `1234567890123456`},           // 16 digits fits int64 exactly
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, string(csvCellValue(tc.cell)), "cell %q", tc.cell)
+	}
+}
+
+func TestParseDelimitedRows(t *testing.T) {
+	t.Parallel()
+	data := []byte("sku,qty,price,label\n007,2,1.5,hello\n100, ,3.25,world\n")
+	columns, rows, truncated, err := parseDelimitedRows(data, false, 100)
+	require.NoError(t, err)
+	require.False(t, truncated)
+	assert.Equal(t, []string{"sku", "qty", "price", "label"}, columns)
+	require.Len(t, rows, 2)
+	assert.Equal(t, `"007"`, string(rows[0]["sku"]))
+	assert.Equal(t, `2`, string(rows[0]["qty"]))
+	assert.Equal(t, `1.5`, string(rows[0]["price"]))
+	assert.Equal(t, `"hello"`, string(rows[0]["label"]))
+	assert.Equal(t, `100`, string(rows[1]["sku"]))
+	assert.Equal(t, `null`, string(rows[1]["qty"])) // whitespace-only cell
+	assert.Equal(t, `3.25`, string(rows[1]["price"]))
+}
+
+func TestParseDelimitedRowsLimitAndTruncation(t *testing.T) {
+	t.Parallel()
+	data := []byte("a,b\n1,2\n3,4\n5,6\n")
+	columns, rows, truncated, err := parseDelimitedRows(data, false, 2)
+	require.NoError(t, err)
+	require.True(t, truncated)
+	assert.Equal(t, []string{"a", "b"}, columns)
+	require.Len(t, rows, 2)
+	assert.Equal(t, `1`, string(rows[0]["a"]))
+}
+
+func TestParseDelimitedRowsHeaderOnlyAndEmpty(t *testing.T) {
+	t.Parallel()
+	columns, rows, truncated, err := parseDelimitedRows([]byte("a,b\n"), false, 10)
+	require.NoError(t, err)
+	require.False(t, truncated)
+	assert.Equal(t, []string{"a", "b"}, columns)
+	assert.Empty(t, rows)
+
+	columns, rows, truncated, err = parseDelimitedRows([]byte{}, false, 10)
+	require.NoError(t, err)
+	require.False(t, truncated)
+	assert.Empty(t, columns)
+	assert.Empty(t, rows)
+}
+
+func TestParseDelimitedRowsDuplicateColumn(t *testing.T) {
+	t.Parallel()
+	_, _, _, err := parseDelimitedRows([]byte("a,a\n1,2\n"), false, 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `duplicate column "a"`)
+}
+
+func TestParseDelimitedRowsTSV(t *testing.T) {
+	t.Parallel()
+	columns, rows, truncated, err := parseDelimitedRows([]byte("sku\tqty\n008\t3\n"), true, 10)
+	require.NoError(t, err)
+	require.False(t, truncated)
+	assert.Equal(t, []string{"sku", "qty"}, columns)
+	require.Len(t, rows, 1)
+	assert.Equal(t, `"008"`, string(rows[0]["sku"]))
+	assert.Equal(t, `3`, string(rows[0]["qty"]))
+}
+
+func TestParseNDJSONRows(t *testing.T) {
+	t.Parallel()
+	data := []byte("{\"sku\": \"007\", \"qty\": 4}\n\n{\"sku\": 12, \"price\": 2.5}\n{\"sku\": \"007\", \"qty\": 5}\n")
+	columns, rows, truncated, err := parseNDJSONRows(data, 2)
+	require.NoError(t, err)
+	require.True(t, truncated)
+	assert.Equal(t, []string{"price", "qty", "sku"}, columns) // sorted: deterministic across reads
+	require.Len(t, rows, 2)
+	assert.Equal(t, `"007"`, string(rows[0]["sku"]))
+	assert.Equal(t, `4`, string(rows[0]["qty"]))
+	assert.Equal(t, `2.5`, string(rows[1]["price"]))
+}
+
+func TestParseNDJSONRowsRejectsNonObject(t *testing.T) {
+	t.Parallel()
+	_, _, _, err := parseNDJSONRows([]byte("[1,2]\n"), 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a JSON object")
+}

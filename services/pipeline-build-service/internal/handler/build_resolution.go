@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -44,6 +47,203 @@ func SetBuildLifecyclePorts(ports BuildLifecyclePorts) func() {
 	return func() { buildLifecyclePorts.Store(previous) }
 }
 
+// pipelineParentValidator is implemented by the authoring repository so
+// scoped build requests can prove the pipeline parent belongs to the
+// caller's tenant before anything is written.
+type pipelineParentValidator interface {
+	GetPipeline(ctx context.Context, id uuid.UUID) (*models.Pipeline, error)
+}
+
+// validatePipelineParent rejects scoped callers whose pipeline RID does
+// not resolve to a tenant-visible pipeline. Unscoped (legacy internal)
+// callers keep the old behaviour.
+func validatePipelineParent(ctx context.Context, ports BuildLifecyclePorts, pipelineRID string) error {
+	if TenantScopeFromContext(ctx) == nil {
+		return nil
+	}
+	// Scoped callers must PROVE ownership: a missing or non-validating
+	// authoring repository is a fail-closed 503, never a silent bypass.
+	authoring, ok := currentPipelineAuthoringRepository()
+	if !ok || authoring == nil {
+		return ErrPipelineParentValidationUnavailable
+	}
+	validator, isValidator := authoring.(pipelineParentValidator)
+	if !isValidator {
+		return ErrPipelineParentValidationUnavailable
+	}
+	raw := strings.TrimSpace(pipelineRID)
+	raw = strings.TrimPrefix(raw, "ri.foundry.main.pipeline.")
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		// Malformed reference: the caller's request is invalid.
+		return &resolver.ClientResolutionError{Message: fmt.Sprintf("pipeline_rid %q is not a valid pipeline reference", pipelineRID)}
+	}
+	pipeline, err := validator.GetPipeline(ctx, id)
+	if err != nil {
+		return err
+	}
+	if pipeline == nil {
+		// Well-formed but invisible (foreign tenant or gone): 404, the
+		// isolation answer — never a generic 400.
+		return ErrPipelineParentNotFound
+	}
+	return nil
+}
+
+// writeResolutionHTTPError maps resolution failures to precise statuses:
+// dataset 404/403/409 pass through, upstream unavailability is 503, the
+// capability gate is its own 503, everything else stays a client 400.
+func writeResolutionHTTPError(w http.ResponseWriter, err error) {
+	var httpErr *DatasetHTTPError
+	switch {
+	case errors.Is(err, ErrDatasetTenantBoundaryUnsupported):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "dataset_tenant_boundary_unsupported", "detail": err.Error()})
+	case errors.Is(err, ErrPipelineParentNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline_not_found_in_tenant", "detail": err.Error()})
+	case errors.Is(err, ErrPipelineParentValidationUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "pipeline_parent_validation_unavailable", "detail": err.Error()})
+	case errors.Is(err, resolver.ErrPendingTxnRecordFailed):
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "pending_txn_record_failed", "detail": err.Error()})
+	case errors.Is(err, ErrDatasetCallerRequired):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "dataset_caller_required", "detail": err.Error()})
+	case errors.As(err, &httpErr):
+		status := httpErr.Status
+		if httpErr.Status >= http.StatusInternalServerError {
+			status = http.StatusServiceUnavailable // upstream 5xx → dependency unavailable, not "unsupported"
+		} // every 4xx (404/403/409/400 invalid references …) passes through as-is
+		code := httpErr.Code
+		if code == "" {
+			code = "dataset_error"
+		}
+		writeJSON(w, status, map[string]string{"error": code, "detail": httpErr.Detail})
+	default:
+		writeResolutionError(w, err)
+	}
+}
+
+// preflightRequestedDatasetVisibility proves every referenced dataset is
+// visible to the CALLER before spec loading: a foreign requested output
+// must answer with the real 403/404, never a misleading missing-spec 400
+// or a schema-miss. Scoped callers only — legacy unscoped harnesses keep
+// the old contract.
+func preflightRequestedDatasetVisibility(ctx context.Context, ports BuildLifecyclePorts, rids ...string) error {
+	if TenantScopeFromContext(ctx) == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, rid := range rids {
+		rid = strings.TrimSpace(rid)
+		if rid == "" {
+			continue
+		}
+		if _, dup := seen[rid]; dup {
+			continue
+		}
+		seen[rid] = struct{}{}
+		if _, err := ports.Versioning.ListBranches(ctx, rid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// datasetRIDSetOf returns the distinct external input datasets plus all
+// outputs the specs declare (beyond the request's own list), for the
+// post-spec visibility gate.
+func datasetRIDSetOf(specs []models.JobSpec, extra ...string) []string {
+	seen := map[string]struct{}{}
+	add := func(rid string) {
+		if rid = strings.TrimSpace(rid); rid != "" {
+			seen[rid] = struct{}{}
+		}
+	}
+	for _, rid := range extra {
+		add(rid)
+	}
+	for _, spec := range specs {
+		for _, output := range spec.OutputDatasetRIDs {
+			add(output)
+		}
+		for _, input := range spec.Inputs {
+			add(input.DatasetRID)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for rid := range seen {
+		out = append(out, rid)
+	}
+	return out
+}
+
+// withCallerBearer attaches the request's bearer so the dataset HTTP
+// adapter (and any downstream service call) acts as the calling user.
+func withCallerBearer(r *http.Request) context.Context {
+	return contextWithCallerBearer(r.Context(), callerBearerFromRequest(r))
+}
+
+// PendingOutputTxn is one durable build↔transaction association awaiting
+// a confirmed remote abort.
+type PendingOutputTxn struct {
+	DatasetRID     string `json:"dataset_rid"`
+	Branch         string `json:"branch"`
+	TransactionRID string `json:"transaction_rid"`
+}
+
+// ErrTransactionConflict marks an abort attempt against a transaction in
+// a non-abortable terminal state (e.g. COMMITTED). HTTP callers get 409.
+var ErrTransactionConflict = fmt.Errorf("transaction_conflict: transaction is in a terminal state that cannot be aborted")
+
+// ErrPipelineParentNotFound marks a well-formed pipeline reference that
+// does not resolve under the caller's tenant (foreign or deleted) —
+// mapped to 404.
+var ErrPipelineParentNotFound = fmt.Errorf("pipeline_not_found_in_tenant: pipeline is not visible in the caller's tenant")
+
+// ErrPipelineParentValidationUnavailable marks a scoped request whose
+// pipeline parent cannot be proven (authoring repository missing or does
+// not support validation). Scoped callers fail closed with 503.
+var ErrPipelineParentValidationUnavailable = fmt.Errorf("pipeline_parent_validation_unavailable: pipeline ownership cannot be verified in this deployment")
+
+// ErrTransactionNotFound marks an abort that matched no transaction row
+// under the given parent dataset / branch / tenant.
+var ErrTransactionNotFound = fmt.Errorf("transaction_not_found: no open transaction matches the parent dataset, branch and tenant")
+
+// ErrDatasetTenantBoundaryUnsupported marks a scoped build-resolution
+// request that cannot be served safely because the reachable dataset
+// schema does not expose tenant columns (split database / older schema).
+// HTTP callers receive a stable 503 with error code
+// "dataset_tenant_boundary_unsupported".
+var ErrDatasetTenantBoundaryUnsupported = errors.New("dataset_tenant_boundary_unsupported: the dataset schema does not expose tenant columns")
+
+// datasetBoundaryProber is implemented by the production versioning
+// repository so build resolution can reject scoped requests BEFORE any
+// database write when the co-located dataset schema cannot enforce the
+// tenant boundary (split-database deployments, older dataset schema).
+type datasetBoundaryProber interface {
+	DatasetTenantBoundarySupported(ctx context.Context) bool
+}
+
+// requireDatasetBoundarySupported writes the stable 503 used by the
+// acceptance harness when a scoped build-resolution request cannot be
+// served safely. Ports without the prober (test fakes, future HTTP
+// adapters) are treated as boundary-capable.
+func requireDatasetBoundarySupported(w http.ResponseWriter, r *http.Request, ports BuildLifecyclePorts) bool {
+	if TenantScopeFromContext(r.Context()) == nil {
+		return true
+	}
+	prober, ok := ports.Versioning.(datasetBoundaryProber)
+	if !ok {
+		return true
+	}
+	if prober.DatasetTenantBoundarySupported(r.Context()) {
+		return true
+	}
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+		"error":  "dataset_tenant_boundary_unsupported",
+		"detail": "the dataset schema reachable by this deployment does not expose tenant columns; route build resolution through a co-located dataset schema with org columns or the dataset service HTTP adapter",
+	})
+	return false
+}
+
 func currentBuildLifecyclePorts() (BuildLifecyclePorts, bool) {
 	slot, _ := buildLifecyclePorts.Load().(*buildLifecycleSlot)
 	if slot == nil || slot.ports.JobSpecs == nil || slot.ports.Versioning == nil {
@@ -77,7 +277,33 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 	}
 	args, err := createBuildArgs(r.Context(), body)
 	if err != nil {
+		if errors.Is(err, ErrDatasetTenantBoundaryUnsupported) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "dataset_tenant_boundary_unsupported", "detail": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !requireDatasetBoundarySupported(w, r, ports) {
+		return
+	}
+	ctx := withCallerBearer(r)
+	if err := validatePipelineParent(ctx, ports, body.PipelineRID); err != nil {
+		writeResolutionHTTPError(w, err)
+		return
+	}
+	// Requested outputs are proven visible BEFORE spec loading: a
+	// foreign output is a real permission answer (403/404), not a
+	// missing-spec 400.
+	if err := preflightRequestedDatasetVisibility(ctx, ports, body.OutputDatasetRIDs...); err != nil {
+		writeResolutionHTTPError(w, err)
+		return
+	}
+	// Read-only preflight (specs, cycles, inputs, output visibility)
+	// rejects deterministic errors BEFORE the build row, any remote
+	// transaction or any local lock exists.
+	if _, _, err := resolver.PreflightBuild(ctx, args, ports.JobSpecs, ports.Versioning); err != nil {
+		writeResolutionHTTPError(w, err)
 		return
 	}
 	buildID, err := uuid.NewV7()
@@ -86,20 +312,65 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 	}
 	args.BuildID = &buildID
 
-	if err := ports.Builds.OpenBuild(r.Context(), args, buildID); err != nil {
+	// detachedWrite gives EACH fate-finalizing write its own bounded,
+	// cancellation-proof context: a single budget started before OpenBuild
+	// must not expire under a long resolution and starve later writes.
+	// Tenant/bearer values survive WithoutCancel.
+	detachedWrite := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	}
+
+	openCtx, cancelOpen := detachedWrite()
+	defer cancelOpen()
+	if err := ports.Builds.OpenBuild(openCtx, args, buildID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "build_open_failed", "detail": err.Error()})
 		return
 	}
+	var recorder resolver.PendingTxnRecorder
+	if candidate, ok := ports.Builds.(resolver.PendingTxnRecorder); ok {
+		recorder = candidate
+	} else if candidate, ok := ports.Versioning.(resolver.PendingTxnRecorder); ok {
+		recorder = candidate
+	}
+	var resolverRecorder []resolver.PendingTxnRecorder
+	if recorder != nil {
+		resolverRecorder = append(resolverRecorder, recorder)
+	}
 
-	resolved, err := resolver.ResolveBuild(r.Context(), args, ports.JobSpecs, ports.Versioning, ports.Locks)
+	resolved, err := resolver.ResolveBuild(ctx, args, ports.JobSpecs, ports.Versioning, ports.Locks, resolverRecorder...)
 	if err != nil {
-		_ = ports.Builds.MarkBuildFailed(r.Context(), buildID, err.Error())
-		writeResolutionError(w, err)
+		failCtx, cancelFail := detachedWrite()
+		defer cancelFail()
+		if failErr := ports.Builds.MarkBuildFailed(failCtx, buildID, err.Error()); failErr != nil {
+			slog.Error("mark build failed", slog.String("build_id", buildID.String()), slog.String("error", failErr.Error()))
+		}
+		writeResolutionHTTPError(w, err)
 		return
 	}
-	if err := ports.Builds.PersistResolvedBuild(r.Context(), resolved); err != nil {
-		_ = ports.Builds.MarkBuildFailed(r.Context(), buildID, err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "build_persist_failed", "detail": err.Error()})
+	persistCtx, cancelPersist := detachedWrite()
+	defer cancelPersist()
+	if err := ports.Builds.PersistResolvedBuild(persistCtx, resolved); err != nil {
+		// Persistence failed after transactions were opened: compensate
+		// (abort this run's transactions, release this build's locks)
+		// on a bounded detached context, then record the failure.
+		infos := make([]resolver.OpenedTransactionInfo, 0, len(resolved.OpenedTransactions))
+		for _, tx := range resolved.OpenedTransactions {
+			infos = append(infos, resolver.OpenedTransactionInfo{DatasetRID: tx.DatasetRID, TransactionRID: tx.TransactionRID, Branch: args.BuildBranch})
+		}
+		cleanupErrs := resolver.CleanupOpenedTransactions(persistCtx, ports.Versioning, ports.Locks, buildID, args.BuildBranch, infos, resolverRecorder...)
+		detail := err.Error()
+		if len(cleanupErrs) > 0 {
+			detail = fmt.Sprintf("%s (cleanup failures: %v)", detail, cleanupErrs)
+		}
+		// Fresh bounded context for the failure mark (persistCtx's
+		// budget may be exhausted), and the FULL reason — including
+		// compensation failures — is what gets persisted.
+		failCtx, cancelFail := detachedWrite()
+		defer cancelFail()
+		if failErr := ports.Builds.MarkBuildFailed(failCtx, buildID, detail); failErr != nil {
+			slog.Error("mark build failed", slog.String("build_id", buildID.String()), slog.String("error", failErr.Error()))
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "build_persist_failed", "detail": detail})
 		return
 	}
 
@@ -176,18 +447,51 @@ func DryRunResolve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !requireDatasetBoundarySupported(w, r, ports) {
+		return
+	}
+	ctx := withCallerBearer(r)
+	if err := validatePipelineParent(ctx, ports, body.PipelineRID); err != nil {
+		writeResolutionHTTPError(w, err)
+		return
+	}
 
+	// Requested outputs prove visibility before spec loading (real
+	// 403/404 for foreign outputs, not a missing-spec contract break).
+	if err := preflightRequestedDatasetVisibility(ctx, ports, body.OutputDatasetRIDs...); err != nil {
+		writeResolutionHTTPError(w, err)
+		return
+	}
 	jobRepo := ports.JobSpecs
 	if len(body.InlineSpecs) > 0 {
+		// Inline specs carry their own pipeline references: every one
+		// must prove its parent before resolution proceeds.
+		for i := range body.InlineSpecs {
+			if ref := strings.TrimSpace(body.InlineSpecs[i].PipelineRID); ref != "" {
+				if err := validatePipelineParent(ctx, ports, ref); err != nil {
+					writeResolutionHTTPError(w, err)
+					return
+				}
+			}
+		}
 		jobRepo = newInlineJobSpecRepo(body.InlineSpecs)
 	}
-	specs, err := resolver.LoadJobSpecs(r.Context(), body.PipelineRID, body.BuildBranch, body.JobSpecFallback, body.OutputDatasetRIDs, jobRepo)
+	specs, err := resolver.LoadJobSpecs(ctx, body.PipelineRID, body.BuildBranch, body.JobSpecFallback, body.OutputDatasetRIDs, jobRepo)
 	if err != nil {
 		writeJSON(w, http.StatusOK, dryRunResolveResponse{Errors: []dryRunError{dryRunErrorFromErr(err)}})
 		return
 	}
 	if err := resolver.DetectCycles(specs); err != nil {
 		writeJSON(w, http.StatusOK, dryRunResolveResponse{Errors: []dryRunError{dryRunErrorFromErr(err)}})
+		return
+	}
+	// With specs in hand, EVERY referenced dataset (inputs and spec
+	// outputs beyond the request list) passes the same caller-visibility
+	// gate BEFORE branch resolution: permission failures are 403/404
+	// HTTP answers, while ordinary branch/logic resolution issues keep
+	// the 200+errors contract below.
+	if err := preflightRequestedDatasetVisibility(ctx, ports, datasetRIDSetOf(specs, body.OutputDatasetRIDs...)...); err != nil {
+		writeResolutionHTTPError(w, err)
 		return
 	}
 
@@ -202,7 +506,7 @@ func DryRunResolve(w http.ResponseWriter, r *http.Request) {
 		inputs := make([]dryRunInput, 0, len(spec.Inputs))
 		for _, input := range spec.Inputs {
 			resolvedInput := dryRunInput{DatasetRID: input.DatasetRID, FallbackChain: input.FallbackChain}
-			branches, err := ports.Versioning.ListBranches(r.Context(), input.DatasetRID)
+			branches, err := ports.Versioning.ListBranches(ctx, input.DatasetRID)
 			if err != nil {
 				dryErrors = append(dryErrors, dryRunError{DatasetRID: strPtr(input.DatasetRID), Kind: "VERSIONING_CLIENT_ERROR", Message: err.Error()})
 				inputs = append(inputs, resolvedInput)
@@ -223,7 +527,7 @@ func DryRunResolve(w http.ResponseWriter, r *http.Request) {
 		outputs := make([]dryRunOutput, 0, len(spec.OutputDatasetRIDs))
 		for _, outputRID := range spec.OutputDatasetRIDs {
 			resolvedOutput := dryRunOutput{DatasetRID: outputRID, ResolvedOutput: body.BuildBranch}
-			branches, err := ports.Versioning.ListBranches(r.Context(), outputRID)
+			branches, err := ports.Versioning.ListBranches(ctx, outputRID)
 			if err != nil {
 				dryErrors = append(dryErrors, dryRunError{DatasetRID: strPtr(outputRID), Kind: "VERSIONING_CLIENT_ERROR", Message: err.Error()})
 				outputs = append(outputs, resolvedOutput)

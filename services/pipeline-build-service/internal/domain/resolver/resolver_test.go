@@ -21,6 +21,7 @@ func TestResolveBuildPipelineSimple(t *testing.T) {
 	locks := newMockLockRepo()
 	specs.add(jobSpec("ri.spec.s1", []string{"raw.a"}, []string{"out.b"}))
 	versioning.addBranch("raw.a", "master")
+	versioning.addBranch("out.b", "master")
 
 	resolved, err := ResolveBuild(ctx, ResolveBuildArgs{
 		PipelineRID:       "ri.foundry.main.pipeline.simple",
@@ -48,6 +49,8 @@ func TestResolveBuildDependencies(t *testing.T) {
 	specs.add(jobSpec("ri.spec.upstream", []string{"raw.a"}, []string{"mid.b"}))
 	specs.add(jobSpec("ri.spec.downstream", []string{"mid.b"}, []string{"out.c"}))
 	versioning.addBranch("raw.a", "master")
+	versioning.addBranch("mid.b", "master")
+	versioning.addBranch("out.c", "master")
 
 	resolved, err := ResolveBuild(ctx, ResolveBuildArgs{
 		PipelineRID:       "ri.foundry.main.pipeline.deps",
@@ -98,6 +101,7 @@ func TestResolveBuildFanOut(t *testing.T) {
 		output := "out." + letter
 		specs.add(jobSpec("ri.spec."+letter, []string{input}, []string{output}))
 		versioning.addBranch(input, "master")
+		versioning.addBranch(output, "master")
 	}
 
 	resolved, err := ResolveBuild(ctx, ResolveBuildArgs{
@@ -265,4 +269,52 @@ func (m *mockLockRepo) holder(outputDatasetRID string) uuid.UUID {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.locks[outputDatasetRID]
+}
+
+// TestCleanupKeepsLockWhenAbortUnconfirmed pins the compensation rule: a
+// remote abort failure retains this build's lock (observable dangling
+// transaction) instead of silently releasing it.
+func TestCleanupKeepsLockWhenAbortUnconfirmed(t *testing.T) {
+	ctx := context.Background()
+	buildID := uuid.New()
+	versioning := &cleanupFakeVersioning{abortErr: fmt.Errorf("409 COMMITTED")}
+	locks := &cleanupFakeLocks{}
+	errs := CleanupOpenedTransactions(ctx, versioning, locks, buildID, "main", []OpenedTransactionInfo{{DatasetRID: "out.a", TransactionRID: "ri.foundry.main.transaction.1", Branch: "main"}})
+	require.Len(t, errs, 1)
+	require.Contains(t, errs[0].Error(), "lock+reference retained")
+	require.Equal(t, 0, locks.released, "lock must stay while the transaction is not confirmed aborted")
+
+	locks.released = 0
+	versioning.abortErr = nil
+	errs = CleanupOpenedTransactions(ctx, versioning, locks, buildID, "main", []OpenedTransactionInfo{{DatasetRID: "out.a", TransactionRID: "ri.foundry.main.transaction.1", Branch: "main"}})
+	require.Empty(t, errs)
+	require.Equal(t, 1, locks.released, "confirmed abort releases the lock")
+}
+
+type cleanupFakeVersioning struct{ abortErr error }
+
+func (c *cleanupFakeVersioning) ListBranches(context.Context, string) ([]models.BranchSnapshot, error) {
+	return nil, nil
+}
+func (c *cleanupFakeVersioning) OpenTransaction(context.Context, string, string) (string, error) {
+	return "", nil
+}
+func (c *cleanupFakeVersioning) ViewSchema(context.Context, string, string) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
+}
+func (c *cleanupFakeVersioning) AbortTransaction(context.Context, string, string, string) error {
+	return c.abortErr
+}
+
+type cleanupFakeLocks struct{ released int }
+
+func (c *cleanupFakeLocks) TryAcquire(context.Context, string, uuid.UUID, string) (uuid.UUID, bool, error) {
+	return uuid.Nil, true, nil
+}
+func (c *cleanupFakeLocks) HasUpstreamInProgress(context.Context, []string, uuid.UUID) (bool, error) {
+	return false, nil
+}
+func (c *cleanupFakeLocks) ReleaseLock(context.Context, string, uuid.UUID) error {
+	c.released++
+	return nil
 }

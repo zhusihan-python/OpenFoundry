@@ -19,21 +19,17 @@ import (
 	"github.com/openfoundry/openfoundry-go/services/dataset-versioning-service/internal/repo"
 )
 
+// resolveDatasetForCatalog is the shared entry point for every /v1
+// dataset-addressed route. It resolves the id/rid route parameter under
+// the tenant rule: organization callers only reach their org's datasets,
+// personal callers only their own org-less datasets, and everything else
+// answers 404 so cross-tenant existence is not leaked.
 func (h *Handlers) resolveDatasetForCatalog(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	if _, ok := authmw.FromContext(r.Context()); !ok {
-		writeJSONErr(w, http.StatusUnauthorized, "authentication required")
+	dataset, ok := h.resolveTenantDataset(w, r)
+	if !ok {
 		return uuid.Nil, false
 	}
-	id, err := h.Repo.ResolveDatasetID(r.Context(), datasetIDParam(r))
-	if err != nil {
-		if errors.Is(err, repo.ErrNotFound) {
-			writeJSONErr(w, http.StatusNotFound, "dataset not found")
-		} else {
-			writeJSONErr(w, http.StatusInternalServerError, "failed to resolve dataset")
-		}
-		return uuid.Nil, false
-	}
-	return id, true
+	return dataset.ID, true
 }
 
 func (h *Handlers) requireDatasetWrite(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID) (*authmw.Claims, bool) {
@@ -342,6 +338,17 @@ func (h *Handlers) PutDatasetLineageLinks(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	// Cross-dataset lineage references must stay inside the caller's
+	// tenant: a target dataset in another organization is rejected like
+	// an unknown one.
+	if err := h.validateLineageTargetsInTenant(r.Context(), body.Links, tenantScopeFromClaims(claims)); err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			writeJSONErr(w, http.StatusNotFound, "lineage target dataset not found")
+			return
+		}
+		writeJSONErr(w, http.StatusInternalServerError, "failed to validate lineage targets")
+		return
+	}
 	if err := h.Repo.ReplaceDatasetLineageLinks(r.Context(), datasetID, body.Links); err != nil {
 		if repo.IsConflict(err) {
 			writeJSONErr(w, http.StatusConflict, "dataset lineage conflict")
@@ -399,6 +406,21 @@ func (h *Handlers) PutDatasetFileIndex(w http.ResponseWriter, r *http.Request) {
 			size = *file.SizeBytes
 		}
 		if err := validateFileIndexEntry(file.Path, file.StoragePath, entryType, size); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	// Registered storage paths may only reference objects inside this
+	// dataset's own namespace — a forged path pointing at another
+	// dataset's local object would otherwise be readable through the
+	// rows/download surfaces.
+	baseDir := ""
+	if h.BackingFS != nil {
+		baseDir = h.BackingFS.BaseDirectory()
+	}
+	ownTxn := h.datasetTxnOwner(r.Context(), datasetID)
+	for _, file := range body.Files {
+		if err := h.validateStorageRefForDataset(r.Context(), file.StoragePath, baseDir, datasetID, nil, ownTxn); err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
 		}

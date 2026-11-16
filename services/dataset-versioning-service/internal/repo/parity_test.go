@@ -145,6 +145,9 @@ func TestCommitTransactionRejectsNonOpenTransaction(t *testing.T) {
 	branchID := uuid.New()
 	txnID := uuid.New()
 	mock.ExpectBegin()
+	// P2.6 W1: the commit core locks the datasets row first so keyed and
+	// plain publishes share one lock order.
+	mock.ExpectQuery("SELECT id FROM datasets").WithArgs(datasetID).WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(datasetID))
 	mock.ExpectQuery("SELECT id, dataset_id, branch_id").WithArgs(txnID).WillReturnRows(pgxmock.NewRows([]string{"id", "dataset_id", "branch_id", "branch_name", "tx_type", "status", "summary"}).AddRow(txnID, datasetID, branchID, "master", models.TransactionTypeAppend, models.TransactionStatusCommitted, "done"))
 	mock.ExpectRollback()
 

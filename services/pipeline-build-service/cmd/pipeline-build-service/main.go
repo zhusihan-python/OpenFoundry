@@ -21,6 +21,7 @@ import (
 	"github.com/openfoundry/openfoundry-go/libs/observability"
 	pythonsidecar "github.com/openfoundry/openfoundry-go/libs/python-sidecar"
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/config"
+	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/domain/resolver"
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/handler"
 	livellogs "github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/logs"
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/postgres"
@@ -109,7 +110,19 @@ func main() {
 			ObjectDatabaseBearer:     cfg.ObjectDatabaseServiceBearer,
 			Client:                   &http.Client{Timeout: 30 * time.Second},
 		}
-		handler.SetBuildLifecyclePorts(handler.BuildLifecyclePorts{JobSpecs: repo, Versioning: repo, Locks: repo, Builds: repo})
+		// Dataset versioning access strategy:
+		//   - DATASET_SERVICE_URL set → HTTP adapter: every dataset
+		//     request carries the CALLER's JWT (the dataset service
+		//     enforces tenants); works across split databases.
+		//   - unset → co-located SQL repository; scoped callers are
+		//     gated on the dataset org columns and fail closed with a
+		//     stable 503 otherwise (no silent unscoped fallback).
+		var versioningPort resolver.DatasetVersioningRepository = repo
+		if cfg.DatasetServiceURL != "" {
+			versioningPort = handler.DatasetHTTPVersioning{BaseURL: cfg.DatasetServiceURL, Client: &http.Client{Timeout: 30 * time.Second}}
+			log.Info("dataset HTTP versioning adapter wired", slog.String("base_url", cfg.DatasetServiceURL))
+		}
+		handler.SetBuildLifecyclePorts(handler.BuildLifecyclePorts{JobSpecs: repo, Versioning: versioningPort, Locks: repo, Builds: repo})
 		distributedRunner := handler.NewSparkFlinkDistributedRunner(handler.DistributedRuntimeConfig{
 			Namespace:    cfg.SparkNamespace,
 			RunnerImage:  cfg.PipelineRunnerImage,
@@ -119,7 +132,11 @@ func main() {
 		aiClient := &http.Client{Timeout: 45 * time.Second}
 		llmRunner := handler.NewAIServiceLLMRunner(handler.AIServiceLLMConfig{BaseURL: cfg.AIServiceURL, BearerToken: cfg.AIServiceBearer, Client: aiClient})
 		aipGenerator := handler.NewAIServicePipelineAIPGenerator(handler.PipelineAIPGeneratorConfig{BaseURL: cfg.AIServiceURL, BearerToken: cfg.AIServiceBearer, Client: aiClient})
-		handler.SetExecutionPorts(handler.ExecutionPorts{Plans: repo, Runs: repo, Python: pythonRuntime, LLM: llmRunner, AIP: aipGenerator, Distributed: distributedRunner, Transactions: handler.ConfigGatedTransactionManager{Metadata: repo, CatalogConfigured: cfg.FoundryIcebergCatalogURL != ""}, Committer: handler.ConfigGatedOutputCommitter{Metadata: outputCommitter, CatalogConfigured: cfg.FoundryIcebergCatalogURL != ""}, Audit: repo, Parallelism: cfg.DistributedPipelineWorkers})
+		// Uses its own redirect-refusing client: the rows endpoint must be
+		// answered directly by dataset-versioning-service, never via a
+		// presigned or foreign redirect.
+		datasetRowReader := handler.DatasetServiceRowReader{BaseURL: cfg.DatasetServiceURL, BearerToken: cfg.DatasetServiceBearer}
+		handler.SetExecutionPorts(handler.ExecutionPorts{Plans: repo, Runs: repo, Python: pythonRuntime, LLM: llmRunner, AIP: aipGenerator, Distributed: distributedRunner, Transactions: handler.ConfigGatedTransactionManager{Metadata: repo, CatalogConfigured: cfg.FoundryIcebergCatalogURL != ""}, Committer: handler.ConfigGatedOutputCommitter{Metadata: outputCommitter, CatalogConfigured: cfg.FoundryIcebergCatalogURL != ""}, Audit: repo, DatasetRows: datasetRowReader, Parallelism: cfg.DistributedPipelineWorkers})
 		handler.SetBuildQueryRepository(repo)
 		handler.SetPipelineAuthoringRepository(repo)
 		handler.SetSparkSubmissionRepository(repo)

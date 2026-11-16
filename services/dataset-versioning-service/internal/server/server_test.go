@@ -87,6 +87,7 @@ func TestRustParityRoutesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/v1/datasets/ri.foundry.main.dataset.example/views/view-1"},
 		{http.MethodPost, "/v1/datasets/ri.foundry.main.dataset.example/views/:refresh"},
 		{http.MethodGet, "/v1/datasets/00000000-0000-0000-0000-000000000001/files"},
+		{http.MethodGet, "/v1/datasets/ri.foundry.main.dataset.example/files/rows"},
 		{http.MethodGet, "/v1/datasets/00000000-0000-0000-0000-000000000001/files/00000000-0000-0000-0000-000000000003/download"},
 		{http.MethodPost, "/v1/datasets/00000000-0000-0000-0000-000000000001/transactions/00000000-0000-0000-0000-000000000002/files"},
 		{http.MethodGet, "/v1/datasets/ri.foundry.main.dataset.example/storage-details"},

@@ -263,30 +263,27 @@ func (r *Repo) ListDatasetLineageLinks(ctx context.Context, datasetID uuid.UUID)
 	return out, rows.Err()
 }
 
+// ReplaceDatasetLineageLinks rewrites the dataset's lineage links inside
+// one transaction (previously DELETE + per-row INSERT directly on the
+// pool, which could leave a partially rewritten edge set behind).
 func (r *Repo) ReplaceDatasetLineageLinks(ctx context.Context, datasetID uuid.UUID, links []models.PutDatasetLineageLink) error {
-	if _, err := r.Pool.Exec(ctx, `DELETE FROM dataset_lineage_links WHERE dataset_id = $1`, datasetID); err != nil {
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	for _, l := range links {
-		targetKind := "dataset"
-		if l.TargetKind != nil && *l.TargetKind != "" {
-			targetKind = *l.TargetKind
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
 		}
-		relationKind := "derives_from"
-		if l.RelationKind != nil && *l.RelationKind != "" {
-			relationKind = *l.RelationKind
-		}
-		_, err := r.Pool.Exec(ctx, `INSERT INTO dataset_lineage_links
-			(id, dataset_id, direction, target_rid, target_kind, relation_kind, pipeline_id, workflow_id, metadata)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
-			ON CONFLICT (dataset_id, direction, target_rid, relation_kind) DO UPDATE
-			SET target_kind = EXCLUDED.target_kind, pipeline_id = EXCLUDED.pipeline_id,
-			workflow_id = EXCLUDED.workflow_id, metadata = EXCLUDED.metadata, updated_at = NOW()`,
-			uuid.New(), datasetID, l.Direction, l.TargetRID, targetKind, relationKind, l.PipelineID, l.WorkflowID, defaultRawObject(l.Metadata))
-		if err != nil {
-			return err
-		}
+	}()
+	if err := replaceLineageSteps(ctx, tx, datasetID, links); err != nil {
+		return err
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	committed = true
 	return nil
 }
 
@@ -308,30 +305,26 @@ func (r *Repo) ListDatasetFileIndex(ctx context.Context, datasetID uuid.UUID) ([
 	return out, rows.Err()
 }
 
+// ReplaceDatasetFileIndex rewrites the dataset's file index inside one
+// transaction (previously DELETE + per-row INSERT directly on the pool).
 func (r *Repo) ReplaceDatasetFileIndex(ctx context.Context, datasetID uuid.UUID, files []models.PutDatasetFileIndexEntry) error {
-	if _, err := r.Pool.Exec(ctx, `DELETE FROM dataset_file_index WHERE dataset_id = $1`, datasetID); err != nil {
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	for _, f := range files {
-		entryType := "file"
-		if f.EntryType != nil && *f.EntryType != "" {
-			entryType = *f.EntryType
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
 		}
-		size := int64(0)
-		if f.SizeBytes != nil {
-			size = *f.SizeBytes
-		}
-		_, err := r.Pool.Exec(ctx, `INSERT INTO dataset_file_index
-			(id, dataset_id, path, storage_path, entry_type, size_bytes, content_type, metadata, last_modified)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
-			ON CONFLICT (dataset_id, path) DO UPDATE SET storage_path = EXCLUDED.storage_path,
-			entry_type = EXCLUDED.entry_type, size_bytes = EXCLUDED.size_bytes, content_type = EXCLUDED.content_type,
-			metadata = EXCLUDED.metadata, last_modified = EXCLUDED.last_modified, updated_at = NOW()`,
-			uuid.New(), datasetID, f.Path, f.StoragePath, entryType, size, f.ContentType, defaultRawObject(f.Metadata), f.LastModified)
-		if err != nil {
-			return err
-		}
+	}()
+	if err := replaceFileIndexSteps(ctx, tx, datasetID, files); err != nil {
+		return err
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	committed = true
 	return nil
 }
 
@@ -914,91 +907,7 @@ func (r *Repo) CommitTransaction(ctx context.Context, datasetID uuid.UUID, txnID
 			_ = tx.Rollback(ctx)
 		}
 	}()
-
-	row, err := loadTxnForUpdate(ctx, tx, txnID)
-	if err != nil {
-		return err
-	}
-	if row == nil || row.DatasetID != datasetID {
-		return ErrNotFound
-	}
-	if row.Status != models.TransactionStatusOpen {
-		return ErrInvalidTransition
-	}
-
-	staged, err := loadStagedFiles(ctx, tx, row.ID)
-	if err != nil {
-		return err
-	}
-	before, err := computeCommittedView(ctx, tx, row.BranchID, nil)
-	if err != nil {
-		return err
-	}
-	if err := validateCommit(row.TxType, staged, before); err != nil {
-		return err
-	}
-	after, err := applyTransaction(before, row.TxType, staged)
-	if err != nil {
-		return err
-	}
-	var sizeBytes int64
-	for _, f := range after {
-		sizeBytes += f.SizeBytes
-	}
-	fileCount := len(after)
-
-	metadataPatch, err := json.Marshal(map[string]any{"file_count": fileCount, "size_bytes": sizeBytes})
-	if err != nil {
-		return err
-	}
-	cmd, err := tx.Exec(ctx, `UPDATE dataset_transactions
-		SET status = 'COMMITTED', committed_at = NOW(), metadata = metadata || $2::jsonb
-		WHERE id = $1 AND dataset_id = $3 AND status = 'OPEN'`, row.ID, metadataPatch, datasetID)
-	if err != nil {
-		return err
-	}
-	if cmd.RowsAffected() == 0 {
-		return ErrInvalidTransition
-	}
-
-	if row.TxType == models.TransactionTypeSnapshot {
-		if _, err := tx.Exec(ctx, `UPDATE dataset_transactions
-			SET metadata = metadata || '{"historical": true}'::jsonb
-			WHERE branch_id = $1 AND id <> $2 AND status = 'COMMITTED'`, row.BranchID, row.ID); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.Exec(ctx, `UPDATE dataset_branches
-		SET head_transaction_id = $2, last_activity_at = NOW(), updated_at = NOW()
-		WHERE id = $1 AND dataset_id = $3`, row.BranchID, row.ID, datasetID); err != nil {
-		return err
-	}
-
-	nextVersion, err := nextVersionForUpdate(ctx, tx, datasetID)
-	if err != nil {
-		return err
-	}
-	var storagePath string
-	if err := tx.QueryRow(ctx, `SELECT storage_path FROM datasets WHERE id = $1`, datasetID).Scan(&storagePath); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO dataset_versions
-		(id, dataset_id, version, message, size_bytes, row_count, storage_path, transaction_id)
-		VALUES ($1, $2, $3, $4, $5, 0, $6, $7)
-		ON CONFLICT (dataset_id, version) DO NOTHING`, uuid.New(), datasetID, nextVersion, row.Summary, sizeBytes, fmt.Sprintf("%s/v%d", storagePath, nextVersion), row.ID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE dataset_branches
-		SET version = $3, updated_at = NOW()
-		WHERE dataset_id = $1 AND name = $2`, datasetID, row.BranchName, nextVersion); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE datasets
-		SET current_version = CASE WHEN active_branch = $2 THEN $3 ELSE current_version END,
-		    size_bytes = CASE WHEN active_branch = $2 THEN $4 ELSE size_bytes END,
-		    metadata = CASE WHEN $5 = 'UPDATE' THEN metadata || '{"incremental_friendly": false}'::jsonb ELSE metadata END,
-		    updated_at = NOW()
-		WHERE id = $1`, datasetID, row.BranchName, nextVersion, sizeBytes, row.TxType); err != nil {
+	if err := commitTransactionSteps(ctx, tx, datasetID, txnID); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1094,23 +1003,37 @@ func computeCommittedView(ctx context.Context, q interface {
 		return nil, err
 	}
 	defer rows.Close()
-	view := map[string]viewFileRow{}
+	// Drain the transaction list before querying per-transaction files:
+	// `q` may be a transaction bound to a single connection, and a nested
+	// query while this result set is open fails with "conn busy".
+	type committedTxn struct {
+		id     uuid.UUID
+		txType models.TransactionType
+	}
+	txns := []committedTxn{}
 	for rows.Next() {
-		var id uuid.UUID
-		var txType models.TransactionType
-		if err := rows.Scan(&id, &txType); err != nil {
+		var t committedTxn
+		if err := rows.Scan(&t.id, &t.txType); err != nil {
 			return nil, err
 		}
-		files, err := loadStagedFiles(ctx, q, id)
+		txns = append(txns, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	view := map[string]viewFileRow{}
+	for _, t := range txns {
+		files, err := loadStagedFiles(ctx, q, t.id)
 		if err != nil {
 			return nil, err
 		}
-		view, err = applyTransaction(view, txType, files)
+		view, err = applyTransaction(view, t.txType, files)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return view, rows.Err()
+	return view, nil
 }
 
 func validateCommit(txType models.TransactionType, staged []stagedFileRow, current map[string]viewFileRow) error {
@@ -1233,7 +1156,7 @@ func (r *Repo) CreateView(ctx context.Context, datasetID uuid.UUID, body *models
 	row := r.Pool.QueryRow(ctx, `INSERT INTO dataset_views
 		(id, dataset_id, name, description, sql_text, source_branch, source_version, materialized, refresh_on_source_update)
 		VALUES ($1,$2,$3,COALESCE($4,''),$5,$6,$7,COALESCE($8,false),COALESCE($9,false))
-		ON CONFLICT (dataset_id, name) DO UPDATE SET description = EXCLUDED.description,
+		ON CONFLICT (dataset_id, name) WHERE name <> '' DO UPDATE SET description = EXCLUDED.description,
 		sql_text = EXCLUDED.sql_text, source_branch = EXCLUDED.source_branch, source_version = EXCLUDED.source_version,
 		materialized = EXCLUDED.materialized, refresh_on_source_update = EXCLUDED.refresh_on_source_update, updated_at = NOW()
 		RETURNING id, dataset_id, name, description, sql_text, source_branch, source_version, materialized,
@@ -1248,14 +1171,21 @@ func (r *Repo) CreateView(ctx context.Context, datasetID uuid.UUID, body *models
 }
 
 func (r *Repo) GetCurrentView(ctx context.Context, datasetID uuid.UUID, branch string) (*models.ViewOut, error) {
+	// The view must come from the requested branch (v.branch_id = b.id):
+	// without that predicate the join crosses branches and a dataset with
+	// main + feature views serves whichever view is newest, mixing
+	// schemas across branches. Within a branch the head transaction's
+	// view wins over older snapshots — NULLS LAST is explicit because
+	// PostgreSQL's DESC default is NULLS FIRST, which would rank a
+	// legacy/manual NULL-head view above the current head match.
 	row := r.Pool.QueryRow(ctx, `SELECT v.id, v.dataset_id, b.id, b.head_transaction_id,
 		$2::text AS requested_branch, b.name AS resolved_branch, b.fallback_chain, NOW() AS computed_at,
 		COUNT(df.id)::int AS file_count, COALESCE(SUM(df.size_bytes),0)::bigint AS size_bytes
-		FROM dataset_branches b JOIN dataset_views v ON v.dataset_id = b.dataset_id
+		FROM dataset_branches b JOIN dataset_views v ON v.dataset_id = b.dataset_id AND v.branch_id = b.id
 		LEFT JOIN dataset_files df ON df.dataset_id = b.dataset_id AND df.deleted_at IS NULL
 		WHERE b.dataset_id = $1 AND b.name = $2 AND b.deleted_at IS NULL
 		GROUP BY v.id, v.dataset_id, b.id, b.head_transaction_id, b.name, b.fallback_chain
-		ORDER BY v.created_at DESC LIMIT 1`, datasetID, branch)
+		ORDER BY (v.head_transaction_id = b.head_transaction_id) DESC NULLS LAST, v.created_at DESC LIMIT 1`, datasetID, branch)
 	v, err := scanViewOutHeader(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -1594,8 +1524,12 @@ func diffViews(base []models.RuntimeViewFile, target []models.RuntimeViewFile) m
 }
 
 func (r *Repo) GetViewSchema(ctx context.Context, viewID uuid.UUID) (*models.SchemaResponse, error) {
-	row := r.Pool.QueryRow(ctx, `SELECT view_id, dataset_id, branch, schema_json, content_hash, created_at, false AS unchanged
-		FROM dataset_view_schemas WHERE view_id = $1`, viewID)
+	// Ownership is resolved through the authoritative dataset_views
+	// relation; the schema row's own dataset_id is a backfilled snapshot
+	// that may legitimately be NULL on legacy/unbackfilled rows.
+	row := r.Pool.QueryRow(ctx, `SELECT s.view_id, COALESCE(s.dataset_id, v.dataset_id), s.branch, s.schema_json, s.content_hash, s.created_at, false AS unchanged
+		FROM dataset_view_schemas s JOIN dataset_views v ON v.id = s.view_id
+		WHERE s.view_id = $1`, viewID)
 	v, err := scanSchemaResponse(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1920,6 +1854,24 @@ func (r *Repo) DatasetViewBelongsToDataset(ctx context.Context, datasetID uuid.U
 	var exists bool
 	err := r.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM dataset_views WHERE id = $1 AND dataset_id = $2)`, viewID, datasetID).Scan(&exists)
 	return exists, err
+}
+
+// GetDatasetViewOwner returns the dataset a view row belongs to, or nil
+// when no such view exists. Unlike DatasetViewBelongsToDataset it lets
+// callers distinguish "foreign view" from "unknown view" — the view-id
+// sub-resource guards use it to reject cross-dataset (and therefore
+// cross-tenant) view/schema mismatches without breaking schema-only
+// views that have no dataset_views row.
+func (r *Repo) GetDatasetViewOwner(ctx context.Context, viewID uuid.UUID) (*uuid.UUID, error) {
+	var owner uuid.UUID
+	err := r.Pool.QueryRow(ctx, `SELECT dataset_id FROM dataset_views WHERE id = $1`, viewID).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &owner, nil
 }
 
 func (r *Repo) GetLegacyDatasetSchema(ctx context.Context, datasetID uuid.UUID) (*models.LegacyDatasetSchema, error) {

@@ -136,3 +136,67 @@ func TestFromEnvRejectsInvalidTypedValues(t *testing.T) {
 	_, err = config.FromEnv()
 	require.Error(t, err)
 }
+
+// P2.2 coordinator overrides: unset stays nil (main substitutes defaults);
+// explicit values are parsed AND range-validated HERE — explicit 0, negatives
+// and over-max are startup errors, never silently turned into defaults.
+func TestFromEnvSyncAsyncOverrides(t *testing.T) {
+	t.Run("unset keeps nil", func(t *testing.T) {
+		setBaseEnv(t)
+		cfg, err := config.FromEnv()
+		require.NoError(t, err)
+		require.Nil(t, cfg.SyncAsyncQueueDepth)
+		require.Nil(t, cfg.SyncAsyncWorkers)
+		require.Nil(t, cfg.SyncAsyncAuthTTLSecs)
+		require.Nil(t, cfg.SyncAsyncTaskTTLSecs)
+	})
+
+	t.Run("valid explicit values pass through", func(t *testing.T) {
+		setBaseEnv(t)
+		t.Setenv("CONNECTOR_SYNC_ASYNC_QUEUE", "128")
+		t.Setenv("CONNECTOR_SYNC_ASYNC_WORKERS", "4")
+		t.Setenv("CONNECTOR_SYNC_ASYNC_AUTH_TTL_SECS", "600")
+		t.Setenv("CONNECTOR_SYNC_ASYNC_TASK_TTL_SECS", "900")
+		cfg, err := config.FromEnv()
+		require.NoError(t, err)
+		require.NotNil(t, cfg.SyncAsyncQueueDepth)
+		require.Equal(t, int64(128), *cfg.SyncAsyncQueueDepth)
+		require.Equal(t, int64(4), *cfg.SyncAsyncWorkers)
+		require.Equal(t, int64(600), *cfg.SyncAsyncAuthTTLSecs)
+		require.Equal(t, int64(900), *cfg.SyncAsyncTaskTTLSecs)
+	})
+
+	for name, kv := range map[string]string{
+		"explicit zero":  "0",
+		"negative":       "-5",
+		"over max":       "99999",
+		"not an integer": "twelve",
+	} {
+		t.Run("queue rejects "+name, func(t *testing.T) {
+			setBaseEnv(t)
+			t.Setenv("CONNECTOR_SYNC_ASYNC_QUEUE", kv)
+			_, err := config.FromEnv()
+			require.Error(t, err)
+		})
+		t.Run("workers rejects "+name, func(t *testing.T) {
+			setBaseEnv(t)
+			t.Setenv("CONNECTOR_SYNC_ASYNC_WORKERS", kv)
+			_, err := config.FromEnv()
+			require.Error(t, err)
+		})
+	}
+	for _, v := range []string{"0", "-1", "90000000", "soon"} {
+		t.Run("auth ttl rejects "+v, func(t *testing.T) {
+			setBaseEnv(t)
+			t.Setenv("CONNECTOR_SYNC_ASYNC_AUTH_TTL_SECS", v)
+			_, err := config.FromEnv()
+			require.Error(t, err)
+		})
+		t.Run("task ttl rejects "+v, func(t *testing.T) {
+			setBaseEnv(t)
+			t.Setenv("CONNECTOR_SYNC_ASYNC_TASK_TTL_SECS", v)
+			_, err := config.FromEnv()
+			require.Error(t, err)
+		})
+	}
+}

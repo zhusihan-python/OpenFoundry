@@ -230,9 +230,19 @@ type fakeStore struct {
 	health              map[string]*models.DatasetHealth
 	lint                map[uuid.UUID]*models.DatasetLintSummary
 	fallbacks           map[uuid.UUID][]string
-	versionConflict     bool
-	branchConflict      bool
-	permissionConflict  bool
+	// viewFiles, when set, is served by GetCurrentView/GetViewAt so tests
+	// can exercise branch-view reads; unset keeps the empty default.
+	viewFiles map[uuid.UUID][]models.RuntimeViewFile
+	// outputCommitReceipts backs the keyed outputs:commit fake (see
+	// output_commit_keyed_test.go): first writer wins per (dataset, key).
+	outputCommitReceipts map[outputReceiptKey]models.OutputCommitReceipt
+	versionConflict      bool
+	branchConflict       bool
+	permissionConflict   bool
+	// publishErr, when set, makes CommitTransactionWithPublish fail after
+	// the commit core and roll every in-memory mutation back — the fault
+	// injection for the atomic-publish regression.
+	publishErr error
 }
 
 func newFakeStore(owner uuid.UUID) *fakeStore {
@@ -268,6 +278,71 @@ func (f *fakeStore) GetDatasetForOwner(_ context.Context, id uuid.UUID, ownerID 
 		}
 	}
 	return nil, nil
+}
+
+// tenantCovers mirrors repo.TenantScope.Covers for the in-memory store.
+func (f *fakeStore) tenantCovers(scope repo.TenantScope, d *models.Dataset) bool {
+	return scope.Covers(d.OrgID, d.OwnerID)
+}
+
+func (f *fakeStore) GetDatasetForTenant(_ context.Context, id uuid.UUID, scope repo.TenantScope) (*models.Dataset, error) {
+	for i := range f.datasets {
+		if f.datasets[i].ID == id && f.tenantCovers(scope, &f.datasets[i]) {
+			return &f.datasets[i], nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeStore) ResolveDatasetForTenant(ctx context.Context, raw string, scope repo.TenantScope) (*models.Dataset, error) {
+	if id, err := uuid.Parse(raw); err == nil {
+		// Mirror the real repo contract: a tenant-invisible or unknown
+		// UUID resolves to ErrNotFound, never (nil, nil).
+		d, _ := f.GetDatasetForTenant(ctx, id, scope)
+		if d == nil {
+			return nil, repo.ErrNotFound
+		}
+		return d, nil
+	}
+	for i := range f.datasets {
+		if raw == "ri.foundry.main.dataset."+f.datasets[i].ID.String() && f.tenantCovers(scope, &f.datasets[i]) {
+			return &f.datasets[i], nil
+		}
+	}
+	return nil, repo.ErrNotFound
+}
+
+func (f *fakeStore) ListDatasetsForTenant(_ context.Context, scope repo.TenantScope, ownerID *uuid.UUID, _ int) ([]models.Dataset, error) {
+	out := []models.Dataset{}
+	for _, d := range f.datasets {
+		if !f.tenantCovers(scope, &d) {
+			continue
+		}
+		if ownerID == nil || d.OwnerID == *ownerID {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) GetCatalogFacetsForTenant(ctx context.Context, scope repo.TenantScope) (*models.CatalogFacets, error) {
+	visible, _ := f.ListDatasetsForTenant(ctx, scope, nil, 0)
+	return (&fakeStore{datasets: visible}).GetCatalogFacets(ctx)
+}
+
+func (f *fakeStore) CreateDatasetForTenant(ctx context.Context, body *models.CreateDatasetRequest, ownerID uuid.UUID, orgID *uuid.UUID) (*models.Dataset, error) {
+	created, err := f.CreateDataset(ctx, body, ownerID)
+	if err != nil || created == nil {
+		return nil, err
+	}
+	created.OrgID = orgID
+	for i := range f.datasets {
+		if f.datasets[i].ID == created.ID {
+			f.datasets[i].OrgID = orgID
+			break
+		}
+	}
+	return created, nil
 }
 func (f *fakeStore) GetCatalogFacets(_ context.Context) (*models.CatalogFacets, error) {
 	tagCounts := map[string]int64{}
@@ -475,7 +550,13 @@ func (f *fakeStore) StorageDetails(_ context.Context, datasetID uuid.UUID, fsID 
 	return out, nil
 }
 
-func (f *fakeStore) GetTransactionStatus(_ context.Context, _ uuid.UUID, transactionID uuid.UUID) (string, bool, error) {
+func (f *fakeStore) GetTransactionStatus(_ context.Context, datasetID uuid.UUID, transactionID uuid.UUID) (string, bool, error) {
+	// Prefer the dataset-scoped runtime records so ownership probes
+	// (storage-ref validation) can distinguish a foreign dataset's
+	// transaction; fall back to the legacy unscoped map older tests seed.
+	if tx, ok := f.runtimeTransactions[transactionID]; ok {
+		return string(tx.Status), tx.DatasetID == datasetID, nil
+	}
 	status, ok := f.transactions[transactionID]
 	return status, ok, nil
 }
@@ -814,7 +895,72 @@ func (f *fakeStore) CommitTransaction(_ context.Context, datasetID uuid.UUID, tx
 	tx.CommittedAt = &now
 	f.runtimeTransactions[txnID] = tx
 	f.transactions[txnID] = string(tx.Status)
+	// Mirror the real commit SQL: the dataset's current_version advances
+	// on the active branch.
+	for i := range f.datasets {
+		if f.datasets[i].ID == datasetID && f.datasets[i].ActiveBranch == tx.BranchName {
+			f.datasets[i].CurrentVersion++
+			f.datasets[i].UpdatedAt = now
+		}
+	}
 	return nil
+}
+
+// CommitTransactionWithPublish mirrors the real repo's atomic publish:
+// the commit, the file-index rewrite, the lineage rewrite and the
+// response snapshot reads all land together, and the snapshot is
+// returned for the handler to serialise. publishErr (when set) simulates
+// a publish-step failure after the commit core — nothing may change,
+// matching the database rollback.
+func (f *fakeStore) CommitTransactionWithPublish(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID, files []models.PutDatasetFileIndexEntry, links []models.PutDatasetLineageLink) (*repo.PublishSnapshot, error) {
+	prevIndex := append([]models.DatasetFileIndexEntry(nil), f.fileIndex[datasetID]...)
+	prevLineage := append([]models.DatasetLineageLink(nil), f.lineageLinks[datasetID]...)
+	if err := f.CommitTransaction(ctx, datasetID, txnID); err != nil {
+		return nil, err
+	}
+	if f.publishErr != nil {
+		// Roll the in-memory commit back: the transaction returns to
+		// OPEN (the handler's deferred abort then finalises ABORTED),
+		// the version advance is undone and no published surface
+		// changes — matching the database rollback.
+		tx := f.runtimeTransactions[txnID]
+		tx.Status = models.TransactionStatusOpen
+		tx.CommittedAt = nil
+		f.runtimeTransactions[txnID] = tx
+		f.transactions[txnID] = string(tx.Status)
+		for i := range f.datasets {
+			if f.datasets[i].ID == datasetID && f.datasets[i].ActiveBranch == tx.BranchName && f.datasets[i].CurrentVersion > 1 {
+				f.datasets[i].CurrentVersion--
+			}
+		}
+		f.fileIndex[datasetID] = prevIndex
+		f.lineageLinks[datasetID] = prevLineage
+		return nil, f.publishErr
+	}
+	if len(files) > 0 {
+		if err := f.ReplaceDatasetFileIndex(ctx, datasetID, files); err != nil {
+			return nil, err
+		}
+	}
+	if len(links) > 0 {
+		if err := f.ReplaceDatasetLineageLinks(ctx, datasetID, links); err != nil {
+			return nil, err
+		}
+	}
+	snapshot := &repo.PublishSnapshot{LineageLinks: []models.DatasetLineageLink{}}
+	after, err := f.GetRuntimeTransaction(ctx, datasetID, txnID)
+	if err != nil || after == nil {
+		return nil, err
+	}
+	snapshot.Transaction = *after
+	snapshot.Files, _ = f.ListDatasetFileIndex(ctx, datasetID)
+	if preview, err := f.PreviewData(ctx, datasetID, nil, models.PreviewQuery{}); err == nil && preview != nil {
+		snapshot.Preview = *preview
+	}
+	if len(links) > 0 {
+		snapshot.LineageLinks, _ = f.ListDatasetLineageLinks(ctx, datasetID)
+	}
+	return snapshot, nil
 }
 
 func (f *fakeStore) AbortTransaction(_ context.Context, datasetID uuid.UUID, txnID uuid.UUID) error {
@@ -875,7 +1021,11 @@ func (f *fakeStore) GetCurrentView(ctx context.Context, datasetID uuid.UUID, bra
 		_, _ = f.CreateView(ctx, datasetID, &models.CreateDatasetViewRequest{Name: "current", SQL: "select *"})
 	}
 	v := f.views[datasetID][0]
-	return &models.ViewOut{ID: v.ID, DatasetID: datasetID, BranchID: uuid.New(), HeadTransactionID: uuid.New(), RequestedBranch: branch, ResolvedBranch: branch, FallbackChain: []string{}, ComputedAt: time.Now().UTC(), Files: []models.RuntimeViewFile{}}, nil
+	files := []models.RuntimeViewFile{}
+	if injected, ok := f.viewFiles[datasetID]; ok {
+		files = injected
+	}
+	return &models.ViewOut{ID: v.ID, DatasetID: datasetID, BranchID: uuid.New(), HeadTransactionID: uuid.New(), RequestedBranch: branch, ResolvedBranch: branch, FallbackChain: []string{}, ComputedAt: time.Now().UTC(), Files: files}, nil
 }
 func (f *fakeStore) GetViewAt(ctx context.Context, datasetID uuid.UUID, branch string, _ *time.Time, _ *uuid.UUID) (*models.ViewOut, error) {
 	return f.GetCurrentView(ctx, datasetID, branch)
@@ -897,6 +1047,17 @@ func (f *fakeStore) ListViewFiles(_ context.Context, _ uuid.UUID, _ uuid.UUID) (
 func (f *fakeStore) GetViewSchema(_ context.Context, viewID uuid.UUID) (*models.SchemaResponse, error) {
 	if s, ok := f.schemas[viewID]; ok {
 		return &s, nil
+	}
+	return nil, nil
+}
+func (f *fakeStore) GetDatasetViewOwner(_ context.Context, viewID uuid.UUID) (*uuid.UUID, error) {
+	for datasetID, views := range f.views {
+		for _, v := range views {
+			if v.ID == viewID {
+				owner := datasetID
+				return &owner, nil
+			}
+		}
 	}
 	return nil, nil
 }
@@ -1392,7 +1553,10 @@ func TestDatasetCatalogPutHandlersAreIdempotentAndReturnLists(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &perms))
 	require.Len(t, perms, 1)
 
-	req = catalogReq(http.MethodPut, store, admin, `{"links":[{"direction":"upstream","target_rid":"ri.parent"}]}`)
+	// Lineage targets must reference a dataset inside the caller's tenant.
+	upstream := models.Dataset{ID: uuid.New(), Name: "upstream", OwnerID: owner, ActiveBranch: "main", Tags: []string{}, Metadata: []byte(`{}`)}
+	store.datasets = append(store.datasets, upstream)
+	req = catalogReq(http.MethodPut, store, admin, `{"links":[{"direction":"upstream","target_rid":"ri.foundry.main.dataset.`+upstream.ID.String()+`"}]}`)
 	rec = httptest.NewRecorder()
 	h.PutDatasetLineageLinks(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1630,7 +1794,11 @@ func TestCommitDatasetOutputCreatesTransactionSchemaFilesLineageAndPreview(t *te
 	store := newFakeStore(owner)
 	h := &handlers.Handlers{Repo: store}
 	targetID := uuid.New()
-	sourceRID := "ri.foundry.main.dataset." + uuid.NewString()
+	// The lineage target must be a real dataset inside the caller's
+	// tenant (the fake store's seed dataset, owned by the same caller in
+	// the personal domain) since P1.1 validates cross-dataset lineage
+	// references against the tenant boundary.
+	sourceRID := "ri.foundry.main.dataset." + store.datasets[0].ID.String()
 	rid := "ri.foundry.main.dataset." + targetID.String()
 	body := `{
 		"create_if_missing": true,

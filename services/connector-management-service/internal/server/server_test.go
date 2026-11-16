@@ -18,6 +18,7 @@ import (
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/config"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/handlers"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/models"
+	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/repo"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/server"
 )
 
@@ -33,7 +34,7 @@ func newRouterStore() *routerStore {
 	return &routerStore{owner: uuid.New(), source: uuid.New(), agent: uuid.New()}
 }
 
-func (s *routerStore) ListConnections(context.Context, *uuid.UUID) ([]models.Connection, error) {
+func (s *routerStore) ListConnections(context.Context, repo.Tenant, *uuid.UUID) ([]models.Connection, error) {
 	return []models.Connection{{ID: s.source, Name: "pg", ConnectorType: "postgres", OwnerID: s.owner, Config: json.RawMessage(`{}`)}}, nil
 }
 
@@ -41,48 +42,119 @@ func (s *routerStore) GetConnection(context.Context, uuid.UUID) (*models.Connect
 	return &models.Connection{ID: s.source, Name: "pg", ConnectorType: "postgres", OwnerID: s.owner, Config: json.RawMessage(`{}`)}, nil
 }
 
-func (s *routerStore) GetConnectionForOwner(context.Context, uuid.UUID, uuid.UUID) (*models.Connection, error) {
+func (s *routerStore) GetConnectionForTenant(context.Context, uuid.UUID, repo.Tenant) (*models.Connection, error) {
 	return &models.Connection{ID: s.source, Name: "pg", ConnectorType: "postgres", OwnerID: s.owner, Config: json.RawMessage(`{}`)}, nil
 }
 
-func (s *routerStore) CreateConnection(context.Context, *models.CreateConnectionRequest, uuid.UUID) (*models.Connection, error) {
+func (s *routerStore) CreateConnection(context.Context, *models.CreateConnectionRequest, repo.Tenant) (*models.Connection, error) {
 	return &models.Connection{ID: uuid.New(), Name: "created", ConnectorType: "postgres", OwnerID: s.owner, Config: json.RawMessage(`{}`)}, nil
 }
 
-func (s *routerStore) UpdateConnection(context.Context, uuid.UUID, *models.UpdateConnectionRequest) (*models.Connection, error) {
+func (s *routerStore) UpdateConnection(context.Context, uuid.UUID, repo.Tenant, *models.UpdateConnectionRequest) (*models.Connection, error) {
 	return &models.Connection{ID: s.source, Name: "updated", ConnectorType: "postgres", OwnerID: s.owner, Config: json.RawMessage(`{}`)}, nil
 }
 
-func (s *routerStore) DeleteConnection(context.Context, uuid.UUID) (bool, error) { return true, nil }
+func (s *routerStore) DeleteConnection(context.Context, uuid.UUID, repo.Tenant) (bool, error) {
+	return true, nil
+}
 
-func (s *routerStore) ListSyncJobs(context.Context, uuid.UUID, uuid.UUID) ([]models.SyncJob, error) {
+func (s *routerStore) ListSyncJobs(context.Context, uuid.UUID, repo.Tenant) ([]models.SyncJob, error) {
 	return []models.SyncJob{}, nil
 }
 
-func (s *routerStore) GetSyncJob(context.Context, uuid.UUID, uuid.UUID) (*models.SyncJob, error) {
+func (s *routerStore) GetSyncJob(context.Context, uuid.UUID, repo.Tenant) (*models.SyncJob, error) {
 	return &models.SyncJob{ID: uuid.New(), SourceID: s.source, OutputDatasetID: uuid.New()}, nil
 }
 
-func (s *routerStore) CreateSyncJob(context.Context, *models.CreateSyncJobRequest, uuid.UUID) (*models.SyncJob, error) {
+func (s *routerStore) CreateSyncJob(context.Context, *models.CreateSyncJobRequest, repo.Tenant) (*models.SyncJob, error) {
 	return &models.SyncJob{ID: uuid.New(), SourceID: s.source, OutputDatasetID: uuid.New()}, nil
 }
 
-func (s *routerStore) UpdateSyncJob(context.Context, uuid.UUID, *models.UpdateSyncJobRequest, uuid.UUID) (*models.SyncJob, error) {
+func (s *routerStore) UpdateSyncJob(context.Context, uuid.UUID, *models.UpdateSyncJobRequest, repo.Tenant) (*models.SyncJob, error) {
 	return &models.SyncJob{ID: uuid.New(), SourceID: s.source, OutputDatasetID: uuid.New()}, nil
 }
 
-func (s *routerStore) RunSyncJob(context.Context, uuid.UUID, uuid.UUID) (*models.SyncRun, error) {
+func (s *routerStore) RunSyncJob(context.Context, uuid.UUID, repo.Tenant) (*models.SyncRun, error) {
 	return &models.SyncRun{ID: uuid.New(), SyncDefID: uuid.New(), Status: "running"}, nil
 }
 
-func (s *routerStore) ListSyncRuns(context.Context, uuid.UUID, uuid.UUID) ([]models.SyncRun, error) {
+func (s *routerStore) EnqueueSyncRun(context.Context, uuid.UUID, uuid.UUID, repo.Tenant, uuid.UUID) (*models.SyncRun, error) {
+	return &models.SyncRun{ID: uuid.New(), Status: "pending"}, nil
+}
+
+func (s *routerStore) ClaimSyncRun(context.Context, uuid.UUID, repo.Tenant, string, string, time.Duration) (*repo.LeaseClaim, error) {
+	return &repo.LeaseClaim{Run: models.SyncRun{Status: "running"}, Token: "t", Holder: "h"}, nil
+}
+
+func (s *routerStore) RenewSyncRunLease(context.Context, uuid.UUID, repo.Tenant, string, string, int, time.Duration) (*repo.LeaseClaim, error) {
+	return nil, nil
+}
+
+func (s *routerStore) CheckSyncRunLease(context.Context, uuid.UUID, repo.Tenant, string, string, int) (bool, error) {
+	return true, nil
+}
+
+// P2.2 interruptible-run surface: route-level stubs sufficient for the
+// router tests (behavioral coverage lives in the handlers tests).
+func (s *routerStore) RequestCancelSyncRun(_ context.Context, _, _ uuid.UUID, _ repo.Tenant, _ *uuid.UUID, _ string) (*repo.CancelResult, error) {
+	return &repo.CancelResult{Outcome: repo.CancelOutcomeRequested, Run: &models.SyncRun{ID: uuid.New(), Status: "running", ControlMode: models.RunControlControlled}}, nil
+}
+
+func (s *routerStore) BeginPublishGate(_ context.Context, _ uuid.UUID, _ repo.Tenant, holder, token string, generation int, ttl time.Duration) (*repo.PublishGateResult, error) {
+	return &repo.PublishGateResult{Outcome: repo.PublishGateFenced}, nil
+}
+
+func (s *routerStore) GetSyncRunForTenant(_ context.Context, _, _ uuid.UUID, _ repo.Tenant) (*models.SyncRun, error) {
+	return &models.SyncRun{ID: uuid.New(), Status: "running", ControlMode: models.RunControlControlled}, nil
+}
+
+func (s *routerStore) CheckSyncRunControl(context.Context, uuid.UUID, repo.Tenant, string, string, int) (bool, bool, error) {
+	return true, false, nil
+}
+
+func (s *routerStore) CompleteLeasedSyncRun(context.Context, uuid.UUID, repo.Tenant, string, string, int, string, int64, int64, int64, *string, *string, *uuid.UUID, *string) (*models.SyncRun, error) {
+	return &models.SyncRun{Status: "succeeded"}, nil
+}
+
+// P2.5 checkpoint surface: routing-only fixtures carry no incremental rows.
+func (s *routerStore) SyncRunIncrementalInfo(context.Context, uuid.UUID, repo.Tenant) (*models.RunIncrementalView, error) {
+	return nil, nil
+}
+
+func (s *routerStore) GetCheckpointView(context.Context, uuid.UUID, repo.Tenant) (*repo.CheckpointView, error) {
+	return nil, nil
+}
+
+func (s *routerStore) BeginIncrementalPublishGate(context.Context, uuid.UUID, repo.Tenant, string, string, int, time.Duration) (*repo.IncrementalPublishGateResult, error) {
+	return &repo.IncrementalPublishGateResult{Outcome: repo.IncrementalPublishGateEntered}, nil
+}
+
+func (s *routerStore) CompleteIncrementalSyncRun(context.Context, uuid.UUID, repo.Tenant, string, string, int, repo.IncrementalAdvance) (*models.SyncRun, error) {
+	return &models.SyncRun{Status: "succeeded"}, nil
+}
+
+func (s *routerStore) HasActiveSyncRunsForSource(context.Context, uuid.UUID, repo.Tenant) (bool, error) {
+	return false, nil
+}
+
+func (s *routerStore) HasActiveSyncRunsForDef(context.Context, uuid.UUID, repo.Tenant) (bool, error) {
+	return false, nil
+}
+
+func (s *routerStore) ListSyncRuns(context.Context, uuid.UUID, repo.Tenant) ([]models.SyncRun, error) {
 	return []models.SyncRun{}, nil
 }
-func (s *routerStore) ListCredentials(context.Context, uuid.UUID, uuid.UUID) ([]models.CredentialResponse, error) {
+func (s *routerStore) ListCredentials(context.Context, uuid.UUID, repo.Tenant) ([]models.CredentialResponse, error) {
 	return []models.CredentialResponse{}, nil
 }
-func (s *routerStore) SetCredential(context.Context, uuid.UUID, uuid.UUID, string, []byte, string) (*models.CredentialResponse, error) {
+func (s *routerStore) SetCredential(context.Context, uuid.UUID, repo.Tenant, string, []byte, string) (*models.CredentialResponse, error) {
 	return &models.CredentialResponse{ID: uuid.New(), SourceID: s.source, Kind: "api_key", Fingerprint: "abc"}, nil
+}
+func (s *routerStore) GetSourceCredentialCiphertext(context.Context, uuid.UUID, repo.Tenant, string) ([]byte, error) {
+	return nil, nil
+}
+func (s *routerStore) CompleteSyncRun(context.Context, uuid.UUID, repo.Tenant, string, int64, int64, int64, *string, *string, *uuid.UUID, *string) (*models.SyncRun, error) {
+	return &models.SyncRun{ID: uuid.New(), SyncDefID: uuid.New(), Status: "succeeded"}, nil
 }
 func (s *routerStore) ListConnectorAgents(context.Context, uuid.UUID) ([]models.ConnectorAgent, error) {
 	return []models.ConnectorAgent{{ID: s.agent, Name: "edge", AgentURL: "https://agent.local", OwnerID: s.owner, Status: "online", Capabilities: json.RawMessage(`{}`), Metadata: json.RawMessage(`{}`)}}, nil
@@ -97,13 +169,13 @@ func (s *routerStore) HeartbeatConnectorAgent(context.Context, uuid.UUID, *model
 func (s *routerStore) DeleteConnectorAgent(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
 	return true, nil
 }
-func (s *routerStore) ListSourcePolicies(context.Context, uuid.UUID, uuid.UUID) ([]models.SourcePolicyBindingResponse, error) {
+func (s *routerStore) ListSourcePolicies(context.Context, uuid.UUID, repo.Tenant) ([]models.SourcePolicyBindingResponse, error) {
 	return []models.SourcePolicyBindingResponse{}, nil
 }
-func (s *routerStore) AttachPolicy(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string) (*models.SourcePolicyBindingResponse, error) {
+func (s *routerStore) AttachPolicy(context.Context, uuid.UUID, repo.Tenant, uuid.UUID, string) (*models.SourcePolicyBindingResponse, error) {
 	return &models.SourcePolicyBindingResponse{SourceID: s.source, PolicyID: uuid.New(), Kind: "direct"}, nil
 }
-func (s *routerStore) DetachPolicy(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (bool, error) {
+func (s *routerStore) DetachPolicy(context.Context, uuid.UUID, repo.Tenant, uuid.UUID) (bool, error) {
 	return true, nil
 }
 

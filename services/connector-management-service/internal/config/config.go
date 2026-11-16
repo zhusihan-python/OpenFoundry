@@ -9,6 +9,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/handlers"
 )
 
 const (
@@ -53,7 +56,24 @@ type Config struct {
 	AutoRegistrationIntervalSecs uint64
 	SyncSchedulerIntervalSecs    uint64
 	OpenFoundryDevAuth           bool
+	// P2.6 automatic recovery (default OFF): when false the service performs
+	// ZERO candidate scans and no auto recovery loop exists at all; manual
+	// fresh-auth recovery is always available.
+	SyncAutoRecoveryEnabled bool
 	VendedCredentialsTTLSeconds  int64
+
+	// P2.2 interruptible-run coordinator overrides. nil = not configured
+	// (main substitutes the handlers defaults); a PRESENT value has already
+	// been range-validated here — explicit 0/negative/over-max is a startup
+	// error, never a silent default.
+	SyncAsyncQueueDepth  *int64
+	SyncAsyncWorkers     *int64
+	SyncAsyncAuthTTLSecs *int64
+	SyncAsyncTaskTTLSecs *int64
+
+	// P2.4 schedule grant memory TTL (nil = default 300s; a present value is
+	// range-validated here — explicit out-of-range is a startup error).
+	ScheduleAuthTTLSecs *int64
 }
 
 func FromEnv() (*Config, error) {
@@ -113,6 +133,77 @@ func FromEnv() (*Config, error) {
 	cfg.SyncSchedulerIntervalSecs, err = parseUint64("OPENFOUNDRY_SYNC_SCHEDULER_INTERVAL_SECS", os.Getenv("OPENFOUNDRY_SYNC_SCHEDULER_INTERVAL_SECS"), 0)
 	if err != nil {
 		return nil, err
+	}
+	cfg.SyncAutoRecoveryEnabled, err = parseBool("OPENFOUNDRY_SYNC_AUTO_RECOVERY_ENABLED", os.Getenv("OPENFOUNDRY_SYNC_AUTO_RECOVERY_ENABLED"), false)
+	if err != nil {
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	// P2.4: the scheduler stays off by default (0); an explicitly enabled
+	// interval is bounded to 1..30 seconds so the tick loop can never park on
+	// sub-minute cron granularity.
+	if cfg.SyncSchedulerIntervalSecs > 30 {
+		return nil, fmt.Errorf("OPENFOUNDRY_SYNC_SCHEDULER_INTERVAL_SECS %d out of bounds [0,30]", cfg.SyncSchedulerIntervalSecs)
+	}
+	// P2.2 coordinator overrides: nil when unset; a present value is parsed
+	// AND range-validated right here against the handlers bounds (explicit 0,
+	// negatives and over-max values are startup errors — an unset variable
+	// keeps the defaults, an explicit one may not lie outside the bounds).
+	optionalInt64 := func(key string) (*int64, error) {
+		raw := strings.TrimSpace(os.Getenv(key))
+		if raw == "" {
+			return nil, nil
+		}
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		return &v, nil
+	}
+	if cfg.SyncAsyncQueueDepth, err = optionalInt64("CONNECTOR_SYNC_ASYNC_QUEUE"); err != nil {
+		return nil, err
+	}
+	if cfg.SyncAsyncQueueDepth != nil {
+		if *cfg.SyncAsyncQueueDepth < int64(handlers.MinCoordinatorQueueDepth) || *cfg.SyncAsyncQueueDepth > int64(handlers.MaxCoordinatorQueueDepth) {
+			return nil, fmt.Errorf("CONNECTOR_SYNC_ASYNC_QUEUE %d out of bounds [%d,%d]", *cfg.SyncAsyncQueueDepth, handlers.MinCoordinatorQueueDepth, handlers.MaxCoordinatorQueueDepth)
+		}
+	}
+	if cfg.SyncAsyncWorkers, err = optionalInt64("CONNECTOR_SYNC_ASYNC_WORKERS"); err != nil {
+		return nil, err
+	}
+	if cfg.SyncAsyncWorkers != nil {
+		if *cfg.SyncAsyncWorkers < int64(handlers.MinCoordinatorWorkers) || *cfg.SyncAsyncWorkers > int64(handlers.MaxCoordinatorWorkers) {
+			return nil, fmt.Errorf("CONNECTOR_SYNC_ASYNC_WORKERS %d out of bounds [%d,%d]", *cfg.SyncAsyncWorkers, handlers.MinCoordinatorWorkers, handlers.MaxCoordinatorWorkers)
+		}
+	}
+	if cfg.SyncAsyncAuthTTLSecs, err = optionalInt64("CONNECTOR_SYNC_ASYNC_AUTH_TTL_SECS"); err != nil {
+		return nil, err
+	}
+	if cfg.SyncAsyncAuthTTLSecs != nil {
+		if *cfg.SyncAsyncAuthTTLSecs < int64(handlers.MinCoordinatorAuthTTL/time.Second) || *cfg.SyncAsyncAuthTTLSecs > int64(handlers.MaxCoordinatorAuthTTL/time.Second) {
+			return nil, fmt.Errorf("CONNECTOR_SYNC_ASYNC_AUTH_TTL_SECS %d out of bounds [%d,%d]", *cfg.SyncAsyncAuthTTLSecs, int64(handlers.MinCoordinatorAuthTTL/time.Second), int64(handlers.MaxCoordinatorAuthTTL/time.Second))
+		}
+	}
+	if cfg.SyncAsyncTaskTTLSecs, err = optionalInt64("CONNECTOR_SYNC_ASYNC_TASK_TTL_SECS"); err != nil {
+		return nil, err
+	}
+	if cfg.SyncAsyncTaskTTLSecs != nil {
+		if *cfg.SyncAsyncTaskTTLSecs < int64(handlers.MinCoordinatorTaskDeadline/time.Second) || *cfg.SyncAsyncTaskTTLSecs > int64(handlers.MaxCoordinatorTaskDeadline/time.Second) {
+			return nil, fmt.Errorf("CONNECTOR_SYNC_ASYNC_TASK_TTL_SECS %d out of bounds [%d,%d]", *cfg.SyncAsyncTaskTTLSecs, int64(handlers.MinCoordinatorTaskDeadline/time.Second), int64(handlers.MaxCoordinatorTaskDeadline/time.Second))
+		}
+	}
+	// P2.4 schedule grant memory TTL: nil = default 300s; explicit values are
+	// bounded to [1,86400]. The effective grant deadline is further clamped
+	// by the verified caller JWT exp at arm time.
+	if cfg.ScheduleAuthTTLSecs, err = optionalInt64("OPENFOUNDRY_SYNC_SCHEDULER_AUTH_TTL_SECS"); err != nil {
+		return nil, err
+	}
+	if cfg.ScheduleAuthTTLSecs != nil {
+		if *cfg.ScheduleAuthTTLSecs < 1 || *cfg.ScheduleAuthTTLSecs > 86400 {
+			return nil, fmt.Errorf("OPENFOUNDRY_SYNC_SCHEDULER_AUTH_TTL_SECS %d out of bounds [1,86400]", *cfg.ScheduleAuthTTLSecs)
+		}
 	}
 	cfg.OpenFoundryDevAuth, err = parseBool("OPENFOUNDRY_DEV_AUTH", os.Getenv("OPENFOUNDRY_DEV_AUTH"), false)
 	if err != nil {

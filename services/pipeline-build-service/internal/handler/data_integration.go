@@ -262,7 +262,10 @@ func startPipelineRun(r *http.Request, pipeline *models.Pipeline, req models.Tri
 		runner = newRuntimeNodeRunner(ports)
 	}
 	audit := newCapturingAuditSink(ports.Audit)
-	execCtx, cancel := context.WithCancel(r.Context())
+	// Retry/manual+scheduled entry point: forward the caller's bearer when
+	// present so dataset reads run as the user; scheduled triggers carry no
+	// bearer and fall back to the service token.
+	execCtx, cancel := context.WithCancel(contextWithCallerBearer(r.Context(), callerBearerFromRequest(r)))
 	unregister := registerExecutionCancel(plan.BuildID, cancel)
 	defer unregister()
 	outcome, err := executor.Execute(execCtx, plan, runner, ports.Transactions, ports.Committer, audit)

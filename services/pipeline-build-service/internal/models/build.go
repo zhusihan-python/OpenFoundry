@@ -80,21 +80,21 @@ func ParseAbortPolicy(s string) AbortPolicy {
 
 // Build is the concrete row shape for the `builds` table.
 type Build struct {
-	ID                uuid.UUID  `json:"id"`
-	RID               string     `json:"rid"`
-	PipelineRID       string     `json:"pipeline_rid"`
-	BuildBranch       string     `json:"build_branch"`
-	JobSpecFallback   []string   `json:"job_spec_fallback"`
-	State             string     `json:"state"`
-	TriggerKind       string     `json:"trigger_kind"`
-	ForceBuild        bool       `json:"force_build"`
-	AbortPolicy       string     `json:"abort_policy"`
-	QueuedAt          *time.Time `json:"queued_at,omitempty"`
-	StartedAt         *time.Time `json:"started_at,omitempty"`
-	FinishedAt        *time.Time `json:"finished_at,omitempty"`
-	ErrorMessage      *string    `json:"error_message,omitempty"`
-	RequestedBy       string     `json:"requested_by"`
-	CreatedAt         time.Time  `json:"created_at"`
+	ID              uuid.UUID  `json:"id"`
+	RID             string     `json:"rid"`
+	PipelineRID     string     `json:"pipeline_rid"`
+	BuildBranch     string     `json:"build_branch"`
+	JobSpecFallback []string   `json:"job_spec_fallback"`
+	State           string     `json:"state"`
+	TriggerKind     string     `json:"trigger_kind"`
+	ForceBuild      bool       `json:"force_build"`
+	AbortPolicy     string     `json:"abort_policy"`
+	QueuedAt        *time.Time `json:"queued_at,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	ErrorMessage    *string    `json:"error_message,omitempty"`
+	RequestedBy     string     `json:"requested_by"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 // BuildState projects the string column to a typed value.

@@ -66,6 +66,7 @@ func New(cfg *config.Config, jwt *authmw.JWTConfig, h *handlers.Handlers, m *obs
 		api.Get("/datasets/{id}/files/{file_id}/download", h.DownloadFile)
 		api.Post("/datasets/{id}/transactions/{txn}/files", h.CreateFileUploadURL)
 		api.Post("/datasets/{id}/outputs:commit", h.CommitDatasetOutput)
+		api.Get("/datasets/{id}/outputs/commits/{key}", h.GetDatasetOutputCommit)
 
 		api.Get("/datasets/{id}/quality", h.GetDatasetQuality)
 		api.Post("/datasets/{id}/quality/profile", h.RefreshDatasetQuality)
@@ -157,9 +158,11 @@ func New(cfg *config.Config, jwt *authmw.JWTConfig, h *handlers.Handlers, m *obs
 		api.Post("/datasets/{rid}/views/{view_or_action}", h.ViewAction)
 
 		api.Get("/datasets/{rid}/files", h.ListFiles)
+		api.Get("/datasets/{rid}/files/rows", h.ReadDatasetFileRows)
 		api.Get("/datasets/{rid}/files/{file_id}/download", h.DownloadFile)
 		api.Post("/datasets/{rid}/transactions/{txn_id}/files", h.CreateFileUploadURL)
 		api.Post("/datasets/{rid}/outputs:commit", h.CommitDatasetOutput)
+		api.Get("/datasets/{rid}/outputs/commits/{key}", h.GetDatasetOutputCommit)
 		api.Get("/datasets/{rid}/storage-details", h.StorageDetails)
 		api.Post("/datasets/{rid}/upload", h.UploadData)
 

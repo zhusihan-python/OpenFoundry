@@ -25,6 +25,7 @@ type Connection struct {
 	Config        json.RawMessage `json:"config"`
 	Status        string          `json:"status"`
 	OwnerID       uuid.UUID       `json:"owner_id"`
+	OrgID         *uuid.UUID      `json:"org_id,omitempty"`
 	LastSyncAt    *time.Time      `json:"last_sync_at"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
@@ -52,20 +53,39 @@ type SyncJob struct {
 	OutputDatasetID uuid.UUID `json:"output_dataset_id"`
 	FileGlob        *string   `json:"file_glob"`
 	ScheduleCron    *string   `json:"schedule_cron"`
-	CreatedAt       time.Time `json:"created_at"`
+	// P2.4 observable scheduling state (validation and semantics in
+	// models/schedule.go). All fields are omitempty so a zero-value SyncJob
+	// serializes byte-identically to the pre-P2.4 shape (the frozen JSON
+	// contract fixture); real rows always carry time_zone/revision.
+	// ScheduleAuthorization is filled by the read handler only (nil on list
+	// responses and on every write path).
+	ScheduleTimeZone        string                     `json:"schedule_time_zone,omitempty"`
+	ScheduleEnabled         bool                       `json:"schedule_enabled,omitempty"`
+	ScheduleRevision        int                        `json:"schedule_revision,omitempty"`
+	ScheduleNextFireAt      *time.Time                 `json:"schedule_next_fire_at,omitempty"`
+	ScheduleLastFireAt      *time.Time                 `json:"schedule_last_fire_at,omitempty"`
+	ScheduleLastTickAt      *time.Time                 `json:"schedule_last_tick_at,omitempty"`
+	ScheduleLastTickOutcome *string                    `json:"schedule_last_tick_outcome,omitempty"`
+	ScheduleAuthorization   *ScheduleAuthorizationView `json:"schedule_authorization,omitempty"`
+	OrgID                   *uuid.UUID                 `json:"org_id,omitempty"`
+	CreatedAt               time.Time                  `json:"created_at"`
 }
 
 type CreateSyncJobRequest struct {
-	SourceID        uuid.UUID `json:"source_id"`
-	OutputDatasetID uuid.UUID `json:"output_dataset_id"`
-	FileGlob        *string   `json:"file_glob,omitempty"`
-	ScheduleCron    *string   `json:"schedule_cron,omitempty"`
+	SourceID         uuid.UUID `json:"source_id"`
+	OutputDatasetID  uuid.UUID `json:"output_dataset_id"`
+	FileGlob         *string   `json:"file_glob,omitempty"`
+	ScheduleCron     *string   `json:"schedule_cron,omitempty"`
+	ScheduleTimeZone *string   `json:"schedule_time_zone,omitempty"`
+	ScheduleEnabled  *bool     `json:"schedule_enabled,omitempty"`
 }
 
 type UpdateSyncJobRequest struct {
-	OutputDatasetID *uuid.UUID `json:"output_dataset_id,omitempty"`
-	FileGlob        *string    `json:"file_glob,omitempty"`
-	ScheduleCron    *string    `json:"schedule_cron,omitempty"`
+	OutputDatasetID  *uuid.UUID `json:"output_dataset_id,omitempty"`
+	FileGlob         *string    `json:"file_glob,omitempty"`
+	ScheduleCron     *string    `json:"schedule_cron,omitempty"`
+	ScheduleTimeZone *string    `json:"schedule_time_zone,omitempty"`
+	ScheduleEnabled  *bool      `json:"schedule_enabled,omitempty"`
 }
 
 // MediaSetSyncKind identifies the Foundry media-set sync flavour.
@@ -172,6 +192,13 @@ func (r CreateMediaSetSyncRequest) Validate() []string {
 	return ValidateMediaSetSyncConfig(r.Kind, r.TargetMediaSetRID, r.Filters, r.ScheduleCron)
 }
 
+// SyncRun is the public view of a sync run. P2.1 adds the durable-task and
+// lease metadata that is safe to expose: RequestedBy is the verified JWT
+// subject that triggered the run, OwnerID is the snapshot of the Source owner
+// taken at enqueue time (a different concept from RequestedBy), and
+// Attempt/Generation are the claim counters. The lease token, holder and
+// expiry are deliberately NOT part of this model: the token is a server-side
+// claim secret and never appears in any public JSON response or API contract.
 type SyncRun struct {
 	ID               uuid.UUID  `json:"id"`
 	SyncDefID        uuid.UUID  `json:"sync_def_id"`
@@ -180,11 +207,67 @@ type SyncRun struct {
 	FinishedAt       *time.Time `json:"finished_at"`
 	BytesWritten     int64      `json:"bytes_written"`
 	FilesWritten     int64      `json:"files_written"`
+	RowsWritten      int64      `json:"rows_written"`
+	OrgID            *uuid.UUID `json:"org_id,omitempty"`
+	RequestedBy      *uuid.UUID `json:"requested_by,omitempty"`
+	OwnerID          *uuid.UUID `json:"owner_id,omitempty"`
+	Attempt          int        `json:"attempt"`
+	Generation       int        `json:"generation"`
 	Error            *string    `json:"error"`
 	IngestJobID      *string    `json:"ingest_job_id"`
 	DatasetVersionID *uuid.UUID `json:"dataset_version_id"`
 	ContentHash      *string    `json:"content_hash"`
+	// P2.2 interruptible-run fields. ControlMode is the explicit execution
+	// marker ("controlled" for runs enqueued by P2.2+ code, "legacy" for
+	// pre-P2.2 rows — whose publish state the columns cannot speak to).
+	// CancelRequestedAt/CancelledBy persist the durable cancel request;
+	// PublishEnteredAt is the publish-gate stage marker. None of them ever
+	// carry lease-internal values (holder/token stay repo-internal).
+	ControlMode       string     `json:"control_mode"`
+	CancelRequestedAt *time.Time `json:"cancel_requested_at,omitempty"`
+	CancelledBy       *uuid.UUID `json:"cancelled_by,omitempty"`
+	PublishEnteredAt  *time.Time `json:"publish_entered_at,omitempty"`
+	// P2.5 internal checkpoint-baseline columns, captured at admission and
+	// frozen for the run's lifetime. json:"-" on purpose: they are the
+	// executor's authoritative routing/binding material (run.cp_mode is the
+	// authority for claim/execute/cancel/finalize) and must NEVER appear in
+	// any public JSON — cp_base_value in particular is sensitive vendor
+	// continuation material. Repo-internal scanners populate them; the HTTP
+	// layer projects only RunIncrementalView (mode + base epoch).
+	CPMode               string    `json:"-"`
+	CPBaseEpoch          int       `json:"-"`
+	CPBaseValue          string    `json:"-"`
+	CPBindingFingerprint string    `json:"-"`
+	CPOutputDatasetID    uuid.UUID `json:"-"`
+	// P2.6 admission-frozen recovery protocol (RunRecoveryProtocolP26V1 or
+	// "" for every pre-P26 row — never backfilled). Like cp_mode it is the
+	// executor's routing authority for the recoverable publish path and
+	// stays out of every public projection.
+	RecoveryProtocol string `json:"-"`
 }
+
+// RunIncrementalView is the public P25 projection of a run's incremental
+// provenance: safe fields only (no raw checkpoint values, no fingerprints).
+type RunIncrementalView struct {
+	Mode      string `json:"mode"`
+	BaseEpoch int    `json:"base_epoch"`
+}
+
+// Sync-run control modes. 'legacy' rows predate P2.2 stage control: their
+// NULL stage columns prove nothing about remote publishes, so cancellation
+// is refused for them rather than guessed at.
+const (
+	RunControlLegacy     = "legacy"
+	RunControlControlled = "controlled"
+)
+
+// P2.6 recovery protocol markers, frozen on sync_runs at admission. Only a
+// p26-v1 run may carry a publish intent or take the recovery paths; "" (and
+// the SQL NULL it mirrors) is the permanent pre-P26 marker and is never
+// migrated, inferred or guessed.
+const (
+	RunRecoveryProtocolP26V1 = "p26-v1"
+)
 
 type VirtualTableSourceLink struct {
 	SourceRID                   string          `json:"source_rid"`

@@ -33,7 +33,7 @@ func TestRepositoryOpenListGetBuild(t *testing.T) {
 	now := time.Now().UTC()
 
 	mock.ExpectExec("INSERT INTO builds").
-		WithArgs(buildID, "ri.pipeline.1", "master", pgxmock.AnyArg(), "MANUAL", false, "user-1", "DEPENDENT_ONLY").
+		WithArgs(buildID, "ri.pipeline.1", "master", pgxmock.AnyArg(), "MANUAL", false, "user-1", "DEPENDENT_ONLY", pgxmock.AnyArg()).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	require.NoError(t, repo.OpenBuild(ctx, resolver.ResolveBuildArgs{PipelineRID: "ri.pipeline.1", BuildBranch: "master", RequestedBy: "user-1"}, buildID))
 
@@ -84,7 +84,7 @@ func TestRepositoryPipelineRunsAbortAndLogs(t *testing.T) {
 	now := time.Now().UTC()
 
 	pipelineRows := pgxmock.NewRows([]string{
-		"id", "name", "description", "owner_id", "dag", "status",
+		"id", "name", "description", "owner_id", "tenant_id", "dag", "status",
 		"pipeline_type", "lifecycle",
 		"schedule_config", "retry_policy", "next_run_at",
 		"external_config", "incremental_config", "streaming_config", "distributed_config", "compute_profile_id", "project_id",
@@ -93,7 +93,7 @@ func TestRepositoryPipelineRunsAbortAndLogs(t *testing.T) {
 		"proposal_state", "proposal_title", "proposal_description",
 		"created_at", "updated_at",
 	}).AddRow(
-		pipelineID, "p", "", uuid.New(), []byte(`[]`), "active",
+		pipelineID, "p", "", uuid.New(), nil, []byte(`[]`), "active",
 		"BATCH", "DRAFT",
 		[]byte(`{}`), []byte(`{"max_attempts":1}`), nil,
 		nil, nil, nil, nil, nil, nil,

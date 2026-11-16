@@ -3,11 +3,13 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -23,6 +25,34 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// MigrationsAdvisoryLockKey is the stable, Connector-specific cluster lock
+// that serializes migration replays across concurrently starting replicas.
+// It is the big-endian int64 of "OFCONNMG" — an opaque, never-reused value:
+// changing it would let two versions of this service migrate the same
+// database concurrently. Test-visible on purpose (the migration-concurrency
+// regression asserts on it).
+const MigrationsAdvisoryLockKey int64 = 0x4F46434F4E4E4D47
+
+// migrationsRollbackBudget bounds the best-effort rollback that cleans up a
+// failed migration transaction (its context is detached from the caller's,
+// which may already be cancelled).
+const migrationsRollbackBudget = 30 * time.Second
+
+// Migrate replays every embedded migration on startup. Concurrent replicas
+// (the three-copy acceptance starts them simultaneously) must not interleave
+// DDL: file N of one process can run between file N-1 and N of another —
+// e.g. the 20260424 ALTERs of sync_jobs interleaving with another process's
+// 20260503 DROP — because every file is historically written idempotent for
+// SEQUENTIAL replay, not for concurrent cross-process replay.
+//
+// Therefore the whole sorted batch runs inside ONE pool transaction on ONE
+// connection, guarded by a TRANSACTION-scoped advisory lock
+// (pg_advisory_xact_lock) acquired BEFORE any DDL: the second replica's
+// Migrate blocks until the first commits, then replays the same idempotent
+// SQL on the settled schema. The xact lock releases automatically with the
+// transaction (commit or rollback) — no session-lock leak. Migration errors
+// are returned verbatim (never swallowed, never retried); the historical SQL
+// files are untouched.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
@@ -35,33 +65,107 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 	}
 	sort.Strings(names)
+	// Read every file BEFORE opening the transaction: an FS failure must not
+	// take (or hold) the advisory lock.
+	bodies := make(map[string][]byte, len(names))
 	for _, name := range names {
 		body, err := migrationsFS.ReadFile("migrations/" + name)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", name, err)
 		}
-		if _, err := pool.Exec(ctx, string(body)); err != nil {
+		bodies[name] = body
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin migrations transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// Best-effort bounded rollback on a detached context (the
+			// caller's ctx may be cancelled); releasing the transaction also
+			// releases the xact advisory lock. The PRIMARY error is what the
+			// caller sees — a rollback failure never masks it.
+			rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), migrationsRollbackBudget)
+			defer cancel()
+			if rbErr := tx.Rollback(rbCtx); rbErr != nil {
+				slog.Warn("migrations rollback after failure", slog.String("error", rbErr.Error()))
+			}
+		}
+	}()
+
+	// Serialize against every other replica BEFORE any DDL, on the same
+	// connection that will run the batch. Blocking is intended: startup waits
+	// for the current holder to commit; the caller's ctx still bounds the
+	// wait.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, MigrationsAdvisoryLockKey); err != nil {
+		return fmt.Errorf("acquire migrations advisory lock: %w", err)
+	}
+	for _, name := range names {
+		if _, err := tx.Exec(ctx, string(bodies[name])); err != nil {
 			return fmt.Errorf("apply %s: %w", name, err)
 		}
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
+	}
+	committed = true
 	return nil
 }
 
 type Repo struct{ Pool *pgxpool.Pool }
 
-const connectionSelect = `SELECT id, name, connector_type, config, status,
-	owner_id, last_sync_at, created_at, updated_at FROM connections`
+// Tenant is the trusted access domain derived from verified JWT claims.
+// OrgID != nil scopes access to rows belonging to that organization; OrgID ==
+// nil is the personal domain where only rows with a NULL org owned by OwnerID
+// are visible. Client-supplied headers or body fields never widen it.
+type Tenant struct {
+	OwnerID uuid.UUID
+	OrgID   *uuid.UUID
+}
 
-func (r *Repo) ListConnections(ctx context.Context, ownerID *uuid.UUID) ([]models.Connection, error) {
-	var (
-		rows pgx.Rows
-		err  error
-	)
-	if ownerID != nil {
-		rows, err = r.Pool.Query(ctx, connectionSelect+` WHERE owner_id = $1 ORDER BY created_at DESC LIMIT 500`, *ownerID)
-	} else {
-		rows, err = r.Pool.Query(ctx, connectionSelect+` ORDER BY created_at DESC LIMIT 500`)
+// connectionTenantPredicate returns the SQL predicate (against alias `c`)
+// plus its argument for the tenant, using argPos as the $N placeholder.
+func connectionTenantPredicate(t Tenant, argPos int) (string, any) {
+	if t.OrgID != nil {
+		return fmt.Sprintf("c.org_id = $%d", argPos), *t.OrgID
 	}
+	return fmt.Sprintf("(c.org_id IS NULL AND c.owner_id = $%d)", argPos), t.OwnerID
+}
+
+const connectionSelect = `SELECT c.id, c.name, c.connector_type, c.config, c.status,
+	c.owner_id, c.org_id, c.last_sync_at, c.created_at, c.updated_at FROM connections c`
+
+func (r *Repo) ListConnections(ctx context.Context, t Tenant, ownerFilter *uuid.UUID) ([]models.Connection, error) {
+	predicate, arg := connectionTenantPredicate(t, 1)
+	query := connectionSelect + ` WHERE ` + predicate
+	args := []any{arg}
+	if ownerFilter != nil {
+		args = append(args, *ownerFilter)
+		query += fmt.Sprintf(` AND owner_id = $%d`, len(args))
+	}
+	rows, err := r.Pool.Query(ctx, query+` ORDER BY created_at DESC LIMIT 500`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]models.Connection, 0)
+	for rows.Next() {
+		v, err := scanConnection(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, rows.Err()
+}
+
+// ListAllConnections enumerates every connection for background maintenance
+// sweeps (auto-registration). It is not exposed on any request surface; the
+// HTTP list endpoints stay tenant-scoped via ListConnections.
+func (r *Repo) ListAllConnections(ctx context.Context) ([]models.Connection, error) {
+	rows, err := r.Pool.Query(ctx, connectionSelect+` ORDER BY created_at DESC LIMIT 500`)
 	if err != nil {
 		return nil, err
 	}
@@ -86,26 +190,107 @@ func (r *Repo) GetConnection(ctx context.Context, id uuid.UUID) (*models.Connect
 	return v, err
 }
 
-func (r *Repo) CreateConnection(ctx context.Context, body *models.CreateConnectionRequest, ownerID uuid.UUID) (*models.Connection, error) {
+// GetConnectionForTenant loads a connection only when it belongs to the
+// caller's tenant domain.
+func (r *Repo) GetConnectionForTenant(ctx context.Context, id uuid.UUID, t Tenant) (*models.Connection, error) {
+	predicate, arg := connectionTenantPredicate(t, 2)
+	row := r.Pool.QueryRow(ctx, connectionSelect+` WHERE id = $1 AND `+predicate, id, arg)
+	v, err := scanConnection(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return v, err
+}
+
+func (r *Repo) CreateConnection(ctx context.Context, body *models.CreateConnectionRequest, t Tenant) (*models.Connection, error) {
+	// P2.3: the repository validates the sync.admission subtree of every NEW
+	// config itself — the HTTP normalization already does, but direct repo
+	// callers must not be able to persist an illegal policy. An absent block
+	// (also the `{}` fallback for an empty body) is legal and enables
+	// nothing. Illegal policy → zero rows written.
+	if len(body.Config) > 0 {
+		if _, err := models.ParseSyncAdmissionPolicy(body.Config); err != nil {
+			return nil, err
+		}
+	}
 	id := uuid.New()
 	cfg := body.Config
 	if len(cfg) == 0 {
 		cfg = []byte(`{}`)
 	}
 	row := r.Pool.QueryRow(ctx,
-		`INSERT INTO connections (id, name, connector_type, config, owner_id)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, name, connector_type, config, status, owner_id,
+		`INSERT INTO connections (id, name, connector_type, config, owner_id, org_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, name, connector_type, config, status, owner_id, org_id,
 		           last_sync_at, created_at, updated_at`,
-		id, strings.TrimSpace(body.Name), body.ConnectorType, cfg, ownerID,
+		id, strings.TrimSpace(body.Name), body.ConnectorType, cfg, t.OwnerID, t.OrgID,
 	)
 	return scanConnection(row)
 }
 
-func (r *Repo) UpdateConnection(ctx context.Context, id uuid.UUID, body *models.UpdateConnectionRequest) (*models.Connection, error) {
-	current, err := r.GetConnection(ctx, id)
-	if err != nil || current == nil {
-		return current, err
+// UpdateConnection mutates a source inside a two-phase transaction: the
+// source row is locked FOR UPDATE first, then — if the request carries a
+// config mutation — the P2.3 sync.admission subtree of the NEW config is
+// validated (repo-side, so direct callers cannot persist an illegal policy;
+// illegal → zero writes) and the pending/running run check is re-evaluated
+// after the lock, so a run enqueued concurrently with this update is actually
+// observed and the mutation is refused with ErrActiveRuns. Name/status-only
+// updates stay allowed while runs are active and never re-validate the OLD
+// stored config.
+func (r *Repo) UpdateConnection(ctx context.Context, id uuid.UUID, t Tenant, body *models.UpdateConnectionRequest) (*models.Connection, error) {
+	// Validate the NEW config's admission subtree before any lock or write:
+	// an illegal policy must not even take the source row lock (which would
+	// momentarily block admissions), and a refused update changes nothing.
+	if len(body.Config) > 0 {
+		if _, err := models.ParseSyncAdmissionPolicy(body.Config); err != nil {
+			return nil, err
+		}
+	}
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	predicate, arg := connectionTenantPredicate(t, 2)
+	var locked uuid.UUID
+	err = tx.QueryRow(ctx,
+		`SELECT c.id FROM connections c WHERE c.id = $1 AND `+predicate+` FOR UPDATE`,
+		id, arg).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(body.Config) > 0 {
+		active, err := txSourceHasActiveRuns(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		if active {
+			return nil, ErrActiveRuns
+		}
+	}
+	// Re-read the current row under the held lock and merge the patch.
+	row := tx.QueryRow(ctx, connectionSelect+` WHERE c.id = $1`, id)
+	current, err := scanConnection(row)
+	if err != nil {
+		return nil, err
+	}
+	// P2.5 fence: an effective config change (byte-different) is a protected
+	// input mutation. Def locks are taken sorted BEFORE the protected row is
+	// mutated, so the Def->Checkpoint->Run finalize chain can reread the
+	// binding without a reverse Source lock; any unresolved checkpoint owner
+	// refuses the edit. Same-value config writes skip the fence; pure
+	// name/status edits never hit it.
+	if len(body.Config) > 0 && !bytes.Equal(current.Config, body.Config) {
+		defIDs, err := lockSourceDefsForProtection(ctx, tx, id, t)
+		if err != nil {
+			return nil, err
+		}
+		if err := assertCheckpointOwnersFreeTx(ctx, tx, defIDs); err != nil {
+			return nil, err
+		}
 	}
 	name := current.Name
 	if body.Name != nil {
@@ -119,19 +304,65 @@ func (r *Repo) UpdateConnection(ctx context.Context, id uuid.UUID, body *models.
 	if body.Status != nil {
 		status = *body.Status
 	}
-	row := r.Pool.QueryRow(ctx,
-		`UPDATE connections SET name = $2, config = $3, status = $4, updated_at = $5
-		 WHERE id = $1
-		 RETURNING id, name, connector_type, config, status, owner_id,
-		           last_sync_at, created_at, updated_at`,
+	updated := tx.QueryRow(ctx,
+		`UPDATE connections c SET name = $2, config = $3, status = $4, updated_at = $5
+		 WHERE c.id = $1
+		 RETURNING c.id, c.name, c.connector_type, c.config, c.status, c.owner_id, c.org_id,
+		           c.last_sync_at, c.created_at, c.updated_at`,
 		id, name, cfg, status, time.Now().UTC(),
 	)
-	return scanConnection(row)
+	out, err := scanConnection(updated)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-func (r *Repo) DeleteConnection(ctx context.Context, id uuid.UUID) (bool, error) {
-	cmd, err := r.Pool.Exec(ctx, `DELETE FROM connections WHERE id = $1`, id)
+func (r *Repo) DeleteConnection(ctx context.Context, id uuid.UUID, t Tenant) (bool, error) {
+	tx, err := r.Pool.Begin(ctx)
 	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	predicate, arg := connectionTenantPredicate(t, 2)
+	var locked uuid.UUID
+	err = tx.QueryRow(ctx,
+		`SELECT c.id FROM connections c WHERE c.id = $1 AND `+predicate+` FOR UPDATE`,
+		id, arg).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// Post-lock re-check: an enqueue that committed while we waited for the
+	// FOR UPDATE (it holds FOR SHARE through its insert) is visible here, and
+	// the cascade delete must not silently swallow its pending run.
+	active, err := txSourceHasActiveRuns(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if active {
+		return false, ErrActiveRuns
+	}
+	// P2.5 fence: an unresolved checkpoint owner blocks the cascade (its
+	// checkpoint row would vanish under the owner). Def locks are taken
+	// sorted before the protected delete.
+	defIDs, err := lockSourceDefsForProtection(ctx, tx, id, t)
+	if err != nil {
+		return false, err
+	}
+	if err := assertCheckpointOwnersFreeTx(ctx, tx, defIDs); err != nil {
+		return false, err
+	}
+	cmd, err := tx.Exec(ctx, `DELETE FROM connections WHERE id = $1`, id)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
 	return cmd.RowsAffected() > 0, nil
@@ -142,26 +373,18 @@ type rowLikeT interface{ Scan(...any) error }
 func scanConnection(r rowLikeT) (*models.Connection, error) {
 	v := &models.Connection{}
 	if err := r.Scan(&v.ID, &v.Name, &v.ConnectorType, &v.Config, &v.Status,
-		&v.OwnerID, &v.LastSyncAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		&v.OwnerID, &v.OrgID, &v.LastSyncAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return v, nil
 }
 
-func (r *Repo) GetConnectionForOwner(ctx context.Context, id uuid.UUID, ownerID uuid.UUID) (*models.Connection, error) {
-	row := r.Pool.QueryRow(ctx, connectionSelect+` WHERE id = $1 AND owner_id = $2`, id, ownerID)
-	v, err := scanConnection(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	return v, err
-}
-
-func (r *Repo) ListCredentials(ctx context.Context, sourceID uuid.UUID, ownerID uuid.UUID) ([]models.CredentialResponse, error) {
+func (r *Repo) ListCredentials(ctx context.Context, sourceID uuid.UUID, t Tenant) ([]models.CredentialResponse, error) {
+	predicate, arg := connectionTenantPredicate(t, 2)
 	rows, err := r.Pool.Query(ctx,
 		`SELECT sc.id, sc.source_id, sc.kind, sc.fingerprint, sc.created_at
 		 FROM source_credentials sc JOIN connections c ON c.id = sc.source_id
-		 WHERE sc.source_id = $1 AND c.owner_id = $2 ORDER BY sc.created_at DESC`, sourceID, ownerID)
+		 WHERE sc.source_id = $1 AND `+predicate+` ORDER BY sc.created_at DESC`, sourceID, arg)
 	if err != nil {
 		return nil, err
 	}
@@ -177,28 +400,101 @@ func (r *Repo) ListCredentials(ctx context.Context, sourceID uuid.UUID, ownerID 
 	return out, rows.Err()
 }
 
-func (r *Repo) SetCredential(ctx context.Context, sourceID uuid.UUID, ownerID uuid.UUID, kind string, ciphertext []byte, fingerprint string) (*models.CredentialResponse, error) {
-	row := r.Pool.QueryRow(ctx,
+// SetCredential stores (or rotates) a source credential. P2.5: this used to
+// be a lockless single-statement UPSERT; it is now a Source-locked
+// transaction that takes the sorted Def locks BEFORE mutating the protected
+// credential row and refuses while any def of the source holds an unresolved
+// checkpoint owner (root implementation-release correction 3). Same-value
+// rotation is NOT special-cased: the credential content fingerprint is
+// unchanged for identical plaintext, so the binding stays stable and nothing
+// downstream is invalidated; a real value change changes the fingerprint,
+// making the stored checkpoint binding stale (recovery: newDef-only).
+func (r *Repo) SetCredential(ctx context.Context, sourceID uuid.UUID, t Tenant, kind string, ciphertext []byte, fingerprint string) (*models.CredentialResponse, error) {
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer rollbackCheckpointTx(tx)
+	if err := lockSourceRowForUpdate(ctx, tx, sourceID, t); err != nil {
+		if errors.Is(err, errCPNotVisible) {
+			// Source invisible in this tenant: nothing attaches, same shape
+			// as the other tenant-scoped writers.
+			return nil, nil
+		}
+		return nil, err
+	}
+	defIDs, err := lockSourceDefsForProtection(ctx, tx, sourceID, t)
+	if err != nil {
+		return nil, err
+	}
+	if err := assertCheckpointOwnersFreeTx(ctx, tx, defIDs); err != nil {
+		return nil, err
+	}
+	// P2.6 fence (v2.1): an EFFECTIVE credential change (a different content
+	// fingerprint — same-value rotations keep the fingerprint and stay
+	// allowed) is refused while any def of this source holds a pending or
+	// running p26-v1 run: the frozen recovery bindings (incremental AND
+	// snapshot) hash credential fingerprints. Pre-P26 runs never trip this.
+	var storedFingerprint *string
+	if ferr := tx.QueryRow(ctx,
+		`SELECT sc.fingerprint FROM source_credentials sc
+		  WHERE sc.source_id = $1 AND sc.kind = $2`, sourceID, kind).Scan(&storedFingerprint); ferr != nil && !errors.Is(ferr, pgx.ErrNoRows) {
+		return nil, ferr
+	}
+	if storedFingerprint == nil || *storedFingerprint != fingerprint {
+		if err := assertNoRecoveryProtocolRunsTx(ctx, tx, defIDs); err != nil {
+			return nil, err
+		}
+	}
+	predicate, arg := connectionTenantPredicate(t, 6)
+	row := tx.QueryRow(ctx,
 		`INSERT INTO source_credentials (id, source_id, kind, secret_ciphertext, fingerprint)
-		 SELECT $1, c.id, $3, $4, $5 FROM connections c WHERE c.id = $2 AND c.owner_id = $6
+		 SELECT $1, c.id, $3, $4, $5 FROM connections c WHERE c.id = $2 AND `+predicate+`
 		 ON CONFLICT (source_id, kind) DO UPDATE
 		   SET secret_ciphertext = EXCLUDED.secret_ciphertext,
 		       fingerprint = EXCLUDED.fingerprint,
 		       created_at = NOW()
 		 RETURNING id, source_id, kind, fingerprint, created_at`,
-		uuid.New(), sourceID, kind, ciphertext, fingerprint, ownerID)
+		uuid.New(), sourceID, kind, ciphertext, fingerprint, arg)
 	v := &models.CredentialResponse{}
 	if err := row.Scan(&v.ID, &v.SourceID, &v.Kind, &v.Fingerprint, &v.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return v, nil
 }
 
-func (r *Repo) ListSourcePolicies(ctx context.Context, sourceID uuid.UUID, ownerID uuid.UUID) ([]models.SourcePolicyBindingResponse, error) {
+// GetSourceCredentialCiphertext returns the encrypted secret stored for the
+// given credential kind on a source inside the caller's tenant, or nil when
+// either the source or the credential does not exist in that domain.
+func (r *Repo) GetSourceCredentialCiphertext(ctx context.Context, sourceID uuid.UUID, t Tenant, kind string) ([]byte, error) {
+	predicate, arg := connectionTenantPredicate(t, 3)
+	var ciphertext []byte
+	err := r.Pool.QueryRow(ctx,
+		`SELECT sc.secret_ciphertext
+		 FROM source_credentials sc JOIN connections c ON c.id = sc.source_id
+		 WHERE sc.source_id = $1 AND sc.kind = $2 AND `+predicate,
+		sourceID, kind, arg).Scan(&ciphertext)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ciphertext, nil
+}
+
+func (r *Repo) ListSourcePolicies(ctx context.Context, sourceID uuid.UUID, t Tenant) ([]models.SourcePolicyBindingResponse, error) {
+	predicate, arg := connectionTenantPredicate(t, 2)
 	rows, err := r.Pool.Query(ctx,
 		`SELECT b.source_id, b.policy_id, b.kind
 		 FROM source_policy_bindings b JOIN connections c ON c.id = b.source_id
-		 WHERE b.source_id = $1 AND c.owner_id = $2 ORDER BY b.created_at DESC`, sourceID, ownerID)
+		 WHERE b.source_id = $1 AND `+predicate+` ORDER BY b.created_at DESC`, sourceID, arg)
 	if err != nil {
 		return nil, err
 	}
@@ -214,12 +510,13 @@ func (r *Repo) ListSourcePolicies(ctx context.Context, sourceID uuid.UUID, owner
 	return out, rows.Err()
 }
 
-func (r *Repo) AttachPolicy(ctx context.Context, sourceID uuid.UUID, ownerID uuid.UUID, policyID uuid.UUID, kind string) (*models.SourcePolicyBindingResponse, error) {
+func (r *Repo) AttachPolicy(ctx context.Context, sourceID uuid.UUID, t Tenant, policyID uuid.UUID, kind string) (*models.SourcePolicyBindingResponse, error) {
+	predicate, arg := connectionTenantPredicate(t, 4)
 	row := r.Pool.QueryRow(ctx,
 		`INSERT INTO source_policy_bindings (source_id, policy_id, kind)
-		 SELECT c.id, $2, $3 FROM connections c WHERE c.id = $1 AND c.owner_id = $4
+		 SELECT c.id, $2, $3 FROM connections c WHERE c.id = $1 AND `+predicate+`
 		 ON CONFLICT (source_id, policy_id) DO UPDATE SET kind = EXCLUDED.kind
-		 RETURNING source_id, policy_id, kind`, sourceID, policyID, kind, ownerID)
+		 RETURNING source_id, policy_id, kind`, sourceID, policyID, kind, arg)
 	v := &models.SourcePolicyBindingResponse{}
 	if err := row.Scan(&v.SourceID, &v.PolicyID, &v.Kind); err != nil {
 		return nil, err
@@ -227,22 +524,35 @@ func (r *Repo) AttachPolicy(ctx context.Context, sourceID uuid.UUID, ownerID uui
 	return v, nil
 }
 
-func (r *Repo) DetachPolicy(ctx context.Context, sourceID uuid.UUID, ownerID uuid.UUID, policyID uuid.UUID) (bool, error) {
+func (r *Repo) DetachPolicy(ctx context.Context, sourceID uuid.UUID, t Tenant, policyID uuid.UUID) (bool, error) {
+	predicate, arg := connectionTenantPredicate(t, 3)
 	cmd, err := r.Pool.Exec(ctx,
 		`DELETE FROM source_policy_bindings b USING connections c
-		 WHERE b.source_id = c.id AND b.source_id = $1 AND c.owner_id = $2 AND b.policy_id = $3`,
-		sourceID, ownerID, policyID)
+		 WHERE b.source_id = c.id AND b.source_id = $1 AND `+predicate+` AND b.policy_id = $2`,
+		sourceID, policyID, arg)
 	if err != nil {
 		return false, err
 	}
 	return cmd.RowsAffected() > 0, nil
 }
 
-const syncJobSelect = `SELECT d.id, d.source_id, d.output_dataset_id, d.file_glob, d.schedule_cron, d.created_at
-	FROM batch_sync_defs d JOIN connections c ON c.id = d.source_id`
+const syncJobSelect = `SELECT d.id, d.source_id, d.output_dataset_id, d.file_glob, d.schedule_cron,
+	d.schedule_time_zone, d.schedule_enabled, d.schedule_revision, d.schedule_next_fire_at,
+	d.schedule_last_fire_at, d.schedule_last_tick_at, d.schedule_last_tick_outcome, d.org_id, d.created_at
+	FROM batch_sync_defs d`
 
-func (r *Repo) ListSyncJobs(ctx context.Context, sourceID uuid.UUID, ownerID uuid.UUID) ([]models.SyncJob, error) {
-	rows, err := r.Pool.Query(ctx, syncJobSelect+` WHERE d.source_id = $1 AND c.owner_id = $2 ORDER BY d.created_at DESC`, sourceID, ownerID)
+// syncDefTenantPredicate scopes batch_sync_defs (alias `d`) by its persisted
+// org ownership; legacy NULL-org defs fall back to the source owner domain.
+func syncDefTenantPredicate(t Tenant, argPos int) (string, any) {
+	if t.OrgID != nil {
+		return fmt.Sprintf("d.org_id = $%d", argPos), *t.OrgID
+	}
+	return fmt.Sprintf("(d.org_id IS NULL AND EXISTS (SELECT 1 FROM connections pc WHERE pc.id = d.source_id AND pc.owner_id = $%d))", argPos), t.OwnerID
+}
+
+func (r *Repo) ListSyncJobs(ctx context.Context, sourceID uuid.UUID, t Tenant) ([]models.SyncJob, error) {
+	predicate, arg := syncDefTenantPredicate(t, 2)
+	rows, err := r.Pool.Query(ctx, syncJobSelect+` WHERE d.source_id = $1 AND `+predicate+` ORDER BY d.created_at DESC`, sourceID, arg)
 	if err != nil {
 		return nil, err
 	}
@@ -258,8 +568,9 @@ func (r *Repo) ListSyncJobs(ctx context.Context, sourceID uuid.UUID, ownerID uui
 	return out, rows.Err()
 }
 
-func (r *Repo) GetSyncJob(ctx context.Context, id uuid.UUID, ownerID uuid.UUID) (*models.SyncJob, error) {
-	row := r.Pool.QueryRow(ctx, syncJobSelect+` WHERE d.id = $1 AND c.owner_id = $2`, id, ownerID)
+func (r *Repo) GetSyncJob(ctx context.Context, id uuid.UUID, t Tenant) (*models.SyncJob, error) {
+	predicate, arg := syncDefTenantPredicate(t, 2)
+	row := r.Pool.QueryRow(ctx, syncJobSelect+` WHERE d.id = $1 AND `+predicate, id, arg)
 	v, err := scanSyncJob(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -267,79 +578,434 @@ func (r *Repo) GetSyncJob(ctx context.Context, id uuid.UUID, ownerID uuid.UUID) 
 	return v, err
 }
 
-func (r *Repo) CreateSyncJob(ctx context.Context, body *models.CreateSyncJobRequest, ownerID uuid.UUID) (*models.SyncJob, error) {
-	row := r.Pool.QueryRow(ctx,
-		`INSERT INTO batch_sync_defs (id, source_id, output_dataset_id, file_glob, schedule_cron)
-		 SELECT $1, c.id, $3, $4, $5 FROM connections c WHERE c.id = $2 AND c.owner_id = $6
-		 RETURNING id, source_id, output_dataset_id, file_glob, schedule_cron, created_at`,
-		uuid.New(), body.SourceID, body.OutputDatasetID, body.FileGlob, body.ScheduleCron, ownerID,
+// CreateSyncJob persists a new def with its P2.4 schedule state. The merged
+// (cron, time zone, enabled) spec is validated here authoritatively (the
+// handler pre-validates for a clean 400 — the P2.3 dual-layer discipline); an
+// invalid spec refuses with *models.InvalidScheduleError before any write.
+// The first cursor, when the def is created enabled, is computed from the
+// transaction's database clock (the first fire is strictly in the future);
+// every def starts at schedule_revision = 1.
+func (r *Repo) CreateSyncJob(ctx context.Context, body *models.CreateSyncJobRequest, t Tenant) (*models.SyncJob, error) {
+	cron := ""
+	if body.ScheduleCron != nil {
+		cron = *body.ScheduleCron
+	}
+	tz := ""
+	if body.ScheduleTimeZone != nil {
+		tz = *body.ScheduleTimeZone
+	}
+	enabled := body.ScheduleEnabled != nil && *body.ScheduleEnabled
+	spec, err := models.NormalizeScheduleSpec(cron, tz, enabled)
+	if err != nil {
+		return nil, err
+	}
+	var cronArg *string
+	if spec.Cron != "" {
+		cronArg = &spec.Cron
+	}
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	var dbNow time.Time
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow); err != nil {
+		return nil, err
+	}
+	var next *time.Time
+	if spec.Enabled {
+		n, err := models.NextScheduleFire(spec.Cron, spec.TimeZone, dbNow)
+		if err != nil {
+			return nil, err
+		}
+		next = &n
+	}
+	predicate, arg := connectionTenantPredicate(t, 6)
+	row := tx.QueryRow(ctx,
+		`INSERT INTO batch_sync_defs
+		       (id, source_id, output_dataset_id, file_glob, schedule_cron, org_id,
+		        schedule_time_zone, schedule_enabled, schedule_revision, schedule_next_fire_at)
+		 SELECT $1, c.id, $3, $4, $5, c.org_id, $7, $8, 1, $9
+		   FROM connections c WHERE c.id = $2 AND `+predicate+`
+		 RETURNING id, source_id, output_dataset_id, file_glob, schedule_cron,
+		           schedule_time_zone, schedule_enabled, schedule_revision, schedule_next_fire_at,
+		           schedule_last_fire_at, schedule_last_tick_at, schedule_last_tick_outcome, org_id, created_at`,
+		uuid.New(), body.SourceID, body.OutputDatasetID, body.FileGlob, cronArg, arg,
+		spec.TimeZone, spec.Enabled, next,
 	)
 	v, err := scanSyncJob(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
-	return v, err
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
-func (r *Repo) UpdateSyncJob(ctx context.Context, id uuid.UUID, body *models.UpdateSyncJobRequest, ownerID uuid.UUID) (*models.SyncJob, error) {
-	current, err := r.GetSyncJob(ctx, id, ownerID)
-	if err != nil || current == nil {
-		return current, err
+// UpdateSyncJob mutates a sync def inside a two-phase transaction: the def
+// row is locked FOR UPDATE first; when the request retargets the output
+// dataset (a different id than the current one) the pending/running check is
+// re-evaluated after the lock and the mutation is refused with ErrActiveRuns,
+// so an active durable task can never be silently repointed. Same-target
+// writes and file_glob/schedule changes stay allowed.
+//
+// P2.4 schedule semantics (root contract): omitted fields preserve their
+// values; the merged (cron, time zone, enabled) spec is validated
+// authoritatively here (*models.InvalidScheduleError refuses with zero rows
+// written); an empty cron explicitly clears/disables. An ACTUAL change to
+// cron / time zone / enabled / output target / file_glob bumps
+// schedule_revision (invalidating every outstanding schedule grant) and, while
+// enabled, recomputes the cursor from the locked database time (disable parks
+// the cursor NULL). Same-value patches neither bump the revision nor touch
+// the cursor.
+func (r *Repo) UpdateSyncJob(ctx context.Context, id uuid.UUID, body *models.UpdateSyncJobRequest, t Tenant) (*models.SyncJob, error) {
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	predicate, arg := syncDefTenantPredicate(t, 2)
+	var locked uuid.UUID
+	err = tx.QueryRow(ctx,
+		`SELECT d.id FROM batch_sync_defs d WHERE d.id = $1 AND `+predicate+` FOR UPDATE`,
+		id, arg).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	row := tx.QueryRow(ctx, syncJobSelect+` WHERE d.id = $1`, id)
+	current, err := scanSyncJob(row)
+	if err != nil {
+		return nil, err
+	}
+	// P2.5 fence: an effective output-target or file_glob change is a
+	// protected def-input mutation. The def row is already locked FOR UPDATE
+	// above (this single-def assert needs no additional locks and cannot
+	// deadlock against the sorted multi-def writers); any unresolved
+	// checkpoint owner — regardless of the owned run's state — refuses the
+	// edit. Pure cron/enable/name edits never hit this fence.
+	//
+	// P2.6 fence (v2.1): an effective def-input change is ALSO refused while
+	// a pending/running p26-v1 run exists for this def — the snapshot
+	// recovery binding hashes the target and file_glob, and the incremental
+	// binding already covered them; the v1 fence extends the protection to
+	// snapshot runs (which hold no checkpoint owner). Pre-P26 runs never trip
+	// it.
+	defInputChanged := (body.OutputDatasetID != nil && *body.OutputDatasetID != current.OutputDatasetID) ||
+		(body.FileGlob != nil && !strPtrEqual(body.FileGlob, current.FileGlob))
+	if defInputChanged {
+		if err := assertCheckpointOwnersFreeTx(ctx, tx, []uuid.UUID{id}); err != nil {
+			return nil, err
+		}
+		if err := assertNoRecoveryProtocolRunsTx(ctx, tx, []uuid.UUID{id}); err != nil {
+			return nil, err
+		}
 	}
 	output := current.OutputDatasetID
 	if body.OutputDatasetID != nil {
+		if *body.OutputDatasetID != current.OutputDatasetID {
+			active, err := txDefHasActiveRuns(ctx, tx, id)
+			if err != nil {
+				return nil, err
+			}
+			if active {
+				return nil, ErrActiveRuns
+			}
+		}
 		output = *body.OutputDatasetID
 	}
 	fileGlob := current.FileGlob
 	if body.FileGlob != nil {
 		fileGlob = body.FileGlob
 	}
-	schedule := current.ScheduleCron
-	if body.ScheduleCron != nil {
-		schedule = body.ScheduleCron
+	currentCron := ""
+	if current.ScheduleCron != nil {
+		currentCron = *current.ScheduleCron
 	}
-	row := r.Pool.QueryRow(ctx,
-		`UPDATE batch_sync_defs d SET output_dataset_id = $2, file_glob = $3, schedule_cron = $4
-		  FROM connections c WHERE d.source_id = c.id AND d.id = $1 AND c.owner_id = $5
-		  RETURNING d.id, d.source_id, d.output_dataset_id, d.file_glob, d.schedule_cron, d.created_at`,
-		id, output, fileGlob, schedule, ownerID,
+	cron := currentCron
+	if body.ScheduleCron != nil {
+		cron = *body.ScheduleCron
+	}
+	tz := current.ScheduleTimeZone
+	if body.ScheduleTimeZone != nil {
+		tz = *body.ScheduleTimeZone
+	}
+	enabled := current.ScheduleEnabled
+	if body.ScheduleEnabled != nil {
+		enabled = *body.ScheduleEnabled
+	}
+	// Explicit clear: an empty cron clears AND disables the schedule (cursor
+	// NULL, revision bump below). A contradictory explicit enabled=true in
+	// the same request keeps `enabled` true and fails the validation below
+	// ("enable requires a valid non-empty cron").
+	if body.ScheduleCron != nil && strings.TrimSpace(*body.ScheduleCron) == "" && body.ScheduleEnabled == nil {
+		enabled = false
+	}
+	// Legacy-compatibility validation (root round-1 rule): validate what this
+	// request actually supplies — an explicitly supplied NEW non-empty cron
+	// and/or time zone must be valid even while disabled; enabling requires
+	// the MERGED cron to be valid and non-empty. An untouched legacy invalid
+	// disabled cron survives untouched (name-only/file_glob patches never
+	// re-validate stored schedule data), and every merged state that will be
+	// persisted with a non-empty cron is stored only in valid form.
+	newCronSupplied := body.ScheduleCron != nil && strings.TrimSpace(*body.ScheduleCron) != ""
+	newTZSupplied := body.ScheduleTimeZone != nil && strings.TrimSpace(*body.ScheduleTimeZone) != ""
+	if newTZSupplied {
+		if _, err := models.ResolveScheduleTimeZone(*body.ScheduleTimeZone); err != nil {
+			return nil, err
+		}
+	}
+	if newCronSupplied {
+		effectiveTZ := tz
+		if body.ScheduleTimeZone != nil {
+			effectiveTZ = *body.ScheduleTimeZone
+		}
+		if _, err := models.ParseScheduleCron(*body.ScheduleCron, effectiveTZ); err != nil {
+			return nil, err
+		}
+	}
+	if enabled {
+		spec, err := models.NormalizeScheduleSpec(cron, tz, true)
+		if err != nil {
+			return nil, err
+		}
+		cron = spec.Cron
+		tz = spec.TimeZone
+	}
+
+	// Storage values: trimmed cron (empty = NULL) and a non-empty time zone.
+	storeCron := strings.TrimSpace(cron)
+	storeTZ := strings.TrimSpace(tz)
+	if storeTZ == "" {
+		storeTZ = "UTC"
+	}
+
+	// Actual-change detection: same-value patches keep the revision (and the
+	// arm bound to it) intact.
+	changed := currentCron != storeCron ||
+		current.ScheduleTimeZone != storeTZ ||
+		current.ScheduleEnabled != enabled ||
+		output != current.OutputDatasetID ||
+		!strPtrEqual(fileGlob, current.FileGlob)
+	newRevision := current.ScheduleRevision
+	next := current.ScheduleNextFireAt
+	if changed {
+		newRevision++
+		if enabled {
+			// The enabled merged spec was validated above; the cursor comes
+			// from the locked database clock.
+			var dbNow time.Time
+			if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow); err != nil {
+				return nil, err
+			}
+			n, err := models.NextScheduleFire(storeCron, storeTZ, dbNow)
+			if err != nil {
+				return nil, err
+			}
+			next = &n
+		} else {
+			next = nil
+		}
+	}
+	var cronArg *string
+	if storeCron != "" {
+		cronArg = &storeCron
+	}
+	updated := tx.QueryRow(ctx,
+		`UPDATE batch_sync_defs d
+		    SET output_dataset_id = $2, file_glob = $3, schedule_cron = $4,
+		        schedule_time_zone = $5, schedule_enabled = $6,
+		        schedule_revision = $7, schedule_next_fire_at = $8
+		  WHERE d.id = $1
+		  RETURNING d.id, d.source_id, d.output_dataset_id, d.file_glob, d.schedule_cron,
+		            d.schedule_time_zone, d.schedule_enabled, d.schedule_revision, d.schedule_next_fire_at,
+		            d.schedule_last_fire_at, d.schedule_last_tick_at, d.schedule_last_tick_outcome, d.org_id, d.created_at`,
+		id, output, fileGlob, cronArg, storeTZ, enabled, newRevision, next,
 	)
-	return scanSyncJob(row)
+	out, err := scanSyncJob(updated)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-func (r *Repo) RunSyncJob(ctx context.Context, id uuid.UUID, ownerID uuid.UUID) (*models.SyncRun, error) {
-	row := r.Pool.QueryRow(ctx,
-		`INSERT INTO sync_runs (id, sync_def_id, status)
-		 SELECT $1, d.id, 'running' FROM batch_sync_defs d JOIN connections c ON c.id = d.source_id
-		 WHERE d.id = $2 AND c.owner_id = $3
-		 RETURNING id, sync_def_id, status, started_at, finished_at, bytes_written, files_written, error,
-		           ingest_job_id, dataset_version_id, content_hash`,
-		uuid.New(), id, ownerID,
-	)
-	v, err := scanSyncRun(row)
+// strPtrEqual compares two optional strings by value (nil == nil, nil != "").
+func strPtrEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// runPublicColumns is the public sync_runs projection (no lease columns —
+// the lease token must never leave the repo layer). Keep in sync with
+// scanSyncRun.
+const runPublicColumns = `r.id, r.sync_def_id, r.status, r.org_id, r.started_at, r.finished_at,
+	r.bytes_written, r.files_written, r.rows_written, r.error, r.ingest_job_id,
+	r.dataset_version_id, r.content_hash, r.requested_by, r.owner_id, r.attempt, r.generation,
+	r.control_mode, r.cancel_requested_at, r.cancelled_by, r.publish_entered_at,
+	COALESCE(r.recovery_protocol, '')`
+
+// txSourceHasActiveRuns reports pending/running runs for a source inside an
+// open transaction. The caller must already hold the source row lock: then
+// this read observes every enqueue that committed before the lock was
+// acquired.
+func txSourceHasActiveRuns(ctx context.Context, tx pgx.Tx, sourceID uuid.UUID) (bool, error) {
+	var exists bool
+	err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+		    SELECT 1 FROM sync_runs r
+		      JOIN batch_sync_defs d ON d.id = r.sync_def_id
+		     WHERE d.source_id = $1 AND r.status IN ('pending','running'))`,
+		sourceID).Scan(&exists)
+	return exists, err
+}
+
+// txDefHasActiveRuns is txSourceHasActiveRuns scoped to one sync def.
+func txDefHasActiveRuns(ctx context.Context, tx pgx.Tx, defID uuid.UUID) (bool, error) {
+	var exists bool
+	err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+		    SELECT 1 FROM sync_runs r
+		     WHERE r.sync_def_id = $1 AND r.status IN ('pending','running'))`,
+		defID).Scan(&exists)
+	return exists, err
+}
+
+// RunSyncJob is the legacy pre-P2.1 trigger, retained for compatibility with
+// existing callers/tests: it produces a *running* row with no lease that
+// CompleteSyncRun can still close exactly once. It shares the P2.3 admission
+// protocol with EnqueueSyncRun — trusted-tenant def resolution first (clean
+// nil on an invisible def, before any quota), the mode pre-read executed ON
+// THE TRANSACTION's own connection (never a second pool connection: a
+// single-conn pool would self-deadlock), FOR UPDATE / FOR UPDATE NOWAIT on
+// the resolved source, post-lock def-binding re-verification (FOR KEY SHARE,
+// the INSERT's own Source→Def order), admissionGate, then INSERT →
+// pending→running → write-time-anchored sync_last_admitted_at advance, all in
+// one transaction. Both run-creation paths are therefore bounded by ONE
+// per-source policy; a rejected legacy trigger returns the typed
+// *AdmissionRejection and creates no row. All legacy row semantics are
+// unchanged: no lease, no control_mode ('legacy' default), and the def row
+// stays protected by the insert's FK KEY SHARE against UpdateSyncJob's FOR
+// UPDATE — no def→source lock order is introduced.
+func (r *Repo) RunSyncJob(ctx context.Context, id uuid.UUID, t Tenant) (*models.SyncRun, error) {
+	defPredicate, defArg := syncDefTenantPredicate(t, 2)
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer rollbackAdmissionTx(tx)
+	// Resolve the def's source (trusted tenant + parent chain): an invisible
+	// def answers the clean legacy nil before any lock or quota state.
+	var sourceID uuid.UUID
+	err = tx.QueryRow(ctx,
+		`SELECT d.source_id FROM batch_sync_defs d WHERE d.id = $1 AND `+defPredicate,
+		id, defArg).Scan(&sourceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
-	return v, err
+	if err != nil {
+		return nil, err
+	}
+	// Mode pre-read on the SAME connection (see the doc comment): lockless
+	// w.r.t. the source row, and never a second pool connection.
+	nowait := admissionNowait(ctx, tx, sourceID, t)
+	err = lockSourceForAdmission(ctx, tx, sourceID, t, nowait)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		if nowait && isLockNotAvailable(err) {
+			return nil, &AdmissionRejection{Reason: AdmissionReasonContention, RetryAfter: advisoryRetryAfter}
+		}
+		return nil, err
+	}
+	// P2.5 (source review item 4): this legacy path creates an UNLEASED
+	// running row outside checkpoint ownership. An opt-in incremental def
+	// must never gain such a bypass run — reject explicitly, with zero new
+	// rows and zero admission stamp, before the def lock/gate/insert. The
+	// probe is deliberately lightweight (no full REST parse: legacy `{}` and
+	// non-rest_api sources answer false unchanged — repo review item 9).
+	incremental, perr := sourceIncrementalEnabled(ctx, tx, sourceID, t)
+	if perr != nil {
+		return nil, perr
+	}
+	if incremental {
+		return nil, ErrIncrementalRequiresControlled
+	}
+	// Parent chain before quota, post-lock: the def must still be bound to
+	// the locked source and visible in the tenant.
+	bound, err := lockDefBoundToSource(ctx, tx, id, sourceID, t)
+	if err != nil {
+		return nil, err
+	}
+	if !bound {
+		return nil, nil
+	}
+	if err := admissionGate(ctx, tx, sourceID); err != nil {
+		return nil, err
+	}
+	runID := uuid.New()
+	_, err = tx.Exec(ctx,
+		`INSERT INTO sync_runs (id, sync_def_id, status, org_id)
+		 SELECT $1, d.id, 'pending', d.org_id FROM batch_sync_defs d
+		 WHERE d.id = $2 AND d.source_id = $3`,
+		runID, id, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	row := tx.QueryRow(ctx,
+		`UPDATE sync_runs r
+		    SET status = 'running', started_at = clock_timestamp()
+		  WHERE r.id = $1 AND r.status = 'pending'
+		  RETURNING `+runPublicColumns,
+		runID)
+	v, err := scanSyncRun(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := advanceSyncLastAdmitted(ctx, tx, sourceID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
-func (r *Repo) CompleteSyncRun(ctx context.Context, runID uuid.UUID, ownerID uuid.UUID, status string, bytesWritten int64, filesWritten int64, errMsg *string, ingestJobID *string, datasetVersionID *uuid.UUID, contentHash *string) (*models.SyncRun, error) {
+// CompleteSyncRun is the legacy no-token completion path. Its predicates
+// confine it to lease-less legacy running rows: it can neither bypass a
+// leased run (lease_token IS NOT NULL is filtered out) nor rewrite a
+// terminal state (status must still be 'running'), nor close a P2.1 pending
+// durable task without claiming it, nor — P2.5 (source review item 4) —
+// finish a captured incremental run through the no-token path (cp_mode IS
+// NULL guard).
+func (r *Repo) CompleteSyncRun(ctx context.Context, runID uuid.UUID, t Tenant, status string, bytesWritten int64, filesWritten int64, rowsWritten int64, errMsg *string, ingestJobID *string, datasetVersionID *uuid.UUID, contentHash *string) (*models.SyncRun, error) {
+	predicate, arg := syncRunTenantPredicate(t, 10)
 	row := r.Pool.QueryRow(ctx,
 		`UPDATE sync_runs r
 		    SET status = $2,
 		        finished_at = NOW(),
 		        bytes_written = $3,
 		        files_written = $4,
-		        error = $5,
-		        ingest_job_id = $6,
-		        dataset_version_id = $7,
-		        content_hash = $8
-		   FROM batch_sync_defs d
-		   JOIN connections c ON c.id = d.source_id
-		  WHERE r.sync_def_id = d.id AND r.id = $1 AND c.owner_id = $9
-		  RETURNING r.id, r.sync_def_id, r.status, r.started_at, r.finished_at, r.bytes_written,
-		            r.files_written, r.error, r.ingest_job_id, r.dataset_version_id, r.content_hash`,
-		runID, status, bytesWritten, filesWritten, errMsg, ingestJobID, datasetVersionID, contentHash, ownerID,
+		        rows_written = $5,
+		        error = $6,
+		        ingest_job_id = $7,
+		        dataset_version_id = $8,
+		        content_hash = $9
+		  WHERE r.id = $1 AND r.status = 'running' AND r.lease_token IS NULL
+		    AND r.cp_mode IS NULL AND `+predicate+`
+		  RETURNING `+runPublicColumns,
+		runID, status, bytesWritten, filesWritten, rowsWritten, errMsg, ingestJobID, datasetVersionID, contentHash, arg,
 	)
 	v, err := scanSyncRun(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -348,39 +1014,23 @@ func (r *Repo) CompleteSyncRun(ctx context.Context, runID uuid.UUID, ownerID uui
 	return v, err
 }
 
-func (r *Repo) PreviousDatasetVersionForHash(ctx context.Context, syncDefID uuid.UUID, contentHash string) (*uuid.UUID, error) {
-	row := r.Pool.QueryRow(ctx,
-		`SELECT dataset_version_id
-		   FROM sync_runs
-		  WHERE sync_def_id = $1 AND content_hash = $2 AND dataset_version_id IS NOT NULL
-		  ORDER BY started_at DESC
-		  LIMIT 1`, syncDefID, contentHash)
-	var id uuid.UUID
-	if err := row.Scan(&id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
+// syncRunTenantPredicate scopes sync_runs (alias `r`) by its persisted org
+// ownership; legacy NULL-org runs fall back to the owning sync def's source
+// owner domain.
+func syncRunTenantPredicate(t Tenant, argPos int) (string, any) {
+	if t.OrgID != nil {
+		return fmt.Sprintf("r.org_id = $%d", argPos), *t.OrgID
 	}
-	return &id, nil
+	return fmt.Sprintf("(r.org_id IS NULL AND EXISTS (SELECT 1 FROM batch_sync_defs d JOIN connections pc ON pc.id = d.source_id WHERE d.id = r.sync_def_id AND pc.owner_id = $%d))", argPos), t.OwnerID
 }
 
-func (r *Repo) RecordDatasetVersionOnRun(ctx context.Context, runID uuid.UUID, datasetVersionID uuid.UUID, contentHash string) error {
-	_, err := r.Pool.Exec(ctx,
-		`UPDATE sync_runs SET dataset_version_id = $2, content_hash = $3 WHERE id = $1`,
-		runID, datasetVersionID, contentHash)
-	return err
-}
-
-func (r *Repo) ListSyncRuns(ctx context.Context, syncID uuid.UUID, ownerID uuid.UUID) ([]models.SyncRun, error) {
+func (r *Repo) ListSyncRuns(ctx context.Context, syncID uuid.UUID, t Tenant) ([]models.SyncRun, error) {
+	predicate, arg := syncRunTenantPredicate(t, 2)
 	rows, err := r.Pool.Query(ctx,
-		`SELECT r.id, r.sync_def_id, r.status, r.started_at, r.finished_at, r.bytes_written,
-		        r.files_written, r.error, r.ingest_job_id, r.dataset_version_id, r.content_hash
+		`SELECT `+runPublicColumns+`
 		 FROM sync_runs r
-		 JOIN batch_sync_defs d ON d.id = r.sync_def_id
-		 JOIN connections c ON c.id = d.source_id
-		 WHERE r.sync_def_id = $1 AND c.owner_id = $2
-		 ORDER BY r.started_at DESC LIMIT 500`, syncID, ownerID)
+		 WHERE r.sync_def_id = $1 AND `+predicate+`
+		 ORDER BY r.started_at DESC LIMIT 500`, syncID, arg)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +1048,9 @@ func (r *Repo) ListSyncRuns(ctx context.Context, syncID uuid.UUID, ownerID uuid.
 
 func scanSyncJob(r rowLikeT) (*models.SyncJob, error) {
 	v := &models.SyncJob{}
-	if err := r.Scan(&v.ID, &v.SourceID, &v.OutputDatasetID, &v.FileGlob, &v.ScheduleCron, &v.CreatedAt); err != nil {
+	if err := r.Scan(&v.ID, &v.SourceID, &v.OutputDatasetID, &v.FileGlob, &v.ScheduleCron,
+		&v.ScheduleTimeZone, &v.ScheduleEnabled, &v.ScheduleRevision, &v.ScheduleNextFireAt,
+		&v.ScheduleLastFireAt, &v.ScheduleLastTickAt, &v.ScheduleLastTickOutcome, &v.OrgID, &v.CreatedAt); err != nil {
 		return nil, err
 	}
 	return v, nil
@@ -406,8 +1058,15 @@ func scanSyncJob(r rowLikeT) (*models.SyncJob, error) {
 
 func scanSyncRun(r rowLikeT) (*models.SyncRun, error) {
 	v := &models.SyncRun{}
-	if err := r.Scan(&v.ID, &v.SyncDefID, &v.Status, &v.StartedAt, &v.FinishedAt, &v.BytesWritten,
-		&v.FilesWritten, &v.Error, &v.IngestJobID, &v.DatasetVersionID, &v.ContentHash); err != nil {
+	if err := r.Scan(&v.ID, &v.SyncDefID, &v.Status, &v.OrgID, &v.StartedAt, &v.FinishedAt, &v.BytesWritten,
+		&v.FilesWritten, &v.RowsWritten, &v.Error, &v.IngestJobID, &v.DatasetVersionID, &v.ContentHash,
+		&v.RequestedBy, &v.OwnerID, &v.Attempt, &v.Generation,
+		&v.ControlMode, &v.CancelRequestedAt, &v.CancelledBy, &v.PublishEnteredAt,
+		// Root review-w2-round1 item 4: the frozen protocol marker is part of
+		// the public projection scan (json:"-" keeps the wire shape) so every
+		// enqueue/admission return carries it — an empty marker must never
+		// re-enable legacy cleanup against a p26-v1 task.
+		&v.RecoveryProtocol); err != nil {
 		return nil, err
 	}
 	return v, nil
@@ -730,17 +1389,62 @@ func (r *Repo) DeleteRegistration(ctx context.Context, sourceID uuid.UUID, regis
 	return ct.RowsAffected() > 0, err
 }
 
+// UpdateConnectionConfig mutates a source's raw config (auto-registration
+// settings surface). It participates in the P2.1 active-period policy: the
+// source row is locked FOR UPDATE and the pending/running check is re-run
+// post-lock, so a config change is refused with ErrActiveRuns while a durable
+// task is active — same protection as the tenant-scoped UpdateConnection.
 func (r *Repo) UpdateConnectionConfig(ctx context.Context, id uuid.UUID, config json.RawMessage) (*models.Connection, error) {
-	row := r.Pool.QueryRow(ctx, `UPDATE connections SET config = $2, updated_at = NOW() WHERE id = $1 RETURNING id, name, connector_type, config, status, owner_id, last_sync_at, created_at, updated_at`, id, config)
-	v, err := scanConnection(row)
+	// P2.3: this surface rewrites the WHOLE config, so its sync.admission
+	// subtree must pass the same validation as the typed handler paths —
+	// before any lock is taken, an illegal policy is a plain error and
+	// changes nothing.
+	if _, err := models.ParseSyncAdmissionPolicy(config); err != nil {
+		return nil, err
+	}
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	var locked uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT c.id FROM connections c WHERE c.id = $1 FOR UPDATE`, id).Scan(&locked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
-	return v, err
+	if err != nil {
+		return nil, err
+	}
+	active, err := txSourceHasActiveRuns(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if active {
+		return nil, ErrActiveRuns
+	}
+	// P2.5 fence: this surface rewrites the WHOLE config — always a
+	// protected input mutation. Sorted Def locks (tenant-less internal
+	// surface, same row set) precede the protected row.
+	defIDs, err := lockSourceDefsForProtectionInternal(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := assertCheckpointOwnersFreeTx(ctx, tx, defIDs); err != nil {
+		return nil, err
+	}
+	row := tx.QueryRow(ctx, `UPDATE connections SET config = $2, updated_at = NOW() WHERE id = $1 RETURNING id, name, connector_type, config, status, owner_id, org_id, last_sync_at, created_at, updated_at`, id, config)
+	v, err := scanConnection(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 func (r *Repo) ListIcebergNamespaces(ctx context.Context) ([]models.Connection, error) {
-	rows, err := r.Pool.Query(ctx, connectionSelect+` WHERE EXISTS (SELECT 1 FROM connection_registrations reg WHERE reg.connection_id = connections.id AND COALESCE((reg.metadata->>'supports_zero_copy')::bool, false) = true) ORDER BY name`)
+	rows, err := r.Pool.Query(ctx, connectionSelect+` WHERE EXISTS (SELECT 1 FROM connection_registrations reg WHERE reg.connection_id = c.id AND COALESCE((reg.metadata->>'supports_zero_copy')::bool, false) = true) ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -810,14 +1514,9 @@ func (r *Repo) RecordRegistrationSignature(ctx context.Context, sourceID uuid.UU
 	return err
 }
 
-func (r *Repo) RunDueSyncJobs(ctx context.Context, now time.Time) (int, error) {
-	// Rust's scheduler delegates to sync_engine::run_due_jobs. The local sync
-	// runtime is disabled in this Go slice, so this remains a compatibility
-	// no-op until the ingestion-replication runtime is ported.
-	_ = ctx
-	_ = now
-	return 0, nil
-}
+// RunDueSyncJobs (the pre-P2.4 compatibility no-op) was removed: the P2.4
+// scheduler lives in internal/repo/schedule.go (ListDueScheduleCandidates +
+// ClaimDueScheduleSlot) and the loop in handlers.ScheduleRunner.
 
 const connectorAgentSelect = `SELECT id, name, agent_url, owner_id, status,
 	capabilities, metadata, last_heartbeat_at, created_at, updated_at FROM connector_agents`

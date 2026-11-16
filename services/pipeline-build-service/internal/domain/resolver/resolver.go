@@ -31,6 +31,104 @@ type DatasetVersioningRepository interface {
 	ViewSchema(ctx context.Context, datasetRID, branch string) (json.RawMessage, error)
 }
 
+// ErrPendingTxnRecordFailed marks a durable-recording failure for an
+// opened output transaction (server-side fault after the remote write
+// already happened). HTTP callers receive 5xx, never a client 400.
+var ErrPendingTxnRecordFailed = errors.New("pending_txn_record_failed")
+
+// PendingTxnRecorder durably associates every just-opened output
+// transaction with its build so failure compensation can be retried
+// later (the in-memory opened list dies with the request). Recording
+// happens BEFORE the lock attempt; rows clear only after a confirmed
+// remote abort.
+type PendingTxnRecorder interface {
+	RecordPendingTxn(ctx context.Context, buildID uuid.UUID, datasetRID, branch, transactionRID string) error
+	ClearPendingTxn(ctx context.Context, buildID uuid.UUID, transactionRID string) error
+}
+
+// TransactionAborter aborts an output transaction opened earlier in the
+// SAME resolution run (the dataset side matches parent dataset and branch).
+// Implemented by the HTTP adapter and the co-located repository; when the
+// port does not implement it, failure cleanup degrades to best effort.
+type TransactionAborter interface {
+	AbortTransaction(ctx context.Context, datasetRID, branch, transactionRID string) error
+}
+
+// LockReleaser releases a build lock acquired earlier in the SAME run for
+// (outputDatasetRID, buildID). Implementations must not touch locks held
+// by other builds.
+type LockReleaser interface {
+	ReleaseLock(ctx context.Context, outputDatasetRID string, buildID uuid.UUID) error
+}
+
+// CleanupOpenedTransactions aborts the given transactions and releases the
+// locks this run acquired. It runs on a bounded context that survives
+// caller cancellation/timeouts, and returns any secondary failures so the
+// caller can surface them instead of silently losing cleanup state. Locks
+// and transactions belonging to other builds or tenants are unreachable
+// by construction (build-scoped lock release, parent+branch+tenant
+// guarded aborts).
+func CleanupOpenedTransactions(ctx context.Context, versioning DatasetVersioningRepository, locks BranchLockRepository, buildID uuid.UUID, buildBranch string, opened []OpenedTransactionInfo, pendingClearer ...PendingTxnRecorder) []error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	aborter, _ := versioning.(TransactionAborter)
+	releaser, _ := locks.(LockReleaser)
+	var errs []error
+	for _, tx := range opened {
+		if aborter != nil {
+			if err := aborter.AbortTransaction(cleanupCtx, tx.DatasetRID, branchFor(tx, buildBranch), tx.TransactionRID); err != nil {
+				// The remote transaction is NOT confirmed terminated:
+				// keep this build's lock row AND its pending reference so
+				// the dangling OPEN transaction stays observable and
+				// retryable, and cannot be silently replaced by a new
+				// build.
+				errs = append(errs, fmt.Errorf("abort %s: %w (lock+reference retained)", tx.TransactionRID, err))
+				continue
+			}
+		}
+		// Confirmed remote ABORTED → release THIS build's lock → only
+		// then clear the durable pending reference. The reference is the
+		// only retry线索: a failed release keeps it (and the row stays
+		// for the next retry, which re-releases idempotently).
+		if releaser != nil {
+			if err := releaser.ReleaseLock(cleanupCtx, tx.DatasetRID, buildID); err != nil {
+				errs = append(errs, fmt.Errorf("release lock %s: %w (reference retained)", tx.DatasetRID, err))
+				continue
+			}
+		}
+		if len(pendingClearer) > 0 && pendingClearer[0] != nil {
+			if err := pendingClearer[0].ClearPendingTxn(cleanupCtx, buildID, tx.TransactionRID); err != nil {
+				errs = append(errs, fmt.Errorf("clear pending %s: %w", tx.TransactionRID, err))
+			}
+		}
+	}
+	return errs
+}
+
+// OpenedTransactionInfo is the cleanup view of an opened transaction.
+type OpenedTransactionInfo struct {
+	DatasetRID     string
+	TransactionRID string
+	Branch         string
+}
+
+func branchFor(tx OpenedTransactionInfo, fallback string) string {
+	if tx.Branch != "" {
+		return tx.Branch
+	}
+	return fallback
+}
+
+// clientOpenAbort aborts a just-opened transaction when its durable
+// recording failed, so no untracked remote transaction is left behind.
+func clientOpenAbort(ctx context.Context, versioning DatasetVersioningRepository, datasetRID, branch, txnRID string) error {
+	aborter, ok := versioning.(TransactionAborter)
+	if !ok {
+		return nil
+	}
+	return aborter.AbortTransaction(ctx, datasetRID, branch, txnRID)
+}
+
 // BranchLockRepository stores output-dataset build locks. ok=false means the
 // lock is already held by holderBuildID; the repository is the injected lock primitive.
 type BranchLockRepository interface {
@@ -51,6 +149,17 @@ type ResolveBuildArgs struct {
 	RequestedBy       string
 	TriggerKind       string
 	AbortPolicy       string
+}
+
+// BranchNotFoundError marks an output dataset whose branch listing is
+// visible but does not contain the requested build branch.
+type BranchNotFoundError struct {
+	DatasetRID string
+	Branch     string
+}
+
+func (e *BranchNotFoundError) Error() string {
+	return fmt.Sprintf("branch %q not found for output dataset %s", e.Branch, e.DatasetRID)
 }
 
 // MissingJobSpecError matches Rust BuildResolutionError::MissingJobSpec.
@@ -131,7 +240,59 @@ func (e *ViewFilterResolutionError) Error() string {
 }
 
 // ResolveBuild drives the resolver without HTTP or a DAG executor.
-func ResolveBuild(ctx context.Context, args ResolveBuildArgs, jobSpecs JobSpecRepository, versioning DatasetVersioningRepository, locks BranchLockRepository) (*models.ResolvedBuild, error) {
+// PreflightBuild runs every read-only resolution step (spec loading,
+// logic validation, cycle detection, input-view validation and output
+// dataset visibility via the branch listing). Handlers call it BEFORE any
+// write (build row, remote transaction, local lock) so deterministic
+// errors reject the request with zero side effects; ResolveBuild reuses
+// it internally.
+func PreflightBuild(ctx context.Context, args ResolveBuildArgs, jobSpecs JobSpecRepository, versioning DatasetVersioningRepository) ([]models.JobSpec, []models.ResolvedInputView, error) {
+	specs, err := LoadJobSpecs(ctx, args.PipelineRID, args.BuildBranch, args.JobSpecFallback, args.OutputDatasetRIDs, jobSpecs)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, spec := range specs {
+		if reason := ValidateLogicKind(spec.LogicKind, len(spec.OutputDatasetRIDs)); reason != "" {
+			return nil, nil, &InvalidLogicKindError{JobSpecRID: spec.RID, Reason: reason}
+		}
+	}
+	if err := DetectCycles(specs); err != nil {
+		return nil, nil, err
+	}
+	inputViews, err := ValidateInputs(ctx, args.BuildBranch, specs, versioning)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Output datasets (including outputs the specs declare beyond the
+	// request's own list) must be visible through the tenant-checked
+	// branch listing before anything is written.
+	seen := map[string]struct{}{}
+	for _, spec := range specs {
+		for _, output := range spec.OutputDatasetRIDs {
+			if _, dup := seen[output]; dup {
+				continue
+			}
+			seen[output] = struct{}{}
+			branches, err := versioning.ListBranches(ctx, output)
+			if err != nil {
+				return nil, nil, mapClientErr(err)
+			}
+			found := false
+			for _, branch := range branches {
+				if branch.Name == args.BuildBranch {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, nil, &BranchNotFoundError{DatasetRID: output, Branch: args.BuildBranch}
+			}
+		}
+	}
+	return specs, inputViews, nil
+}
+
+func ResolveBuild(ctx context.Context, args ResolveBuildArgs, jobSpecs JobSpecRepository, versioning DatasetVersioningRepository, locks BranchLockRepository, recorder ...PendingTxnRecorder) (*models.ResolvedBuild, error) {
 	started := time.Now().UTC()
 	if args.TriggerKind == "" {
 		args.TriggerKind = "MANUAL"
@@ -140,19 +301,7 @@ func ResolveBuild(ctx context.Context, args ResolveBuildArgs, jobSpecs JobSpecRe
 		args.AbortPolicy = string(models.AbortDependentOnly)
 	}
 
-	specs, err := LoadJobSpecs(ctx, args.PipelineRID, args.BuildBranch, args.JobSpecFallback, args.OutputDatasetRIDs, jobSpecs)
-	if err != nil {
-		return nil, err
-	}
-	for _, spec := range specs {
-		if reason := ValidateLogicKind(spec.LogicKind, len(spec.OutputDatasetRIDs)); reason != "" {
-			return nil, &InvalidLogicKindError{JobSpecRID: spec.RID, Reason: reason}
-		}
-	}
-	if err := DetectCycles(specs); err != nil {
-		return nil, err
-	}
-	inputViews, err := ValidateInputs(ctx, args.BuildBranch, specs, versioning)
+	specs, inputViews, err := PreflightBuild(ctx, args, jobSpecs, versioning)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +328,7 @@ func ResolveBuild(ctx context.Context, args ResolveBuildArgs, jobSpecs JobSpecRe
 		}
 	}
 
-	opened, err := AcquireLocks(ctx, buildID, specs, args.BuildBranch, versioning, locks)
+	opened, err := AcquireLocks(ctx, buildID, specs, args.BuildBranch, versioning, locks, recorder...)
 	if err != nil {
 		return nil, err
 	}
@@ -328,9 +477,23 @@ func ValidateInputs(ctx context.Context, buildBranch string, specs []models.JobS
 }
 
 // AcquireLocks opens one transaction per output and delegates lock persistence.
-func AcquireLocks(ctx context.Context, buildID uuid.UUID, specs []models.JobSpec, buildBranch string, client DatasetVersioningRepository, locks BranchLockRepository) ([]models.OpenedTransaction, error) {
+func AcquireLocks(ctx context.Context, buildID uuid.UUID, specs []models.JobSpec, buildBranch string, client DatasetVersioningRepository, locks BranchLockRepository, recorder ...PendingTxnRecorder) ([]models.OpenedTransaction, error) {
 	opened := make([]models.OpenedTransaction, 0)
 	seenOutputs := map[string]struct{}{}
+	fail := func(err error) ([]models.OpenedTransaction, error) {
+		// Resolution failed mid-way: abort the transactions THIS run
+		// opened (including the one whose recording or lock attempt just
+		// failed) and release the locks THIS run acquired. Cleanup
+		// failures are appended to the original error, never dropped.
+		infos := make([]OpenedTransactionInfo, 0, len(opened))
+		for _, tx := range opened {
+			infos = append(infos, OpenedTransactionInfo{DatasetRID: tx.DatasetRID, TransactionRID: tx.TransactionRID, Branch: buildBranch})
+		}
+		if cleanupErrs := CleanupOpenedTransactions(ctx, client, locks, buildID, buildBranch, infos, recorder...); len(cleanupErrs) > 0 {
+			return nil, fmt.Errorf("%w (cleanup failures: %v)", err, cleanupErrs)
+		}
+		return nil, err
+	}
 	for _, spec := range specs {
 		for _, output := range spec.OutputDatasetRIDs {
 			if _, seen := seenOutputs[output]; seen {
@@ -339,18 +502,74 @@ func AcquireLocks(ctx context.Context, buildID uuid.UUID, specs []models.JobSpec
 			seenOutputs[output] = struct{}{}
 			txnRID, err := client.OpenTransaction(ctx, output, buildBranch)
 			if err != nil {
-				return nil, mapClientErr(err)
+				return fail(mapClientErr(err))
 			}
+			// Persist the association BEFORE attempting the lock: if
+			// anything after this point fails (lock conflict, later
+			// output, cancellation), the transaction stays retryably
+			// attributable to THIS build. A recording write failure
+			// aborts the transaction immediately and surfaces — never a
+			// silent untracked transaction.
+			if len(recorder) > 0 && recorder[0] != nil {
+				if err := recorder[0].RecordPendingTxn(ctx, buildID, output, buildBranch, txnRID); err != nil {
+					// The recording write failed (often just request
+					// cancellation). Retry once on a bounded detached
+					// context so the transaction stays tracked; if that
+					// also fails, include THIS transaction in the
+					// unified compensation (everything opened so far) —
+					// never a silent untracked remote transaction. If
+					// the compensating abort fails too, the error (with
+					// the transaction RID) lands on the build's failure
+					// message for a manual retry.
+					recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+					recordErr := recorder[0].RecordPendingTxn(recordCtx, buildID, output, buildBranch, txnRID)
+					cancelRecord()
+					if recordErr == nil {
+						// Recording eventually succeeded on the retry:
+						// the normal flow below tracks it exactly once.
+					} else {
+						// Both record attempts failed. The remote abort
+						// is attempted via fail(); if THAT also fails
+						// the handle must stay recoverable, so a final
+						// record try runs on a fresh bounded context and
+						// the failure text carries the full
+						// dataset/branch/transaction handle plus a
+						// machine-readable manual_cleanup_required token.
+						opened = append(opened, models.OpenedTransaction{DatasetRID: output, TransactionRID: txnRID})
+						finalErr := fmt.Errorf("pending txn recording failed for %s: %w (detached retry: %v): %w", txnRID, err, recordErr, ErrPendingTxnRecordFailed)
+						if aborter, ok := client.(TransactionAborter); ok {
+							abortCtx, cancelAbort := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+							abortErr := aborter.AbortTransaction(abortCtx, output, buildBranch, txnRID)
+							cancelAbort()
+							if abortErr != nil {
+								lastCtx, cancelLast := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+								lastRecordErr := recorder[0].RecordPendingTxn(lastCtx, buildID, output, buildBranch, txnRID)
+								cancelLast()
+								if lastRecordErr != nil {
+									return fail(fmt.Errorf("%w; manual_cleanup_required dataset=%s branch=%s txn=%s (durable recording unavailable: %v)", finalErr, output, buildBranch, txnRID, lastRecordErr))
+								}
+								// Recorded at the last attempt: tracked —
+								// fail() retries the abort and retains
+								// the reference when it still fails.
+							}
+						}
+						return fail(finalErr)
+					}
+				}
+			}
+			// Record the open transaction BEFORE attempting the lock:
+			// a lock conflict or error must still abort this remote
+			// transaction, not leak it.
+			opened = append(opened, models.OpenedTransaction{DatasetRID: output, TransactionRID: txnRID})
 			if locks != nil {
 				holder, ok, err := locks.TryAcquire(ctx, output, buildID, txnRID)
 				if err != nil {
-					return nil, mapClientErr(err)
+					return fail(mapClientErr(err))
 				}
 				if !ok {
-					return nil, &LockHeldError{DatasetRID: output, HolderBuildID: holder}
+					return fail(&LockHeldError{DatasetRID: output, HolderBuildID: holder})
 				}
 			}
-			opened = append(opened, models.OpenedTransaction{DatasetRID: output, TransactionRID: txnRID})
 		}
 	}
 	return opened, nil
