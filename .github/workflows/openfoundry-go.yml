@@ -17,6 +17,7 @@ on:
       - "buf.gen.yaml"
       - "buf.yaml"
       - "sqlc.yaml"
+      - "sqlc-policy.yaml"
       - ".github/workflows/openfoundry-go.yml"
   pull_request:
     paths:
@@ -33,6 +34,7 @@ on:
       - "buf.gen.yaml"
       - "buf.yaml"
       - "sqlc.yaml"
+      - "sqlc-policy.yaml"
       - ".github/workflows/openfoundry-go.yml"
 
 jobs:
@@ -111,8 +113,8 @@ jobs:
             exit 1
           fi
 
-  sqlc:
-    name: sqlc (drift check)
+  sqlc-policy:
+    name: sqlc-policy (config policy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -120,11 +122,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: sqlc policy unit tests
+        run: go test ./tools/sqlc-policy
       - name: install sqlc
         run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
-      - name: sqlc generate
-        run: sqlc generate
-      - name: ensure no drift between checked-in & generated sqlc code
+      - name: Apply declared SQLC integration status
+        run: go run ./tools/sqlc-policy
+      - name: sqlc generate (no-op unless status=integrated)
+        run: go run ./tools/sqlc-policy --generate
+      - name: ensure worktree unchanged after sqlc steps (drift check applies only when integrated)
         run: |
           status="$(git status --porcelain=v1 --untracked-files=all)"
           if [ -n "$status" ]; then

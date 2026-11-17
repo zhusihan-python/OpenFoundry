@@ -74,7 +74,10 @@ pnpm --filter @open-foundry/web test   # vitest
 - **Go CI lives in `.github/workflows/openfoundry-go.yml`.** Jobs:
   `lint` (golangci-lint), `vet`, `tidy` (drift check on go.mod/go.sum),
   `proto` (`buf lint` + `buf generate` drift check on `libs/proto-gen`),
-  `sqlc` (`sqlc generate` drift check), `test` (unit, race +
+  `sqlc-policy` (config policy gate — sqlc is **not integrated**; the job
+  reports generation as not-applicable until `sqlc-policy.yaml` at the root
+  flips to integrated, after which it runs a real generate + drift check),
+  `test` (unit, race +
   coverage), `integration` (build tag `integration`, runs after
   lint+test, uses GH runner Docker for testcontainers). It mirrors
   `make ci` plus full generation drift checks. The legacy `ci.yml`
