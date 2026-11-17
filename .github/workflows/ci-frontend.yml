@@ -1,6 +1,7 @@
 name: CI — Frontend
 
 on:
+  workflow_call:
   push:
     branches: [main]
     paths: ["apps/web/**", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".github/workflows/ci-frontend.yml"]
@@ -13,6 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -27,11 +32,22 @@ jobs:
       - run: pnpm --filter @open-foundry/web check
       - run: pnpm --filter @open-foundry/web build
 
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          node --version
+          pnpm --version
+
   test-unit:
     name: Unit Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -43,12 +59,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @open-foundry/web test:unit
 
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          node --version
+          pnpm --version
+
   test-e2e:
     name: E2E Tests
     # playwright-core 1.59 ships no native deps for ubuntu26.04; 24.04 is supported.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -60,3 +87,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @open-foundry/web exec playwright install --with-deps chromium
       - run: pnpm --filter @open-foundry/web test:e2e
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          node --version
+          pnpm --version
