@@ -86,6 +86,42 @@ For UI changes, **start the dev server and exercise the feature in a
 browser** before reporting done — typecheck and unit tests are not
 enough to catch UX regressions in a 4699-line component.
 
+## Quality-gate pilot: `src/routes/datasets`
+
+`pnpm lint` runs `scripts/lint.mjs`, not bare ESLint. In
+`src/routes/datasets/**` the pilot enforces `react-hooks/rules-of-hooks`,
+`react-hooks/exhaustive-deps` (both error), and bans direct
+`fetch` / `window.fetch` / `globalThis.fetch` (`no-restricted-globals`
++ `no-restricted-properties`) — dataset pages must call `lib/api/datasets`.
+
+Five pre-pilot `exhaustive-deps` findings are pinned in
+`scripts/lint-baseline.json` (debt, not exemptions for new code). Each
+entry is `{ key, count, reason }`; the key is
+`path|ruleId|message|sha256(4-line context around the finding)`, so any
+edit near a baselined line invalidates its entry. The wrapper:
+
+- **never** baselines a new finding — new errors fail `pnpm lint`;
+- fails when a baseline entry stops matching (fix landed → delete its
+  entry in the same PR, or the run goes red as "changed or disappeared");
+- validates the file: array-only, non-empty `key`/`reason`, positive
+  integer `count`, no duplicate keys, and **scope-locked** — only
+  `src/routes/datasets/**` paths with rule `react-hooks/exhaustive-deps`
+  can be baselined. Parse errors (no ruleId) are never excusable.
+
+New findings default to **fix the code**, not the baseline. Growing
+`lint-baseline.json` is not a standard path to green: any new entry needs
+its own explicit review, a tracked follow-up item, a named owner, and a
+stated removal condition. There is no env override — the CLI only reads
+`scripts/lint-baseline.json`.
+`node scripts/test-quality-rules.mjs` (cwd `apps/web`) is the gate's own
+test: rule firing, baseline false-green scenarios (new/changed/duplicate/
+ghost/removed entries), and schema/scope validation.
+
+Bypass surface to watch in review: an `eslint-disable*` comment inside
+`src/routes/datasets` still silences these rules (repo runs with
+`reportUnusedDisableDirectives: false`), so treat new disable comments
+there as review-blocking.
+
 ## Don't
 
 - Don't add Redux / new global state libs. We have TanStack Query +
