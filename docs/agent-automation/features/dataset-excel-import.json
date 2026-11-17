@@ -1,0 +1,34 @@
+{
+  "feature": "dataset.excel-import",
+  "owner": "zhusihan-python",
+  "entry": "/datasets/upload",
+  "implementation": [
+    "apps/web/src/routes/datasets",
+    "apps/web/src/lib/api/datasets.ts",
+    "services/dataset-versioning-service"
+  ],
+  "acceptance": [
+    "Leading zero and long numeric strings remain exact",
+    "Selected sheet and header mapping determine schema",
+    "Imported rows and catalog statistics persist across reload"
+  ],
+  "checks": [
+    "apps/web/e2e/dataset-excel-import.spec.ts",
+    "apps/web/e2e/dataset-excel-real.spec.ts"
+  ],
+  "real_check": {
+    "command": "P31_REAL_E2E=1 pnpm exec playwright test --config=playwright.p31-real.config.ts",
+    "cwd": "apps/web",
+    "prerequisites": "See e2e/fixtures/README.md; isolated real gateway, dataset service, DB and runtime token required",
+    "stubs": [
+      "auth/bootstrap-status",
+      "users/me"
+    ]
+  },
+  "evidence": [
+    "code SHA and dirty state",
+    "deployed build versions",
+    "fixture hash",
+    "results and failure diagnostics"
+  ]
+}

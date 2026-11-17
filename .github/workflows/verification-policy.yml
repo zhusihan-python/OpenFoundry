@@ -1,0 +1,12 @@
+name: Verification policy
+on:
+  pull_request:
+    paths: ['tools/quality/**', 'AGENTS.md', '.github/pull_request_template.md', '.github/CODEOWNERS', 'docs/agent-automation/**', '.github/workflows/verification-policy.yml']
+permissions:
+  contents: read
+jobs:
+  plan-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s tools/quality -p 'test_verification_plan.py'
