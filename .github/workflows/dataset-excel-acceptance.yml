@@ -1,0 +1,104 @@
+name: Acceptance — dataset-excel real backend
+
+# PR3 reproducible real-backend acceptance for the two dataset-excel-real
+# Playwright tests. Runs the same one-shot runner as locally
+# (tools/smoke/dataset-excel/run.sh): ensures its base images, builds DVS +
+# edge-gateway from the PR sources, starts a disposable PG16+DVS+gateway
+# stack, and requires both real-backend tests to actually execute and pass
+# with strict structured verification. No base-branch restriction: any PR
+# touching the relevant paths gets the acceptance gate.
+
+on:
+  pull_request:
+    paths:
+      - "apps/web/e2e/dataset-excel-real.spec.ts"
+      - "apps/web/e2e/fixtures/orders-real.xlsx"
+      - "apps/web/playwright.p31-real.config.ts"
+      - "apps/web/playwright.ofexcel.config.ts"
+      - "apps/web/vite.p31-e2e.config.ts"
+      - "apps/web/src/routes/datasets/**"
+      - "apps/web/src/lib/api/**"
+      - "apps/web/src/lib/auth/**"
+      - "apps/web/package.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "libs/auth-middleware/**"
+      - "services/dataset-versioning-service/**"
+      - "services/edge-gateway-service/**"
+      - "tools/smoke/dataset-excel/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/dataset-excel-acceptance.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: dataset-excel-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  acceptance:
+    name: Real-backend Excel acceptance (disposable PG16+DVS+gateway)
+    # Pinned to 24.04: ubuntu-latest is now 26.04, and Playwright 1.59.1's
+    # `install --with-deps` does not support it (its nativeDeps registry
+    # covers ubuntu 22.04 and 24.04, not 26.04 — verified cross-PR in CI).
+    # Do not bump until the pinned Playwright learns the newer Ubuntu.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @open-foundry/web exec playwright install --with-deps chromium
+      - name: Run one-shot real-backend acceptance
+        run: bash tools/smoke/dataset-excel/run.sh
+      # Evidence upload runs ALWAYS (successful runs must be auditable too)
+      # — but ONLY after the credential guard passed: the guard step's
+      # outcome gates the upload, so a guard failure uploads nothing even
+      # on an otherwise-failed run. Explicit per-file whitelist only — NO
+      # wildcards over *.log and NEVER raw traces / test artifacts (they may
+      # contain the run's one-shot token in localStorage snapshots). Service
+      # logs (dvs.log / gw.log) and build logs stay on the runner.
+      - name: Guard evidence against credential strings
+        id: evidence-guard
+        if: always()
+        run: |
+          shopt -s nullglob
+          files=(tools/smoke/dataset-excel/results/*/exit-codes.txt \
+                 tools/smoke/dataset-excel/results/*/versions.json \
+                 tools/smoke/dataset-excel/results/*/stack-probe.json \
+                 tools/smoke/dataset-excel/results/*/evidence.json \
+                 tools/smoke/dataset-excel/results/*/playwright.json \
+                 tools/smoke/dataset-excel/results/*/playwright-skip.json \
+                 tools/smoke/dataset-excel/results/*/negative-controls.log)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "no evidence files found to guard"; exit 0
+          fi
+          # -q: never echo matched credential-shaped text into CI logs.
+          if grep -rq "eyJ" "${files[@]}"; then
+            echo "::error::credential-shaped string (eyJ JWT prefix) found in evidence — refusing to upload" >&2
+            exit 1
+          fi
+          echo "guard ok: no JWT-shaped strings in ${#files[@]} evidence files"
+      - name: Upload structured evidence
+        if: always() && steps.evidence-guard.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dataset-excel-evidence
+          path: |
+            tools/smoke/dataset-excel/results/*/exit-codes.txt
+            tools/smoke/dataset-excel/results/*/versions.json
+            tools/smoke/dataset-excel/results/*/stack-probe.json
+            tools/smoke/dataset-excel/results/*/evidence.json
+            tools/smoke/dataset-excel/results/*/playwright.json
+            tools/smoke/dataset-excel/results/*/playwright-skip.json
+            tools/smoke/dataset-excel/results/*/negative-controls.log
+          if-no-files-found: warn
+          retention-days: 14
