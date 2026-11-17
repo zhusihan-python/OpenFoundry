@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -117,7 +118,7 @@ func FromEnv() (*Config, error) {
 	cfg.MediaSetsServiceURL = defaultStr(os.Getenv("MEDIA_SETS_SERVICE_URL"), DefaultMediaSetsServiceURL)
 
 	cfg.CredentialEncryptionKey = os.Getenv("CREDENTIAL_ENCRYPTION_KEY")
-	cfg.CredentialKey, err = deriveCredentialKey(cfg.CredentialEncryptionKey, cfg.JWTSecret)
+	cfg.CredentialKey, err = deriveCredentialKey(cfg.CredentialEncryptionKey, cfg.JWTSecret, os.Getenv(DeploymentEnvironmentEnv))
 	if err != nil {
 		return nil, err
 	}
@@ -305,19 +306,79 @@ func parseList(v string) []string {
 	return out
 }
 
-func deriveCredentialKey(envKeyB64, jwtSecret string) ([32]byte, error) {
+// DeploymentEnvironmentEnv is the deployment environment signal injected into
+// every workload by the shared Helm chart (_helpers.tpl: environment from
+// global.deploymentFabric, values-prod.yaml sets "production",
+// values-dev.yaml "development", Helm default "shared"). It is the ONLY
+// environment signal consulted by the credential-key gate: SERVICE_VERSION
+// (which defaults to "dev") and the OPENFOUNDRY_DEV_AUTH shim deliberately
+// must never widen credential-key policy.
+const DeploymentEnvironmentEnv = "OPENFOUNDRY_DEPLOYMENT_ENVIRONMENT"
+
+// legacyCredentialKeyDomain is the pre-gate compat derivation prefix that
+// bootstrapped the credential key from the JWT secret. It survives only for
+// explicit local dev/test environments (see credentialKeyDevFallbackAllowed).
+const legacyCredentialKeyDomain = "openfoundry/credential-encryption/v1\x00"
+
+// credentialKeyDevFallbackAllowed reports whether the deployment environment
+// is an EXPLICIT local development/test environment — the only place the
+// legacy JWT-derived credential-key fallback still applies. Production
+// (production/prod) and every other or unset value — including the Helm
+// default "shared" and the staging/sovereign profiles — require an
+// independent CREDENTIAL_ENCRYPTION_KEY at startup (fail closed).
+func credentialKeyDevFallbackAllowed(environment string) bool {
+	switch strings.ToLower(strings.TrimSpace(environment)) {
+	case "development", "dev", "test", "testing", "local":
+		return true
+	}
+	return false
+}
+
+// CredentialKeyError reports a CREDENTIAL_ENCRYPTION_KEY startup-gate
+// failure. It carries only the variable name, the policy reason and
+// non-secret context — never the key material or the JWT secret — so the
+// fatal log in main cannot echo them.
+type CredentialKeyError struct {
+	Reason string
+}
+
+func (e *CredentialKeyError) Error() string {
+	return fmt.Sprintf("CREDENTIAL_ENCRYPTION_KEY: %s", e.Reason)
+}
+
+// deriveCredentialKey resolves the domain credential-encryption key. An
+// independent base64 32-byte CREDENTIAL_ENCRYPTION_KEY is required everywhere
+// except explicit local dev/test environments, where a missing/blank value
+// still falls back to the legacy JWT-derived key for compatibility. A
+// configured key must be valid AND independent of JWT_SECRET: values equal
+// to the raw JWT secret or to the legacy JWT-derived digest are rejected.
+func deriveCredentialKey(envKeyB64, jwtSecret, environment string) ([32]byte, error) {
 	var out [32]byte
-	if strings.TrimSpace(envKeyB64) == "" {
-		digest := sha256.Sum256([]byte("openfoundry/credential-encryption/v1\x00" + jwtSecret))
+	trimmed := strings.TrimSpace(envKeyB64)
+	if trimmed == "" {
+		if !credentialKeyDevFallbackAllowed(environment) {
+			return out, &CredentialKeyError{Reason: fmt.Sprintf(
+				"independent credential key is required (OPENFOUNDRY_DEPLOYMENT_ENVIRONMENT=%q or unset); set it to the base64 of 32 random bytes, e.g. `openssl rand -base64 32`; the JWT-derived fallback only applies when OPENFOUNDRY_DEPLOYMENT_ENVIRONMENT is one of development|dev|test|testing|local",
+				strings.TrimSpace(environment),
+			)}
+		}
+		digest := sha256.Sum256([]byte(legacyCredentialKeyDomain + jwtSecret))
 		copy(out[:], digest[:])
 		return out, nil
 	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(envKeyB64))
+	raw, err := base64.StdEncoding.DecodeString(trimmed)
 	if err != nil {
-		return out, &InvalidEnvError{Key: "CREDENTIAL_ENCRYPTION_KEY", Value: envKeyB64, Err: err}
+		return out, &CredentialKeyError{Reason: "invalid base64 value"}
 	}
 	if len(raw) != 32 {
-		return out, &InvalidEnvError{Key: "CREDENTIAL_ENCRYPTION_KEY", Value: envKeyB64, Err: fmt.Errorf("must decode to 32 bytes (got %d)", len(raw))}
+		return out, &CredentialKeyError{Reason: fmt.Sprintf("must decode to 32 bytes (got %d)", len(raw))}
+	}
+	if bytes.Equal(raw, []byte(jwtSecret)) {
+		return out, &CredentialKeyError{Reason: "must be independent of JWT_SECRET (value equals the raw JWT secret)"}
+	}
+	legacy := sha256.Sum256([]byte(legacyCredentialKeyDomain + jwtSecret))
+	if bytes.Equal(raw, legacy[:]) {
+		return out, &CredentialKeyError{Reason: "must be independent of JWT_SECRET (value equals the legacy JWT-derived key)"}
 	}
 	copy(out[:], raw)
 	return out, nil

@@ -1,12 +1,12 @@
 # 通用业务平台数据模块分阶段实施计划
 
-更新日期为 2026-11-16。以多个客户共用平台、客户数据和业务配置分别管理为产品前提。
+更新日期为 2026-11-17（本轮登记：S1 工程契约 v1 冻结、WP2.1/WP2.2 安全修复工程验收通过，见文末「当前进度登记」与「当前证据位置」；此前更新 2026-11-16）。以多个客户共用平台、客户数据和业务配置分别管理为产品前提。
 
 ## 产品目标与实施约束
 
 平台提供数据接入、版本化数据资产、处理、质量检查、业务对象及动作执行能力。电商与 B2B 贸易通过行业方案复用公共能力，客户通过数据源绑定、字段映射、业务规则和权限配置使用方案。
 
-**本组（数据连接与集成）交付范围限定为本模块本期 12 项需求（DI-01..DI-12）**，需求清单、优先级、路线图阶段、已有实现证据分级与逐项验收标准见[数据连接与集成需求覆盖矩阵](data-integration-requirements-coverage-matrix.md)。范围依据：知识库 `_index/裁剪汇总.md`（数据连接与集成 12 项，227-238 行原始顺序）、`_index/路线图.md`（阶段 1 九项、阶段 2 血缘一项、阶段 4 SQL 与 S3 API 两项）、`_index/裁剪判据.md`（定稿 v4）。此前 P3 剩余、P4、P5 的通用平台任务不再作为默认主线，映射说明见文末批次计划；平台其余模块目标不因本计划改变。
+**本模块（数据连接与集成）交付范围限定为本期 12 项需求（DI-01..DI-12）**，需求清单、优先级、路线图阶段、已有实现证据分级与逐项验收标准见[数据连接与集成需求覆盖矩阵](data-integration-requirements-coverage-matrix.md)。范围依据：知识库 `_index/裁剪汇总.md`（数据连接与集成 12 项，227-238 行原始顺序）、`_index/路线图.md`（阶段 1 九项、阶段 2 血缘一项、阶段 4 SQL 与 S3 API 两项）、`_index/裁剪判据.md`（定稿 v4）。此前 P3 剩余、P4、P5 的通用平台任务不再作为默认主线，映射说明见文末批次计划；平台其余模块目标不因本计划改变。
 
 继续迭代 OpenFoundry，复用 Source、Sync、Dataset、Pipeline、Ontology、Action 和应用模板。按实际可运行路径交付。编码、构建与测试通过 ZCode GUI 的 GLM-5.3 执行，由 Codex 审查实现、维护阶段状态并核对证据。每个 GLM 会话以低于 60% 上下文为目标，70% 为上限，切换会话时传递范围、改动和未决问题。
 
@@ -22,7 +22,7 @@
 | P1 | 租户隔离和真实同步首轮 | P1.1–P1.5 | 两个组织隔离，通过真实分页 REST 获取数据并发布可下载 Dataset，Pipeline 能消费产物 | 已完成当前范围：60 包单测、26 项必需 PG16、HTTP 9/9、零未覆盖；含 Build/Job 分库流程及文件卷重建/重启回归 |
 | P2 | 可恢复的异步同步 | 任务租约、取消、重试、定时调度、增量断点、幂等发布和故障恢复 | 重启后恢复，重复投递无重复发布，发布失败不推进断点，任务超时与取消可观察 | P2.1–P2.6 已完成当前范围；P2.6 验收8/8，最终封存、完整独立离线复验与三处临时副本清理均已通过，P2 当前范围完成 |
 | P3 | 文件和外部推送扩展 | Excel、多文件解析配置、标准 push/manifest、爬虫结果接入、质量规则 | 多 sheet 和类型保真，错误行可追溯，外部任务重传可恢复，全部经过相同租户与发布边界 | P3.1 已完成（后端/网关/前端/真实浏览器验收）；P3.2 及之后未启动，已被 12 项新计划取代（类型规则归 DI-05/DI-06/DI-08；push/listeners/爬虫非默认主线，见文末批次计划） |
-| P4 | 正式批量处理与查询 | 对象存储、批次读取、产物 manifest、输入版本固定、查询引擎及统一发布 | 首档十万行多文件基准全量正确，输入固定可重现，内存有界，失败不暴露半成品，容量记录可复查 | 依赖 P2/P3，待实施；已被 12 项新计划取代（查询并入 DI-09，对象存储/批处理按矩阵待对齐项 T1/T2 处置） |
+| P4 | 正式批量处理与查询 | 对象存储、批次读取、产物 manifest、输入版本固定、查询引擎及统一发布 | 首档十万行多文件基准全量正确，输入固定可重现，内存有界，失败不暴露半成品，容量记录可复查 | 依赖 P2/P3，待实施；已被 12 项新计划取代（查询并入 DI-09；对象存储配置与授权、分批读写、manifest 提交、固定输入快照、schema/逻辑版本关联、真实查询引擎、统一多输出发布与容量基准按[矩阵](data-integration-requirements-coverage-matrix.md)「旧 P4 逐项映射」逐项承接，不笼统交 T1/T2） |
 | P5 | 双行业与客户配置复用 | 电商方案、B2B 贸易方案，版本化模型/映射/流程/页面，客户安装与升级 | 同平台运行两个行业、两个客户，复用内核，分别绑定数据源与配置，独立升级与审计 | 依赖 P1–P4，待实施；行业方案转为跨组验收用例，不再作为本模块默认主线（见文末批次计划） |
 
 P1 完成意味着当前接入与处理路径具备已验收的隔离及真实数据同步。全平台的 Ontology、App、搜索、日志、工作流和管理员边界需逐项纳入后续租户验收矩阵。
@@ -493,22 +493,29 @@ S2 的 P2.5 完整15项回归已通过；h1–h8中，h5依原契约仅作前序
 
 本节取代上文 P3 剩余、P4、P5 的任务序列，改由[数据连接与集成需求覆盖矩阵](data-integration-requirements-coverage-matrix.md)（DI-01..DI-12）驱动。以下批次只定义依赖顺序与并行关系，**不承诺日期，不自动推进业务编码**；接口合同可提前跨组对齐，不机械串行等待其他组。P2 六项与 P3.1 的历史完成状态不变（见上文历史章节）。
 
+### 当前进度登记（2026-11-17，未提交工作树）
+
+- **S1（WP1.2）工程契约 v1 已冻结**：[data-integration-s1-dataset-contract.md](data-integration-s1-dataset-contract.md)（Dataset 身份、版本、Schema、输入/输出发布与租户权限契约；B2 开工门槛据此满足，见批次 B）。
+- **WP2.1 / WP2.2 安全修复本轮工程验收通过**（GLM 编制执行 / Codex review，最终证据 run `20261117T024942_29906`）：[data-integration-s1-security-acceptance.md](data-integration-s1-security-acceptance.md)。区分两层事实：**基线 `424921bd` 上的缺口**（Connector `registrations.go` InvokeWebhook/ListWebhookHistory 跨租户读取与广义 admin 判定；`deriveCredentialKey` 缺独立 key 时 JWT 派生 fallback；`InvalidEnvError` 携带密钥明文进 fatal log）为矩阵登记的基线状态；**当前未提交工作树已修复并通过工程验收**（跨租户统一 404 且零出站/零历史副作用、生产及未知环境 fail-closed、错误脱敏、开发 compose 显式 canonical 信号），代码尚未提交，提交前矩阵基线条目不回改。
+- DI-01（Core concepts）与 DI-02（指定连接器）**整项均未完成**：上述仅 S1 契约冻结与两项安全缺口修复，B1/B3 的业务实现仍按批次计划待做。
+
 ### 批次 A：范围与执行契约对齐
 
-- 逐项裁决矩阵「待对齐项」T1–T7：Core 完整能力（Media sets/Iceberg/Virtual tables/Views 继承或后挪）、管道代码交付契约（源规划 PipelineDef/TS/DuckDB 与本仓 Go pipeline_ir.v1/local-table runtime 的映射，不自行换引擎/改语言）、健康检查类型映射（PL-26 六类与官方 checks-reference 五类+独立 expectations）、S3 兼容 API 优先级、Excel Parser 分批范围、出站 Webhook 归属、电商连接器映射。
+- 逐项裁决/推进矩阵「待对齐项」T0–T9：**T0 交付库重估——工程重估与复核完成（2026-11-17）**：[T0 重估报告](data-integration-openfoundry-t0-reestimate.md)按本仓证据完成 12 项复核（编制 GLM-5.3、工程确认 Codex，12 项实际 review 及算术/范围/依赖复核通过；已知必做合计 314–555 工程人日+替代情景/未知量单列，口径已可适用）。批次 B 正式业务实现与正式排期的 T0 前置**已满足**；源路线图任务点与日期仍仅作参照、不换算（Allen 人日/日期确认与 T1–T9 裁决另行进行，不因 T0 工程完成而视为已批准）；T1 Core 完整能力（Media sets/Iceberg/Virtual tables/Views 继承或后挪，四细点仍待源标注统一）；T2 管道代码交付契约（源规划 PipelineDef/TS/DuckDB 与本仓 Go pipeline_ir.v1/local-table runtime 的映射，不自行换引擎/改语言）；T3 健康检查类型映射（PL-26 六类与官方 checks-reference 五类+独立 expectations）；T4 S3 兼容 API 优先级；T5 Excel Parser 分批范围；T6 出站 Webhook 归属；T7 电商连接器映射；T8 管道调度机制（以 Accepted ADR-0037 的 CronJob→Kafka 为优先基线核接线差距，只阻塞 B2 调度实现）；T9 DI-08 基础预览与 SQL 扩展的产品关闭条件（C2/F1 按其两种方案写条件，不替产品决定）。
 - 与跨组对齐接口合同：本体 Indexing（对象侧）、对象应用端（血缘应用节点）、可观测性健康平台、Global Branching、安全项目角色、Action 出站调用。
-- 各待对齐项只阻塞各自受影响工作（见矩阵待对齐表「未决期间可推进」列），不构成批次 B 的整体硬阻塞；独立盘点与基础能力并行推进。
+- T0 重估完成是批次 B 正式业务实现与正式排期的前置；T1–T9 各只阻塞各自受影响工作（见矩阵待对齐表「未决期间可推进」列），不构成批次 B 的整体硬阻塞。本仓盘点、契约整理（S1 已冻结）与两项安全缺口修复（WP2.1/2.2 已工程验收，见「当前进度登记」）已于 2026-11-17 完成，均未提交。
 
-### 批次 B：三个 P0 补差（独立可并行）
+### 批次 B：三个 P0 补差（T0 重估前置已满足；B1/B3 与 B2 非调度部分可并行）
 
+- 本批正式业务实现与正式排期的 **T0 重估前置已满足**（2026-11-17 工程重估与复核完成，见批次 A；源路线图估算不转成本仓承诺——正式承诺须交付负责人确认与相关裁决落定）。**B2 开工门槛（Dataset 身份、版本、Schema、输入/输出发布与租户权限契约冻结，不必等 DI-01 全部 Core 细点）已由 S1 工程契约 v1 满足**（2026-11-17 冻结，见[契约文档](data-integration-s1-dataset-contract.md)与「当前进度登记」）；**B2 管道调度实现另以 T8 为前置**，不能用 P2.4 同步链验收替代。
 - **B1 Core concepts（DI-01）**：数据集/构建/定时/健康检查概念照官方立；Branching、CDC 补齐；冲突细点按批次 A 裁决执行（Media sets/Iceberg 独立后续、Virtual tables/Views 建议后挪，两类分别处理）。
-- **B2 代码管道（DI-03）**：管道调度真实周期验收（至少两个自动到期周期，不以人工重复调用 run-due 冒充周期调度；重启、并发、身份失效、失败保旧——不能用 P2.4 同步链验收替代）；CSV/JSON 结构推断参数化；代码交付契约按批次 A 结论接线。
-- **B3 指定连接器（DI-02）**：REST 已验收；补 S3、PostgreSQL、MySQL 的**可执行服务端源读取/接线/发布**（现状：S3 adapter 不读 payload、MySQL 走 HTTP bridge、PostgreSQL 专用实现未定位仅有 JDBC/CDC 线索；复用现有 adapter 源码或补新实现由执行契约确定，不预设 native driver/Arrow 方案）；电商三个连接器（Amazon 经紫鸟、noon、领星）先完成实现映射盘点；出站 Webhook 租户缺口修复（registrations.go 非租户读取与广义 admin 判定）。
+- **B2 代码管道（DI-03）**：Dataset 身份、版本、Schema、输入/输出发布与租户权限契约**已由 S1 工程契约 v1 冻结（2026-11-17），后续以该契约为依据**；管道调度实现等 T8 裁定机制后做真实周期验收（至少两个自动到期周期，不以人工重复调用 run-due 冒充周期调度；重启、并发、身份失效、失败保旧——不能用 P2.4 同步链验收替代）；**CSV/JSON 结构推断不在本批 P0 范围**——CSV 配置由 DI-08 持久化、本项消费同一份配置不另建模型，非结构化结构推断为 P2、不阻塞 B2 P0 收尾，排在 C2 配置交付之后的批次 D P2 子任务；代码交付契约按批次 A 结论接线。
+- **B3 指定连接器（DI-02）**：REST 已验收；补 S3、PostgreSQL、MySQL 的**可执行服务端源读取/接线/发布**（现状：S3 adapter 不读 payload、MySQL 走 HTTP bridge、PostgreSQL 专用实现未定位仅有 JDBC/CDC 线索；复用现有 adapter 源码或补新实现由执行契约确定，不预设 native driver/Arrow 方案）；电商三个连接器（Amazon 经紫鸟、noon、领星）先完成实现映射盘点；出站 Webhook 租户缺口（基线 `424921bd` 的 registrations.go 非租户读取与广义 admin 判定）**已在当前未提交工作树修复并通过工程验收**（WP2.1，见[验收报告](data-integration-s1-security-acceptance.md)），DI-02 其余实现仍待做。
 
 ### 批次 C：P1 支撑四项（可并行）
 
 - **C1 维护管道（DI-04）**：健康检查真实数据求值与类型映射落地；数据期望 input/pre、output/post、WARN/ABORT、坏输出不可见、结果绑定 build/version。先用 build 输入输出合同，不等完整血缘应用链。
-- **C2 预览（DI-08）**：本批交付历史版本 data/schema 回看与 CSV 解析参数化基础；Time Travel 中依赖 SQL 的能力（query 随版本移动、refine 等）留待批次 F 随 DI-09 补验收，**本批不宣告 DI-08 整项完成**。
+- **C2 预览（DI-08）**：本批交付基础预览（历史版本 data/schema 回看，diff/key matching/schema diff/bisect/retention 分批清单）与 CSV 解析持久化配置（预览、DI-03 推断与正式执行读同一份配置）。「Follow a SQL query through time」等 SQL 扩展按 **T9 两种产品关闭方案**写条件，不替产品决定：若裁为随 DI-09 关闭，则基础预览全部验收后 DI-08 即可关闭、SQL 扩展在批次 F 补验收；若保留为 DI-08 关闭门槛，则本批不宣告 DI-08 完成、批次 F 补验收后才关闭。两种方案都不把整个 DI-09 提前、不形成环；裁决前不宣告 DI-08 整项完成。
 - **C3 表达式（DI-05）**：现有清单核对+补缺（不照官方 338 全量）；签名目录与执行子集一致性。
 - **C4 变换（DI-06）**：目标仍为产品口径 25 项——建立 25→本仓静态 24 项+动态 UDF 的逐项映射（缺失/别名/重复），映射盘点可与实现并行，不能把验收清单直接缩成 24；新建条件聚合/窗口聚合/反连接三项（源码静态核对确认执行面均无；注意三项对表达式求值语义的依赖，与 C3 协同）。
 - DI-07 血缘的跨组接口合同在本批完成对齐（不实现全链）。
@@ -517,6 +524,7 @@ S2 的 P2.5 完整15项回归已通过；h1–h8中，h5依原契约仅作前序
 
 - **D1 只读画布（DI-10）**：以批次 B2 研发代码发布路径已可用为前提收敛编辑入口；保留节点选择、节点预览、构建详情；不删除研发发布 API，不机械全局 readOnly（PipelineCanvas 的 selectNode 与 readOnly 耦合需先解耦）。
 - **D2 Excel 管道变换（DI-11）**：raw workbook 作为管道输入的解析变换（区别于 P3.1 普通上传），分批范围按批次 A 裁决；不引 Java/Spark 依赖。
+- **D3 结构推断（DI-03 的 P2 细点，不阻塞 B2 P0 收尾）**：排在 C2 的 CSV 持久化配置交付之后——CSV 消费 DI-08 同一份配置（预览与执行一致），JSON 嵌套展开与类型推断，推断结果进 schema 可查；不另建 CSV 参数模型。
 
 ### 批次 E：阶段 2 全链血缘（DI-07）
 
@@ -524,12 +532,13 @@ S2 的 P2.5 完整15项回归已通过；h1–h8中，h5依原契约仅作前序
 
 ### 批次 F：阶段 4 SQL 与 S3 兼容 API（DI-09、DI-12）
 
-- **F1 SQL（DI-09）**：数据集与本体**双侧整项目标保留**（Dataset 首批、对象随后，14 细点逐项对应范围与验收，仅新产品裁剪记录可删减）；经真实查询引擎可查；DI-08 遗留的 SQL 相关预览能力在此补验收。
+- **F1 SQL（DI-09）**：数据集与本体**双侧整项目标保留**（Dataset 首批、对象随后，14 细点逐项对应范围与验收，仅新产品裁剪记录可删减）；经真实查询引擎可查；DI-08 的 SQL 扩展（Refine query 随版本移动）按 T9 裁决在此补验收——若 T9 裁为随 DI-09 关闭，本批补验收即关闭 DI-08 的 SQL 扩展；若保留为 DI-08 门槛，本批补验收后 DI-08 方可整项关闭；两种方案的关闭条件均写入矩阵。
 - **F2 S3 兼容 API（DI-12）**：优先级与动作子集、认证 profile 按批次 A 裁决后实施，用标准 AWS SDK/CLI 验收；内部 presign 与 S3 源 adapter 不能替代。
 
 ### 与旧阶段任务的映射
 
 - 旧 P3.2（decimal/日期/时区/空值与标识符规则）归入 DI-05/DI-06/DI-08 的解析与表达式需要项，不单独排期。
+- 旧 P4 不笼统交 T1/T2：对象存储配置与授权、分批读写（不能只读）、产物 manifest 提交、固定输入快照、schema/逻辑版本关联、真实数据查询引擎、统一多输出发布、容量基准八项逐项映射（当前证据、缺口、责任人与验收批次）见[矩阵](data-integration-requirements-coverage-matrix.md)「旧 P4 逐项映射」；十万行为初始建议基准，客户规模/延迟目标到手后记录并重新定标，正确性/内存有界/失败不暴露半成品门槛不因重新定标取消。
 - 旧 push 入口、listeners、爬虫结果接入不是默认主线：push/listeners 在裁剪汇总属后续细点（Exports、Listeners、Email listeners 等），爬虫来源未列入本期 12 项；有客户诉求按矩阵外需求另行立项。
 - 旧 P5 行业方案（电商/B2B 样板、客户安装升级）转为跨组验收用例，不再作为本模块交付主线。
 
@@ -538,7 +547,10 @@ S2 的 P2.5 完整15项回归已通过；h1–h8中，h5依原契约仅作前序
 - P1 最终验收：`tools/smoke/business-platform-p1/results/2026-11-13-build-http/summary.md`（9 PASS、0 FAIL、0 UNCOVERED；60 包单测；26 项必需 PG16）。更早的 `results/2026-11-13-p1-mainline-baseline/` 为 7/0/1 未覆盖时点基线，不与最终结论混用。
 - P2 最终封存：`tools/smoke/business-platform-p2-6/results/w9/final-seal-attempt1/FINAL-BRIEF.md` 及同目录批准 seal/terminal 报告。
 - P3.1：本计划 P3.1 章节 + commit `664165f3` + 仓库内测试；`/private/tmp` 下报告为本机临时证据，不视为入仓闭包。
+- T0 重估：[data-integration-openfoundry-t0-reestimate.md](data-integration-openfoundry-t0-reestimate.md)（2026-11-17 工程重估与复核完成：编制 GLM-5.3、工程确认 Codex；已知必做合计 314–555 工程人日+替代情景/未知量；Allen 人日/日期确认与 T1–T9 裁决另行进行）。
+- S1 工程契约 v1（已冻结）：[data-integration-s1-dataset-contract.md](data-integration-s1-dataset-contract.md)（2026-11-17；B2 开工门槛据此满足）。
+- WP2.1/2.2 安全验收：[data-integration-s1-security-acceptance.md](data-integration-s1-security-acceptance.md)（工程验收通过 2026-11-17，GLM 编制执行 / Codex review；最终证据 run `20261117T024942_29906`：HTTP+PG 29/29、二进制门槛 11/11、11 条 command/tee/verify 退出码全 0、负控 16 拒/3 受/4 真实包装层；代码在未提交工作树）。
 - 上轮文件 I/O 基线 `/private/tmp/openfoundry-file-io-sryufy3u/result.json` 仍为本机临时证据。
 - 证据存放说明：上述 P1/P2 的 `tools/smoke/**/results/` 归档为本机工作树文件、非 Git 跟踪（`.gitignore` 忽略，fresh clone 不自带，获取位置即上述本机路径）；源码/测试/fixture/验收工具脚本在 Git 内（`2128e55d`）。历史验收结论不受存放位置影响。
 - 当前文件读取为 local 后端与轻量数据量，后续阶段将单独验证正式批处理能力。
-- 当前 REST snapshot batch Sync 定时调度已按 P2.4 验收；长期无人值守授权、Iceberg 输出接线（ADR-0041 现存设计待接线）和其余跨模块租户约束仍待后续实施。
+- 当前 REST snapshot batch Sync 定时调度已按 P2.4 验收；长期无人值守授权、Connector Excel adapter 未注册接线（源码目录存在、主服务未注册，见矩阵 DI-02/DI-11）、Iceberg 输出接线（ADR-0041 现存设计待接线）和其余跨模块租户约束仍待后续实施。

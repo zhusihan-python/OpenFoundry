@@ -476,16 +476,23 @@ database errors / unknown commit outcomes keep their honest 5xx semantics.
 
 `POST /api/v1/webhooks/{source_id}/invoke` executes either this `rest_api`
 source-backed webhook model or the legacy absolute-URL webhook config. The
-handler enforces source ownership/invoke permissions, source `invokable`,
-allowed HTTP methods, egress host allowlists, timeout, max call/input/response
-limits, rate limits, and concurrency limits before returning sanitized
-diagnostics and typed `output_parameters`.
+webhook is resolved **within the caller's tenant domain** (the JWT org, or the
+caller's own NULL-org rows): a webhook outside the caller's tenant answers
+`404` — before any outbound call, history write, or rate-limit consumption —
+so cross-tenant callers (admins and grant holders included) cannot confirm a
+webhook exists. Within the tenant, the handler enforces source
+ownership/invoke permissions (`connections:write` / `webhooks:invoke`), source
+`invokable`, allowed HTTP methods, egress host allowlists, timeout, max
+call/input/response limits, rate limits, and concurrency limits before
+returning sanitized diagnostics and typed `output_parameters`.
 
 Webhook history is persisted when the definition has `history.enabled: true`
 or uses the default history settings. `store_inputs` controls whether request
 inputs are retained; `store_outputs` controls whether parsed
-`output_parameters` are retained. Source owners, admins, or callers with
-webhook read permission can inspect retained entries with:
+`output_parameters` are retained. History reads apply the same tenant-first
+rule; within the tenant, source owners, admins, or callers with
+`connections:read` / `webhooks:read` grants (personal domains stay owner-only)
+can inspect retained entries with:
 
 - `GET /api/v1/webhooks/{source_id}/history`
 - `GET /api/v1/data-connection/sources/{source_id}/webhook-history`
@@ -538,7 +545,36 @@ listener read permission can inspect received records with:
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL connection string. The service fails to start when absent. |
 | `JWT_SECRET` or `OPENFOUNDRY_JWT_SECRET` | JWT signing/validation secret. `OPENFOUNDRY_JWT_SECRET` wins when both are set. The service fails to start when neither is set. |
-| `CREDENTIAL_ENCRYPTION_KEY` | Base64 AES-256-GCM key for credential ciphertext at rest. Dev environments may derive from JWT secret while credential storage is being ported; production should set a dedicated key. |
+| `CREDENTIAL_ENCRYPTION_KEY` | Base64 of exactly 32 random bytes (`openssl rand -base64 32`), the independent AES-256-GCM key for credential ciphertext at rest. See the startup gate below. |
+
+### CREDENTIAL_ENCRYPTION_KEY startup gate
+
+The service resolves its credential-encryption key at startup and **fails closed** unless an
+independent key is configured:
+
+- **Production and every non-dev environment fail closed.** With
+  `OPENFOUNDRY_DEPLOYMENT_ENVIRONMENT` set to `production`/`prod` (the Helm `values-prod.yaml`
+  profile), any other value (including the Helm default `shared` and the `staging` /
+  `sovereign` profiles), or unset entirely, a missing/blank `CREDENTIAL_ENCRYPTION_KEY` is a
+  startup error. `SERVICE_VERSION` (which defaults to `dev`) and the `OPENFOUNDRY_DEV_AUTH`
+  shim are deliberately **not** treated as dev signals.
+- **Explicit local dev/test keeps the legacy fallback.** Only when
+  `OPENFOUNDRY_DEPLOYMENT_ENVIRONMENT` is one of `development`, `dev`, `test`, `testing`, or
+  `local` may a missing key fall back to the legacy JWT-derived key
+  (`sha256("openfoundry/credential-encryption/v1\0" + JWT_SECRET)`). A configured but invalid
+  key (bad base64, wrong length) is still a startup error in every environment.
+- **The key must be independent of `JWT_SECRET`.** A key equal to the raw JWT secret bytes or
+  to the legacy JWT-derived digest is rejected in every environment — moving the same bytes
+  into a new variable name does not make them independent.
+- **Errors are safe to log.** Gate failures name only the variable and the policy reason;
+  they never echo the key material or the JWT secret.
+
+Rotating or replacing the key **does not re-encrypt existing credential ciphertexts**: rows
+encrypted with the old key (including legacy JWT-derived ones) become undecryptable after the
+key changes, and the service never auto-rotates ciphertext on an existing database. Before
+deploying a new independent key, either keep the previous key material available for
+migration or plan a re-entry of stored credentials — do not point a new key at a database
+full of old-key ciphertext expecting transparent decryption.
 
 ## Rust-compatible runtime defaults
 

@@ -2147,10 +2147,13 @@ func TestConnectionWebhookAndIcebergHandlers(t *testing.T) {
 	h.InvokeWebhook(rec, req)
 	require.Equal(t, http.StatusTooManyRequests, rec.Code, rec.Body.String())
 
+	// WP2.1 tenant isolation: a different personal-domain caller is OUTSIDE
+	// the owner's tenant, so the invoke is a 404 before any side effect —
+	// not a 403 that would confirm the webhook exists.
 	req = withRouteParam(authedReq(http.MethodPost, "/webhooks/"+source.String()+"/invoke", `{"inputs":{}}`, uuid.New()), "id", source.String())
 	rec = httptest.NewRecorder()
 	h.InvokeWebhook(rec, req)
-	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 
 	trailObjectTypeID := uuid.New()
 	store.connections[0].ConnectorType = "rest_api"

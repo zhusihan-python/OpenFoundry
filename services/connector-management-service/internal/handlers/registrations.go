@@ -734,7 +734,16 @@ func (h *Handlers) InvokeWebhook(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	c, err := h.Repo.GetConnection(r.Context(), id)
+	if h.Repo == nil {
+		writeRoutePending(w, http.StatusServiceUnavailable, "repository_unavailable", "connection repository is not configured")
+		return
+	}
+	// Tenant scope first: the webhook must live in the caller's tenant domain
+	// (org rows for org callers, own NULL-org rows for personal callers).
+	// Anything outside the domain answers 404 so cross-tenant callers — admins
+	// included — cannot even learn the webhook exists; owner/grant checks then
+	// only widen within the tenant.
+	c, err := h.Repo.GetConnectionForTenant(r.Context(), id, tenantFromClaims(claims))
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "failed to load webhook")
 		return
@@ -863,7 +872,10 @@ func (h *Handlers) ListWebhookHistory(w http.ResponseWriter, r *http.Request) {
 		writeRoutePending(w, http.StatusServiceUnavailable, "repository_unavailable", "connection repository is not configured")
 		return
 	}
-	c, err := h.Repo.GetConnection(r.Context(), id)
+	// Same tenant-first rule as InvokeWebhook: the history of a webhook outside
+	// the caller's tenant domain is a 404, and the owner/grant checks apply
+	// only to in-tenant webhooks.
+	c, err := h.Repo.GetConnectionForTenant(r.Context(), id, tenantFromClaims(claims))
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "failed to load webhook")
 		return

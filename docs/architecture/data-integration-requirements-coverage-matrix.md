@@ -1,14 +1,21 @@
 # 数据连接与集成：本期 12 项需求覆盖矩阵（DI-01..DI-12）
 
-起草 2026-11-16，基线 commit `664165f3`（分支 `codex/dataset-pipeline-file-io`，本次规划调整前工作区干净）。文中源码定位均于 2026-11-16 对当前代码静态复核；本文是**将来验收的标准**，不是完成报告：所有验收条款均未勾选，现有实现只如实分级，不把 README 描述、路由空壳或未被调用的源码算作需求完成。
+起草 2026-11-16，基线 commit `664165f3`（分支 `codex/dataset-pipeline-file-io`，本次规划调整前工作区干净）；同日修订于 `424921bd`（该提交只改文档，源码定位不变）。文中源码定位均于 2026-11-16 对当前代码静态复核；本文是**将来验收的标准**，不是完成报告：所有验收条款均未勾选，现有实现只如实分级，不把 README 描述、路由空壳或未被调用的源码算作需求完成。
+
+**2026-11-17 登记**：S1 工程契约 v1 已冻结（[契约文档](data-integration-s1-dataset-contract.md)，满足 B2 开工门槛）；WP2.1（Webhook 租户隔离）/WP2.2（独立凭据密钥启动门槛）两项安全修复在**当前未提交工作树**完成并通过工程验收（[验收报告](data-integration-s1-security-acceptance.md)，GLM 编制执行 / Codex review）。本文对基线 `424921bd` 的缺口描述保持原状（基线事实）；涉及项已随文标注当前工作树状态。DI-01/DI-02 整项仍未完成，验收条款不因此勾选。
+
+**交付库**：交付库已确定为 OpenFoundry，源码基线为 `424921bd`，无需再询问；按本仓的工程重估已完成（T0：**工程重估与复核完成 2026-11-17**，见「来源」）。路线图的「已有/补齐」和规模按「11-16 主干」粗查（`路线图.md` 第一阶段细点说明），所指仓库未确认；已核对当前仓库代码/依赖，未定位路线图所述对应实现（PipelineDef 定义、DuckDB 引擎接线、`packages/mcp-server`、紫鸟/noon/领星连接器），无法据此识别源规划主干。注意 main（`d7c40cf5`）的 [pipeline-build-service/README.md:43](../../services/pipeline-build-service/README.md) 出现「without DuckDB/DataFusion」字样（说明本仓 runtime 不依赖二者）——不能说相关文本全仓零命中，但它是描述性说明而非实现检出，也不据此认定源主干。路线图的现状、规模和日期在本仓只作参照，不转为承诺（承诺须交付负责人正式确认）；跨仓复用仍须先补源码位置、责任人和接口再定。
 
 ## 来源
 
-- 需求与优先级（主依据，完整 base）：`/Volumes/ExternalSD/projects/palantir-research/knowledge-base/_index/` 下 `裁剪汇总.md`（「数据连接与集成」227-238 行原始 12 项顺序，DI-01..DI-12 与之一一对应）、`裁剪判据.md`（定稿 v4）。
-- 阶段与规模：同目录 `路线图.md`——阶段 1 九项、阶段 2 血缘一项、阶段 4 SQL 与 S3 API 两项；含第一阶段细点现状粗查表。
-- 官方原文（完整 base，与本仓不同 repo）：`/Volumes/ExternalSD/projects/palantir-research/knowledge-base/docs/foundry/` 下 `dataset-preview/time-travel/en.md`、`dataset-preview/csv-parsing/en.md`、`microsoft-excel/transforms-excel-parser/en.md`、`data-integration/foundry-s3-api/en.md`、`health-checks/checks-reference/en.md`。
+- **版本**：需求库 `palantir-research` 钉住 `c8588e03c089ba248f2d273dd3311d23ec5d8b2b`（2026-11-16 复核时其工作区另有 `README.md` 改动与未跟踪的 `knowledge-base/design/`，均不涉及 `_index/`）。需求点以条目键引用：`裁剪标签.json` 的 `units` 与 `路线图.json` 的 `items` 共用同一键，形如 `data-integration::Building pipelines`，细点形如 `data-integration::Building pipelines>>Pipelines on unstructured data`；DI-12 的键为 `data-integration::page::/foundry/data-integration/foundry-s3-api/`。文中行号只作辅助定位，产品重新导出后可能漂移；规模、依赖和时间窗以 `路线图.json` 的 `items` 为准。
+- 需求与优先级（主依据，完整 base）：`/Volumes/ExternalSD/projects/palantir-research/knowledge-base/_index/` 下 `裁剪汇总.md`（「数据连接与集成」227-238 行原始 12 项顺序，DI-01..DI-12 与之一一对应）、`裁剪标签.json`（标注原始数据）、`裁剪判据.md`（定稿 v4）。
+- 阶段与规模：同目录 `路线图.md` / `路线图.json`——阶段、规模、依赖和时间窗以 `路线图.json` 的 `items` 为准；`路线图.md` 仅作人读说明并含第一阶段细点现状粗查表。当前裁决期限表只能作为按原路线图倒推的目标日期；T0 重估和工作量复核完成前，不转成本仓硬承诺。
+- 官方原文（完整 base，与本仓不同 repo）：`/Volumes/ExternalSD/projects/palantir-research/knowledge-base/docs/foundry/` 下 `dataset-preview/time-travel/en.md`、`dataset-preview/csv-parsing/en.md`、`microsoft-excel/transforms-excel-parser/en.md`、`data-integration/foundry-s3-api/en.md`、`health-checks/checks-reference/en.md`、`maintaining-pipelines/recommended-health-checks/en.md`。
+- 本仓架构决策：调度相关 ADR-0025（自研调度器退役）与 ADR-0037（Accepted，Foundry 式编排，第 23-25 行把 ADR-0025 的替代机制改为 K8s `CronJob`→Kafka 事件，不用 Temporal `ScheduleClient`），见 T8。
 - 本仓证据入口：[business-platform-implementation-plan.md](business-platform-implementation-plan.md)（历史验收章节）；P1 最终验收 [2026-11-13-build-http/summary.md](../../tools/smoke/business-platform-p1/results/2026-11-13-build-http/summary.md)（9 PASS、60 包单测、26 项必需 PG16；更早的 p1-mainline-baseline 是 7/0/1 未覆盖时点，不混用）；P2 最终封存 [FINAL-BRIEF.md](../../tools/smoke/business-platform-p2-6/results/w9/final-seal-attempt1/FINAL-BRIEF.md) 及同目录批准 seal/terminal；P3.1 为计划历史章节 + 仓库内测试（commit `664165f3` 为代码定位；`/private/tmp` 报告为本机临时证据，不视为入仓闭包）。
 - **证据存放与可移交性**：上述 P1/P2 的 `tools/smoke/**/results/` 归档是**本机工作树文件，非 Git 跟踪**（`git ls-files` 无输出，`.gitignore` 第 92 行 `/tools/smoke/**/results/` 命中），fresh clone 不自带，获取位置=本机该路径；源码/测试/fixture/验收工具脚本在 Git 内。历史验收结论仍有效，本矩阵引用时均已注明获取位置；不复制归档、不改 ignore、不将其纳入提交。
+- **T0 重估**：[data-integration-openfoundry-t0-reestimate.md](data-integration-openfoundry-t0-reestimate.md)（2026-11-17 **工程重估与复核完成**：编制 GLM-5.3、工程确认 Codex，12 项实际 review 及算术/范围/依赖复核通过）。12 项按本仓证据的 bottom-up 工程人日区间（已知必做合计 314–555）+替代情景/未知量单列；源路线图任务点/日期仅作参照不换算；估算不构成产品/架构裁决或交付负责人的人日/日期承诺，不替代本矩阵验收标准。
 
 ## 证据分级
 
@@ -25,17 +32,17 @@
 | ID | 需求点（裁剪汇总顺序） | 优先级 | 路线图阶段 | 当前结论 |
 | --- | --- | --- | --- | --- |
 | DI-01 | Core concepts | P0 | 1 | 数据集/构建已验收，定时限于同步链调度；健康检查概念未验收（他组声明待对接）；Views 有元数据接口无 SQL 物化；Iceberg/Media sets 独立后续、Virtual tables/Views 建议后挪，冲突待对齐 |
-| DI-02 | Data Connection | P0 | 1 | 目录/租户/凭据分离与 REST 链已验收；S3/MySQL 源码未接线、PostgreSQL 专用实现未定位（有 JDBC/CDC 线索）、电商三个待盘点、Webhook 有租户缺口且无自动重试 |
-| DI-03 | Building pipelines ★ | P0 | 1 | 管道=代码已定（d769）；轻量执行链已验收但无聚合/窗口/反连接；管道调度仅源码单测；CSV/JSON 推断参数不全 |
+| DI-02 | Data Connection | P0 | 1 | 目录/租户/凭据分离与 REST 链已验收；S3/MySQL 源码未接线、PostgreSQL 专用实现未定位（有 JDBC/CDC 线索）、电商三个待盘点；Webhook 调用缺资源租户校验（跨租户授权缺口，优先修复；**已在未提交工作树修复并工程验收**，见 WP2.1 注记）且无自动重试 |
+| DI-03 | Building pipelines ★ | P0 | 1 | 管道=代码已定（d769）；轻量执行链已验收但无聚合/窗口/反连接；管道调度仅源码单测且机制待 T8；非结构化细点（CSV/JSON 推断）为 P2 |
 | DI-04 | Maintaining pipelines | P1 | 1 | 健康检查仅 4 枚举+形态上报，无真实数据求值；「6 类」与官方 5 类映射待定 |
 | DI-05 | Pipeline Builder Expressions ★ | P1 | 1 | 标量签名目录与求值子集并存且不一致；需清单核对，不做官方 338 全量 |
 | DI-06 | Pipeline Builder Transforms | P1 | 1 | 产品口径 25 项待映射：源码静态核对为 24 静态项+动态 UDF，大量 planned；3 个新建变换执行面均无 |
 | DI-07 | Data Lineage | P1 | 2 | 服务/前端/发布侧写入已有；NodeKind 仅 3 类；nodes/relations 有 PG 表与接线，read-model 默认内存；组织/项目隔离未验收；生产事件接线缺 |
-| DI-08 | Dataset Preview | P1 | 1 | 预览参数仅 limit/offset/format；Time Travel 有 ts/txn 原语未接到预览；CSV 参数固定 |
+| DI-08 | Dataset Preview | P1 | 1 | 预览参数仅 limit/offset/format；Time Travel 有 ts/txn 原语未接到预览；CSV 参数固定（本项负责持久化解析配置）；SQL 相关能力的关闭条件待 T9 |
 | DI-09 | SQL in Foundry | P2 | 4 | FlightSQL 真实现+远程 delegate；本地查询引擎仅 literal SELECT；Dataset 与 Ontology 双侧整项目标未动工验收 |
 | DI-10 | Pipeline Builder ★ | P2 | 1 | 画布与编辑器仍在，readonly 策略有差距；需保留节点查看/真预览 |
-| DI-11 | Microsoft Excel | P2 | 1 | P3.1 普通上传已验收≠管道 Excel Parser；raw workbook 变换待接线/待核实，分批范围待裁 |
-| DI-12 | S3-compatible API | 本期做·优先级未定（路线图暂按 P2） | 4 | 有限检索未定位对外 S3 协议端点（D）；盘点后确定新建范围；不依赖 Iceberg 上线 |
+| DI-11 | Microsoft Excel | P2 | 1 | P3.1 普通上传已验收≠管道 Excel Parser；raw Excel 管道变换在本仓无实现（E），分批范围待裁 |
+| DI-12 | S3-compatible API | 本期做·优先级未定（路线图暂按 P2） | 4 | 本仓无对外 S3 兼容端点（E，`424921bd` 全仓盘点）；需新建；不依赖 Iceberg 上线 |
 
 ★ = 需关注（做法与 Palantir 不同，d769：管道与表达式由研发写代码，画布只读，配置台不做编辑）。
 
@@ -45,12 +52,12 @@
 
 **优先级/阶段**：P0 / 阶段 1（规模 L，路线图排 11-23~11-30，做法「补齐」）。细点 11 项，顺序照官方：Datasets、Streams、Media sets、Branching、Builds、Schedules、Health checks、Iceberg tables、Virtual tables、CDC、Views。
 
-**本期范围**：数据集、构建、定时、健康检查这套概念照官方立；流（Streams）后续。**范围冲突按细点区分（待对齐 T1）**：Media sets 与 Iceberg tables 各有独立需求点标「后续」；Virtual tables 与 Views 无独立后续条目，是路线图第一阶段细点「建议往后挪」；四者与「细点默认跟上级（P0）」的关系需产品/路线图裁决，本矩阵不代决。
+**本期范围**：数据集、构建、定时、健康检查这套概念照官方立；流（Streams）后续。**范围冲突按细点区分（待对齐 T1）**：Media sets 与 Iceberg tables 各有独立需求点标「后续」；Virtual tables 与 Views 无独立后续条目，是路线图第一阶段细点「建议往后挪」；另有 `data-integration::Data Connection>>p:Add virtual tables to a Marketplace product` 标「后续：随虚拟表一起后续」（`裁剪汇总.md:303`），说明产品倾向虚拟表后续，但这条标注挂在 Data Connection 下，不是 Core concepts 细点的例外。按 `裁剪判据.md` 第五节第 2 条，细点例外须写进上级关注点，而 Core concepts 关注点目前只例外了 Streams。因此在源标注统一前，四项形式上仍跟上级（P0），**不得当作已批准延期**；四者的裁决需产品/路线图给出，本矩阵不代决。
 
 **已有实现与证据**：
 - A：Datasets——DVS 数据集/分支/事务/版本模型与租户隔离（P1 最终验收 [summary.md](../../tools/smoke/business-platform-p1/results/2026-11-13-build-http/summary.md)）；发布时版本/文件索引/血缘同事务原子写入 [publish.go:208](../../services/dataset-versioning-service/internal/repo/publish.go)。
 - A：Builds——Build/Job 分库 HTTP 流程与取消/补偿（P1.5，同上 summary 9/9）。
-- A（限定）：Schedules——仅 Connector REST snapshot 同步链的 cron 调度已验收（P2.4，见计划历史章节）；管道自身调度归 DI-03；ADR-0025 明确它不是通用调度框架。
+- A（限定）：Schedules——仅 Connector REST snapshot 同步链的 cron 调度已验收（P2.4，见计划历史章节）；管道自身调度归 DI-03；P2.4 是对 ADR-0025 的限定例外（计划 P2.4 章节），明确不是通用调度框架，平台调度机制见 T8。
 - D（他组声明待对接）：Health checks 概念的数据侧基础「数据停更按店通知」（G-09）只有路线图「已有/理顺」标签，本仓未核对，不作为已验收证据；类型映射见 DI-04。
 - B：Branching——DVS main/feature 分支读写（P1.5 验收含非 main 分支）；数据集分支与全局分支（BR-01..26，开发者工具链）的边界待对齐。
 - B：Views——view/schema 元数据读写与按 ts/txn 取视图已实现（[views_schema_preview.go:116](../../services/dataset-versioning-service/internal/handlers/views_schema_preview.go)、[parity.go:1266](../../services/dataset-versioning-service/internal/repo/parity.go)），DVS README「views 未做」的说法已过期；但 `RefreshDatasetView`（[parity.go:1236](../../services/dataset-versioning-service/internal/repo/parity.go)）目前主要刷新时间戳——有元数据接口不等于 SQL 物化。
@@ -86,42 +93,44 @@
 - C/D：PostgreSQL——专用 adapter 未定位；存在 JDBC 泛型目录（`internal/adapters/jdbc/`）与 Debezium PG CDC 线索（见 DI-01 CDC 证据）。实际缺口=可执行服务端源读取的发布接线，盘点后定复用或新建。
 - C：adapter 接线面——[main.go:106](../../services/connector-management-service/cmd/connector-management-service/main.go) 仅 `MustRegister("kafka", …)`；其余 adapter 源码均未在主服务注册，「源码存在≠可用连接器」。PG16 平台库迁移测试不等于 PostgreSQL 源连接器能力。
 - D：电商三个（紫鸟/noon/领星）——本仓 services/libs/apps/docs 有限检索未定位专用实现，标「待映射/证据核实」，不推定跨仓没有。
-- B：出站 Webhook——[registrations.go:806](../../services/connector-management-service/internal/handlers/registrations.go) 真实 `client.Do`（当前每次调用仅一次请求、无自动重试循环）+ 历史 + 429 限流，单测覆盖（handlers_test.go:2000/2147）；缺口：`:737` 用非租户 `GetConnection`、`:746` 广义 admin 判定——不满足 P1 已验收链的租户标准，未纳入租户验收。
+- B：出站 Webhook——[registrations.go:806](../../services/connector-management-service/internal/handlers/registrations.go) 真实 `client.Do`（当前每次调用仅一次请求、无自动重试循环）+ 历史 + 429 限流，单测覆盖（handlers_test.go:2000/2147，均在 `TestConnectionWebhookAndIcebergHandlers` 内）。**跨租户授权缺口（优先修复）**：`:737` 用非租户 `GetConnection` 按 ID 读取，缺资源租户前置校验；`:746` 的 owner、admin、权限（`connections:write`/`webhooks:invoke`）三条放行路径因此都不受租户约束——别家组织持有上述角色或权限的用户可调用本组织 Webhook，同一用户切换到另一组织后仍可凭 owner 身份调用。调用方须通过 JWT 认证，不是匿名无条件调用。不满足 P1 已验收链的租户标准，未纳入租户验收。**2026-11-17 注记（WP2.1，当前未提交工作树）**：InvokeWebhook/ListWebhookHistory（含两个 URL 别名）已改为 `GetConnectionForTenant` 租户内读取，跨租户统一 404 且经真实 HTTP+PG16 验收证明零出站/零历史副作用，同租户授权语义不变；工程验收见[安全验收报告](data-integration-s1-security-acceptance.md)。
+- B：凭据密钥——[credentials.go:28-42](../../services/connector-management-service/internal/domain/credentials.go)：设置 `CREDENTIAL_ENCRYPTION_KEY` 时用独立 32 字节密钥；未设置时从 JWT secret 派生。当前代码允许派生，不强制独立配置（以上为基线 `424921bd` 状态）。**2026-11-17 注记（WP2.2，当前未提交工作树）**：生产/未知/`shared`/`staging` 等环境已改为缺独立 key 启动即拒（fail-closed，先于数据库连接），仅显式 dev/test 保留兼容 fallback，错误不回显密钥材料；工程验收见[安全验收报告](data-integration-s1-security-acceptance.md)。
 - 后续（不在本期）：agent worker、Listeners 全家、Exports、OIDC。Email listeners 另有知识库注记：已有专属邮箱收单证（F091 故事 4），理顺时先与接入组核现有实现。
 
-**缺口**：S3/PostgreSQL/MySQL 从「源码/线索」到真实源→发布端到端（复用现有 adapter 或补新实现由执行契约确定）；电商三个实现位置映射；Webhook 租户修复及与 Action 副作用的归属；虚拟表假行问题（随连接器补齐一并处理或明确后续）。
+**缺口**：S3/PostgreSQL/MySQL 从「源码/线索」到真实源→发布端到端（复用现有 adapter 或补新实现由执行契约确定）；电商三个实现位置映射（T7，属 T0 跨仓复用判断的一部分）；Webhook 资源租户校验修复（不等 T6 归属裁决；**已完成并工程验收，未提交**——WP2.1）；生产环境强制独立凭据密钥（**已完成并工程验收，未提交**——WP2.2）；虚拟表假行问题（随连接器补齐一并处理或明确后续）。
 
 **前置依赖/协作边界**：出站 Webhook 是「动作类型的副作用」通道，与本体构建 Action types（Side effects 细点 P1）、用例开发 Automate 协作（T6）；连接安全与安全与治理组协作；电商连接器可能涉及桌面端取件（紫鸟），与用例开发组边界待映射。
 
 **验收标准（将来，未勾选）**：
 1. 每个本期连接器（REST/文件/S3/PostgreSQL/MySQL/紫鸟/noon/领星）各有一条真实源→Dataset 发布→下载端到端验收（口径同 REST 现有链：真实字节、行数、hash、租户隔离、失败不发布半成品），矩阵登记证据路径。
 2. 三个电商连接器完成实现位置映射表（在哪个仓/哪个服务/缺口清单），或确认需新建。
-3. 出站 Webhook：修复 `registrations.go:737`/`:746` 租户缺口后有跨组织拒绝的真实 HTTP 验收；超时/失败/历史/限流行为有回归（自动重试如要做，先另定副作用幂等合同）。
-4. 连接器凭据永不进入日志/公开 JSON（沿用 P1.2 已验收口径对新连接器逐个复验）。
+3. 出站 Webhook：`registrations.go:737` 改为按调用方租户读取资源后，三条放行路径各有跨组织拒绝的真实 HTTP 验收（含 owner 切换组织、他组织 admin、他组织持 `connections:write`/`webhooks:invoke`）；超时/失败/历史/限流行为有回归（自动重试如要做，先另定副作用幂等合同）。（该款验收标准已由 WP2.1 工程验收证据满足——见[安全验收报告](data-integration-s1-security-acceptance.md)：29/29 真实 HTTP+PG16 场景含全部所列拒绝路径；条款勾选随 DI-02 整项验收进行。）
+4. 连接器凭据永不进入日志/公开 JSON（沿用 P1.2 已验收口径对新连接器逐个复验）；生产验收门槛：必须配置独立的 `CREDENTIAL_ENCRYPTION_KEY`，不以 JWT secret 派生密钥上线；门控方式实施时定，须有用例证明缺失时被拦下。（门控已由 WP2.2 实施并工程验收：缺失/空白/非法/非 32 字节/等于 JWT 派生值在 prod 及未知环境启动即拒，含先于 DB 连接的运行时顺序用例；见[安全验收报告](data-integration-s1-security-acceptance.md)。）
 5. adapter 注册表与「本期连接器清单」一致：未注册/未完成的 adapter 在目录中不显示为可用类型。
 
 ## DI-03 Building pipelines（管道=研发代码）★
 
 **优先级/阶段**：P0 / 阶段 1（规模 M，12-03~12-04，「补齐」，依赖 DI-01；12 细点）。做法与 Palantir 不同（d769，产品 11-13 定）：管道由研发写成代码、走评审、随版本发布；画布编辑不做。
 
-**本期范围**：功能细点两个——Scheduling（管道定时）与 Pipelines on unstructured data（对 CSV、JSON 文件推断结构；不扩成 PDF/图片 Media sets）。Incremental 后续、Streaming 后续；Pipeline security 官方标签为**后续**（其中移除安全标记类 11-07 判不做：我们没有标记体系）——本期不扩该特性，但**既有租户隔离与鉴权是本模块全部任务的验收底线**，不因「后续」放松；Getting started/Best practices 为研发参考说明文档。
+**本期范围**：功能细点两个，优先级不同——Scheduling（管道定时）跟上级为 **P0**；Pipelines on unstructured data（对 CSV、JSON 文件推断结构；不扩成 PDF/图片 Media sets）单独标 **P2**（`data-integration::Building pipelines>>Pipelines on unstructured data`，`裁剪汇总.md:318`），**不作为 DI-03 的 P0 收尾门槛**。CSV 解析配置由 DI-08 负责持久化，本项消费同一份配置，不另建参数模型；JSON 结构推断（嵌套展开、类型推断）由本项负责。Incremental 后续、Streaming 后续；Pipeline security 官方标签为**后续**（其中移除安全标记类 11-07 判不做：我们没有标记体系）——本期不扩该特性，但**既有租户隔离与鉴权是本模块全部任务的验收底线**，不因「后续」放松；Getting started/Best practices 为研发参考说明文档。
 
 **已有实现与证据**：
 - B：管道 IR——[pipeline_ir.go](../../services/pipeline-build-service/internal/models/pipeline_ir.go)（pipeline_ir.v1，含测试）。
 - A：定义与构建链——JobSpec canonical 定义、DryRun、发布映射、Build/Job 生命周期（P1.5 验收 9/9、26 项 PG）。
 - A：执行——REST→Dataset→FASTER 轻量管道→下载主链验收（P1 最终）；执行体 [lightweight_runtime.go](../../services/pipeline-build-service/internal/handler/lightweight_runtime.go)。
-- B：管道调度——[data_integration.go:199](../../services/pipeline-build-service/internal/handler/data_integration.go) RunDueScheduledPipelines、[repository.go:995](../../services/pipeline-build-service/internal/postgres/repository.go) ListDuePipelines/`:1020` UpdatePipelineNextRunAt、单测 data_integration_test.go:133（cron 重算 next run）。仅源码+单测，未做真实周期验收，不能用 P2.4 同步链的调度验收替代。
+- B：管道调度——[data_integration.go:199](../../services/pipeline-build-service/internal/handler/data_integration.go) RunDueScheduledPipelines、[repository.go:995](../../services/pipeline-build-service/internal/postgres/repository.go) ListDuePipelines/`:1020` `UpdatePipelineNextRun`、单测 data_integration_test.go:133（cron 重算 next run）。仅源码+单测，未做真实周期验收，不能用 P2.4 同步链的调度验收替代。该 run-due 路径在 [nextrun.go:4](../../services/pipeline-build-service/internal/domain/schedule/nextrun.go) 自称 legacy scheduler，入口是 HTTP `POST /pipelines/_scheduler/run-due`（[server.go:162](../../services/pipeline-build-service/internal/server/server.go)），无周期触发方。
+- C：平台调度机制（ADR-0037）——[libs/event-scheduler](../../libs/event-scheduler/doc.go) 与 `cmd/schedules-tick` 有源码与单测：K8s CronJob 每分钟跑一次 tick，`SELECT … FOR UPDATE SKIP LOCKED` 认领到期定义并向 Kafka 发事件。该库当前唯一导入方是其自带 CLI（[cmd/schedules-tick/main.go:28](../../libs/event-scheduler/cmd/schedules-tick/main.go) 导入 event-scheduler、`:74` 实例化 Scheduler；另库内单测），自带 CLI 不等于业务接线。接线差距：无业务服务接入该库；`infra/helm` 下没有 schedules-tick 的 CronJob 部署模板（仅 `of-data-engine/templates/services.yaml` 注释与 `of-platform/README.md` 提及）；pipeline-build-service 无该事件的消费方。机制选择与批准门槛见 T8。
 - C：变换执行面——lightweight_runtime.go:558 stack switch 无聚合/窗口；`:727` runJoin 无反连接（详见 DI-06）。
-- C：CSV/JSON 推断——DVS CSV reader [file_rows.go:367-455](../../services/dataset-versioning-service/internal/handlers/file_rows.go) 固定首行表头/逗号 tab/BOM，非参数全集；管道侧 dataset_input_real_dvs_test.go:16 读的是已导入 NDJSON，不是 raw 文件推断。
-- 待对齐 T2：路线图与源规划按 PipelineDef/TypeScript/DuckDB 描述（「管道写成代码（PipelineDef）已有」），本仓实际是 Go `pipeline_ir.v1` + local-table runtime；不自行换引擎/改语言，「研发写代码→IR」的交付契约需架构组与数据与接入组共同裁定。
+- C：CSV/JSON 推断——DVS CSV reader [file_rows.go:367-455](../../services/dataset-versioning-service/internal/handlers/file_rows.go) 固定首行表头/逗号 tab/BOM，非参数全集（CSV 参数化归 DI-08）；管道侧 dataset_input_real_dvs_test.go:16 读的是已导入 NDJSON，不是 raw 文件推断。
+- 待对齐 T2（以 T0 为前提）：路线图与源规划按 PipelineDef/TypeScript/DuckDB 描述（「管道写成代码（PipelineDef）已有」），本仓实际是 Go `pipeline_ir.v1` + local-table runtime；不自行换引擎/改语言，「研发写代码→IR」的交付契约需架构组与数据与接入组共同裁定。
 
-**缺口**：调度真实周期验收（两次周期+重启+并发+身份+失败保旧）；CSV/JSON 推断参数化（分隔符/表头行/编码/嵌套 JSON 展开策略）；代码交付契约落地。
+**缺口**：调度机制裁定（T8）与真实周期验收（两次周期+重启+并发+身份+失败保旧）；代码交付契约落地（T2）；P2（批次 D，排在 C2 的 CSV 持久化配置交付之后，不阻塞本项 P0 收尾）：JSON 结构推断（嵌套展开策略、类型推断），CSV 通过 DI-08 的持久化配置接入。
 
-**前置依赖/协作边界**：依赖 DI-01 概念对齐；契约裁定涉及架构组；调度长期授权与 ADR-0025 边界（现 P2.4 arm 身份重启/过期需重授权——不等于长期后台身份或统一 Automate）。
+**前置依赖/协作边界**：开工门槛是 DI-01 中 Dataset 的身份、版本、Schema、输入/输出发布和权限契约冻结（**已由 S1 工程契约 v1 满足，2026-11-17 冻结**，见[契约文档](data-integration-s1-dataset-contract.md)；不必等 Core 其余细点）；调度实现另以 T8 为前置；契约裁定涉及架构组；调度长期授权与 ADR-0025/ADR-0037 边界（现 P2.4 arm 身份重启/过期需重授权——不等于长期后台身份或统一 Automate）。
 
 **验收标准（将来，未勾选）**：
-1. 管道调度：**至少两个自动到期周期**触发→Build→产物发布可核对（不以人工重复调用 run-due 冒充周期调度）；重启后按计划恢复；并发触发去重；身份失效可观察；失败不破坏旧产物（口径对照 P2.4/P2.5 已验收语义，但以管道自身链路执行）。
-2. CSV/JSON 推断：多分隔符、无表头/指定表头行、嵌套 JSON 各有明确行为与单测；推断结果进 schema 可查。
+1. 管道调度（按 T8 裁定的机制）：**至少两个自动到期周期**触发→Build→产物发布可核对（不以人工重复调用 run-due 冒充周期调度）；重启后按计划恢复；并发触发去重；身份失效可观察；失败不破坏旧产物（口径对照 P2.4/P2.5 已验收语义，但以管道自身链路执行）。
+2. （P2，批次 D，排在 C2 的 CSV 持久化配置交付之后，不阻塞本项 P0 收尾）结构推断：CSV 使用 DI-08 同一份持久化解析配置，预览与执行结果一致；JSON 嵌套展开与类型推断有明确行为与单测；推断结果进 schema 可查。
 3. 代码交付契约按 T2 裁决落地后：一条「研发代码→评审→IR→Build→产物」示范链路验收。
 4. 不做画布编辑的边界保持：本项验收不新增任何画布编辑功能；租户/鉴权底线全项适用。
 
@@ -129,7 +138,7 @@
 
 **优先级/阶段**：P1 / 阶段 1（规模 S，01-25，「补齐」，依赖 DI-03；5 细点）。PL-26 更正：数据期望与健康检查照官方。
 
-**本期范围**：Recommended health checks 与 Define data expectations 两个功能细点；其余三细点为说明文档。**类型口径待对齐（T3）**：产品 PL-26 写「6 类」，但官方 `health-checks/checks-reference/en.md:16-45` 按 Status/Time/Size/Content/Schema 五类列多种 check，data expectations 是独立定义——不发明 6 个名称，映射表与可观测性组共同确定。
+**本期范围**：Recommended health checks 与 Define data expectations 两个功能细点；其余三细点为说明文档。**类型口径待对齐（T3）**：产品 PL-26 写「6 类」，但官方 `health-checks/checks-reference/en.md:16-45` 按 Status/Time/Size/Content/Schema 五类列多种 check，data expectations 是独立定义；本需求的功能细点原文 `maintaining-pipelines/recommended-health-checks/en.md` 正文推荐 Schedule status、Schedule duration、Schema、Time since last updated、Data freshness、Sync status、Sync freshness 7 种（另提 Job status 作替代），文末汇总表为 5 列（Schema/TSLU/Data Freshness/Sync Freshness/Sync Status），也对不上 6——不发明 6 个名称，映射表与可观测性组共同确定。
 
 **已有实现与证据**：
 - B：[runners.go:297](../../services/pipeline-build-service/internal/domain/runners/runners.go) 健康检查枚举（当前仅 4 个）；`:457-476` evaluateCheck 只依据 `params.expect_passed`，不基于真实数据求值。
@@ -157,7 +166,7 @@
 - B：标量签名目录——`ScalarSignatureFor`（[catalog.go:75](../../libs/pipeline-expression/catalog.go)）。
 - B：求值子集——[eval.go:462](../../libs/pipeline-expression/eval.go) evalCall 的 switch 仅覆盖部分函数（静态核对如 abs/lower/upper 等）；未知函数明确报错（保持该行为）。
 - B：包内已有 haversine/type_inference 等单测（`haversine_test.go`、`type_inference_test.go`）。
-- 关键事实：**签名目录 ≠ 可执行**——`ScalarSignatureFor` 声明的函数未必进了 evalCall 执行 switch；一致性待核对。（group_by/window/pivot 属 TransformSignature，归 DI-06。）
+- 关键事实：**签名目录 ≠ 可执行**——静态比对 `ScalarSignatureFor` 的 case 标签与 `evalCall` 的分支：声明 20 个函数名，其中 14 个有执行分支；ceil、floor、round、to_date、to_timestamp、geom_within 6 个**有签名，但 `evalCall` 无对应执行分支**（round/to_date/to_timestamp/geom_within 亦见于 [type_inference_test.go:327-356](../../libs/pipeline-expression/type_inference_test.go) 的类型推断测试，不是执行面）。这只是静态覆盖数字，不代表 14 个的语义已核对（null、类型、边界未逐项验证）。（group_by/window/pivot 属 TransformSignature，归 DI-06。）
 
 **缺口**：「现有清单」成文化并与代码对表；签名/推导/求值三层一致性核对与补缺。
 
@@ -179,6 +188,7 @@
 - B：静态目录——[transform_catalog.go:111-135](../../services/pipeline-build-service/internal/handler/transform_catalog.go) 24 项（select/drop/rename/cast/filter/formula/derive_column/normalize_columns/normalize_units/sort/join/union/haversine_distance/geo_intersection_join/geo_distance_join/geo_nearest_join/aggregate/explode/json_extract/csv_parse/gpx_parse/python_transform/llm_node/output_mapping），另有动态 PipelineFunction（UDF）挂载。
 - C：planned 标记——formula/derive_column/normalize_units/sort/aggregate/explode/json_extract/csv_parse 等标 `planned`/`catalog_only`（`:313`/`:325`/`:348`/`:362`/`:530`/`:542`/`:553`/`:566`）——目录声明不等于可执行。
 - C：执行面——lightweight_runtime.go:558 无聚合/窗口、`:727` join 族无反连接。
+- C：分布式路径——[distributed_runtime.go](../../services/pipeline-build-service/internal/handler/distributed_runtime.go) 可把节点的 inline SQL 作为 SparkApplication 提交给 `pipeline-runner-spark`；SQL 由 Spark 执行，表达能力取决于 Spark SQL，但 inline 输出格式只支持 `iceberg`（[PipelineRunner.scala](../../services/pipeline-runner-spark/src/main/scala/com/openfoundry/pipeline/PipelineRunner.scala) `runTransform` 对其他格式抛错），未接 Kubernetes 时返回 `spark_client_not_wired`；未经真实集群验收，不算这三项变换的已有实现。
 - C（关联）：`libs/pipeline-expression/catalog.go` 的 group_by/window/pivot 仅有 TransformSignature，无对应执行（归本项处置，不与 DI-05 标量混计）。
 
 **缺口**：25→24+UDF 映射（可并行盘点）；目录-执行一致性；3 个新建变换的执行实现与端到端验收。
@@ -220,7 +230,11 @@
 
 **优先级/阶段**：P1 / 阶段 1（规模 S，01-14~01-15，「补齐」，依赖 DI-01；4 细点：Overview、CSV parsing、Time Travel、FAQ）。
 
-**本期范围**：看数据集内容、按版本回看；CSV 解析。官方 `time-travel/en.md:18` 能力面（单版本 data+schema、range diff、key matching、schema diff、query 随时间移动、bisect、retention）**未被产品裁剪——保留为整体目标，分批验收**，不默认不做。
+**本期范围**：看数据集内容、按版本回看；CSV 解析。官方 `time-travel/en.md:18` 能力面（单版本 data+schema、range diff、key matching、schema diff、query 随时间移动、bisect、retention）**未被产品裁剪——保留为整体目标，分批验收**，不默认不做。官方把 Time Travel 标为 [Beta]（`time-travel/en.md:12`），Beta 本身不构成延期授权。**CSV 解析配置由本项负责持久化**（按数据集版本存，预览与执行共用），DI-03 的结构推断与 DI-11 的文件输入消费同一份配置。
+
+**基础预览与 SQL 扩展分开定义验收和关闭条件（T9 产品裁决）**：
+- 基础预览：单版本 data+schema 回看、range diff、key matching、schema diff、bisect、retention 下的可读边界、CSV 解析。不依赖 SQL，可在本项 P1 窗口关闭。
+- SQL 扩展：「Follow a SQL query through time」（Refine query 后随版本移动，`time-travel/en.md:50-54`）依赖 DI-09（阶段 4，P2）。产品在 T9 中定：随 DI-09 一起关闭，或保留在本项、作为本项的关闭门槛。裁决前本项不宣告整体完成。
 
 **已有实现与证据**：
 - C：预览参数——[views_schema_preview.go:423](../../services/dataset-versioning-service/internal/handlers/views_schema_preview.go) previewQuery 仅 limit/offset/format，无 version/ts 入参。
@@ -229,17 +243,17 @@
 - C：CSV——[file_rows.go:367-455](../../services/dataset-versioning-service/internal/handlers/file_rows.go) 固定首行/逗号 tab/BOM；官方 csv-parsing 细点的参数全集未覆盖。
 - A：版本绑定下载（P1 smoke「版本绑定下载」场景）；A：Excel 导入数据集的 /preview、/schema、/files/rows 三端一致（P3.1 验收）。
 
-**缺口**：预览 API 的 version/ts 参数映射；CSV 参数化；官方 diff/key matching/schema diff/query-over-time/bisect/retention 的分批清单。
+**缺口**：预览 API 的 version/ts 参数映射；CSV 解析配置的持久化与参数化；基础预览能力（diff/key matching/schema diff/bisect/retention）的分批清单；SQL 扩展的归属（T9）。
 
-**前置依赖/协作边界**：query 随版本移动依赖 DI-09 SQL；diff/retention 涉及版本保留策略（架构组）。
+**前置依赖/协作边界**：SQL 扩展依赖 DI-09；diff/retention 涉及版本保留策略（架构组）；CSV 配置的消费方为 DI-03（P2 结构推断）与 DI-11。
 
-**跨期依赖**：批次 C 只交付历史版本 data/schema 回看与 CSV 基础；依赖 SQL 的能力（query 随版本、refine 等）在批次 F 随 DI-09 补验收；**DI-08 的所有保留能力验收完成前不得宣告整项完成**（非永久禁令：保留能力全部验收后即可关闭）；也不把整个 DI-09 提前或形成环。
+**跨期依赖**：批次 C 交付基础预览与 CSV 持久化配置；SQL 扩展按 T9 裁决处理——若随 DI-09 关闭，则本项在基础预览全部验收后即可关闭；若保留在本项，则本项在批次 F 随 DI-09 补验收后才关闭。两种情况都不把整个 DI-09 提前，也不形成环。
 
 **验收标准（将来，未勾选）**：
 1. `?branch=…&version=…/ts=…` 预览与该版本真实字节逐值一致（含 GetViewAt 语义复用）；版本列表点击进入历史预览。
-2. CSV 参数（分隔符/表头行/编码/BOM）可配并有默认值，**预览与执行使用同一份持久化版本配置**；各参数有单测。
-3. 官方能力面落分批表（本批/随 DI-09 批/后续），经产品确认；range diff、key matching、schema diff、bisect、retention 各自定义可判定样本或映射（如 retention=按保留策略的历史版本读取与过期不可读）；已裁剪项写明决定编号。
-4. 随 DI-09 批次：query 随版本移动等 SQL 相关预览有端到端验收。
+2. CSV 参数（分隔符/表头行/编码/BOM）可配并有默认值，配置按数据集版本持久化，**预览、DI-03 推断与正式执行读同一份配置**；各参数有单测。
+3. 基础预览能力落分批表（本批/后续），经产品确认；range diff、key matching、schema diff、bisect、retention 各自定义可判定样本或映射（如 retention=按保留策略的历史版本读取与过期不可读）；已裁剪项写明决定编号。
+4. SQL 扩展：按 T9 裁决，在 DI-09 或本项下有 Refine query 随版本移动的端到端验收；关闭条件写入矩阵。
 
 ## DI-09 SQL in Foundry（SQL 查数据集与本体）
 
@@ -292,7 +306,7 @@
 
 **已有实现与证据**：
 - A：普通上传导入——DVS [xlsximp/parser.go](../../services/dataset-versioning-service/internal/xlsximp/parser.go)（纯标准库有界 OOXML 解析，parser_test.go），多 sheet 中文工作簿真实 excelize 验收（P3.1；验收记录见计划历史章节，commit `664165f3` 为代码定位）。
-- C/D：管道变换——raw workbook 作为管道输入的解析变换**待接线/待核实**：有限检索未定位实际生产入口（dataset_input_real_dvs_test.go:16 读的是已导入 NDJSON，不是 raw workbook）。
+- E：管道变换——raw workbook 作为管道输入的解析变换在本仓无实现（`424921bd` 盘点）。盘点范围与方法：本仓 services/libs/apps 与 infra 部署配置的静态检索（源码入口与目录核对），不外推外部部署或其他仓。盘点事实：管道输入路径读的是已导入 NDJSON（dataset_input_real_dvs_test.go:16），未定位 raw workbook 解析入口；Excel 相关字样在本仓并非零命中——DI-02 的 [adapters/excel/](../../services/connector-management-service/internal/adapters/excel) 源码、DVS xlsximp 及各自测试均有引用，但均不是管道变换实现。
 - C：连接器侧 [adapters/excel/](../../services/connector-management-service/internal/adapters/excel) 源码目录存在、未注册接线（同 DI-02 接线面）。
 
 **缺口**：raw workbook 管道输入链路；多格式/多 sheet/多输出/错误输出的分批范围裁定。
@@ -311,10 +325,10 @@
 **本期范围**：对外 S3 兼容端点。官方 `foundry-s3-api/en.md:18`：协议动作子集、RID/bucket 映射、path/key、branch/committed 事务、自动事务、凭据、multipart。**三件事严格区分**：S3 作为源连接器（DI-02）、内部对象存储/presign、对外 S3 兼容 API（本项）——前两者不能替代本项验收。普通 Dataset 的 S3 API **不依赖 Iceberg 上线**。
 
 **已有实现与证据**：
-- D：有限检索未定位对外 S3 协议处理（List/Head/Get/Put/Delete/SigV4/STS）与验收记录；不推定全仓绝无，批次 F 实施前先全仓盘点，盘点后才能确定需新建的范围。
+- E：本仓无对外 Dataset S3 协议端点（`424921bd` 全仓盘点）。盘点范围与方法：本仓 services/libs/apps 与 infra 部署配置的静态检索（List/Head/Get/Put/Delete/SigV4/STS 等 S3 协议处理与验收记录），未定位对外端点实现；不外推外部部署或其他仓。与相邻能力严格区分：S3 源 adapter（DI-02，源码未接线）、内部对象存储/presign、ADR-0041 Iceberg catalog（现存设计待接线）都不等于、也不能替代本项的对外协议端点。
 - 设计存量：ADR-0041 Iceberg catalog（S3 相邻能力）待接线，不等于本项、也非其前置。
 
-**缺口**：待盘点确认后定（动作子集、认证 profile、RID/bucket 映射、事务语义、multipart）。
+**缺口**：盘点范围内无实现，需新建——动作子集、认证 profile（SigV4/STS）、RID/bucket 映射、branch/committed 事务语义、multipart 的范围决定待 T4。
 
 **前置依赖/协作边界**：优先级待产品定（T4）；认证与安全组（凭据/签名/STS）、edge-gateway 暴露面协作；与 DI-01 Iceberg 细点裁决联动但不互为前置。
 
@@ -325,25 +339,47 @@
 
 ---
 
+## 旧 P4 逐项映射（不以 T1/T2 笼统承接）
+
+旧路线图 P4 相关能力按交付对象拆分；以下是盘点和重估清单，不是已完成声明。每项必须在实施前补齐责任人、真实证据和容量基准：
+
+| P4 能力 | 本仓映射与当前边界 | 主要缺口 | 验收批次与可判定验收（或延期记录） |
+| --- | --- | --- | --- |
+| 对象存储配置与授权 | Dataset/DVS 版本、文件索引、发布事务（P1 A）；本地 backing 存储配置存在；Iceberg catalog 为相邻设计存量（ADR-0041 待接线） | 普通 Dataset、对象存储与 Iceberg 的存储边界、保留/回收语义、对象存储配置模型与按租户授权、容量指标 | C/F，随 DI-01/DI-09/DI-12 裁决；可判定验收=配置化对象存储上真实读写/下载与跨租户拒绝回归 |
+| 分批读写 | DI-03 轻量 runtime 与 DVS **小样本文件读取**已验收（P1 口径）；DatasetRowSource 正式实现是一次 GET+JSON Decode、limit≤1000（[dataset_input_loader.go:18-20](../../services/pipeline-build-service/internal/handler/dataset_input_loader.go)、`:70-126`），不代表连续分批读取；当前轻量输出按整文件编码上传，**正式分批读写尚未验收——不能只做读，也不能把源码存在或一次读取称作分批能力已验收** | 批次格式、谓词/分页、版本绑定、并发读取、分批写与大文件基线 | B2/C/F；可判定验收=固定样本正式分批读+分批写逐值正确、内存有界 |
+| 产物 manifest 提交 | 发布侧文件索引随发布事务原子写入（publish.go:208，P1 A）；Marketplace 数据集产品 manifest 是另一物，**不等于管道产物 manifest** | 输入/输出 manifest 的字段、版本绑定、校验、回滚及跨服务责任未统一 | B2/C；可判定验收=Build 产物 manifest 随发布提交、失败不留半成品 manifest |
+| 固定输入快照 | P1.5 已验收 canonical JobSpec 绑定、输出事务/锁与多输出失败补偿（主计划 196/206/219–220）；**固定版本 runtime 未验收**：dataset_input_runtime_test.go:138–147 现显式拒绝 pinned version（`dataset_input_version_not_supported`），不能称固定输入 runtime 已完成 | 快照身份、不可变性、重试/重启、失败保旧和跨租户授权语义 | B2/C；可判定验收=同一固定输入两次构建产物逐值一致（可重现） |
+| schema/逻辑版本关联 | canonical JobSpec 与定义版本绑定已验收（P1.5）；schema 与逻辑版本的关联合同未冻结 | schema 演进与逻辑版本联动、兼容性规则 | B2 契约冻结/C；可判定验收=版本关联可查、不兼容变更可检出 |
+| 真实数据查询引擎 | DI-09 本地引擎仅 literal SELECT（C）；FlightSQL 服务与远程 delegate 真实（B） | 真实数据集注册、Ontology 侧、权限、配额 | F（DI-09）；可判定验收=标准 FlightSQL 客户端逐值正确（DI-09 验收 1） |
+| 统一多输出发布 | P1.5 多输出失败补偿已验收（第二输出失败/拿锁失败/持久化失败，主计划 206/219–220）；**完整多输出原子发布（全部输出要么可见要么不可见）未验收**；raw Excel 管道变换未接线（E，DI-11） | 输出命名、原子可见性、部分失败/errorDataframe、manifest 关联和配额 | C/D（DI-06/DI-11）；可判定验收=多输出全部成功才可见、任一失败全部不可见 |
+| 容量基准 | 当前仅有小样本/单链路验收（P1/P2/P3.1），不能外推大批量能力 | 文件大小、行数、列数、并发、吞吐、延迟、重启恢复和资源上限的可重复基准 | B2 冻结指标，C/F 实测；**初始基准=首档十万行多文件全量正确**（664165f3 文末：十万行只是初始建议基准，客户规模/延迟目标到手后记录并重新定标；正确性、内存有界、失败不暴露半成品门槛不因重新定标取消） |
+
+上述 P4 项目分别落到 Dataset/连接器/管道/SQL/Excel/S3 的责任边界；主计划 P4 行的历史验收门槛（首档十万行多文件基准全量正确、输入固定可重现、内存有界、失败不暴露半成品、容量记录可复查）继续约束对应行；任何一项若决定后挪，必须记录产品裁剪或延期决定，不以“已有源码”替代验收。
+
 ## 跨期依赖与分阶段验收（防环、防提前宣告）
 
-- DI-08 ↔ DI-09：Time Travel 的 query 随版本移动需要 SQL。批次 C 交付历史 data/schema 回看与 CSV 基础；SQL 相关能力批次 F 随 DI-09 补验收；DI-08 所有保留能力验收完成前不宣告整项完成，也不把整 DI-09 提前。
+- DI-08 ↔ DI-09：Time Travel 的 query 随版本移动需要 SQL。批次 C 交付基础预览与 CSV 持久化配置；SQL 扩展按 T9 两种关闭方案处理——随 DI-09 关闭，则 DI-08 在基础预览全部验收后即可关闭；保留为 DI-08 门槛，则批次 F 随 DI-09 补验收后才关闭。两种情况都不把整个 DI-09 提前、不形成环。
 - DI-07：接口合同批次 B/C 提前对齐；Ontology/App 全链放批次 E。
 - DI-04：先用 build 输入/输出合同落地，不等完整血缘应用链。
 - DI-10：只读收敛以批次 B2 研发代码发布可用为前提；保留节点选择/预览。
+- **批次 B 并行门槛**：B2 先冻结 Dataset 身份、版本、Schema、输入/输出发布和权限契约——**已由 S1 工程契约 v1 满足（2026-11-17 冻结）**；B2 不等待 DI-01 的全部 Core 细点完成。Webhook 授权修复与安全门槛已于 2026-11-17 完成并通过工程验收（WP2.1/2.2，未提交工作树，见[安全验收报告](data-integration-s1-security-acceptance.md)）；连接器补差仍待做；T8 只阻塞 B2 的管道调度实现，不阻塞无关连接器或安全修复。
+- **旧 P4 映射**：旧 P4 不笼统归入 T1/T2；逐项映射到对象存储配置与授权、分批读写、manifest 提交、固定输入快照、schema/逻辑版本关联、真实数据查询引擎、统一多输出发布和容量基准，并为每项指定当前证据、缺口、责任人和后续验收批次（见「旧 P4 逐项映射」表）。
 - 以上均为分阶段验收，整体目标不变、不隐式删减。
 
-## 待对齐项（不擅自决策；均只阻塞各自受影响工作，不构成批次 B 的整体前置）
+## 待对齐项（不擅自决策；T0 重估完成是批次 B 正式业务实现与正式排期的前置，T1–T9 仍只阻塞各自受影响工作、不构成批次 B 的整体前置）
 
 | # | 事项 | Owner | 影响需求 | 未决期间可推进 |
 | --- | --- | --- | --- | --- |
-| T1 | Core 细点继承冲突：Media sets/Iceberg 有独立「后续」条目；Virtual tables/Views 无独立条目、属路线图「建议后挪」——与「细点默认跟上级 P0」的关系需裁决 | 产品 + 路线图（数据与接入组复核） | DI-01、DI-12 | Datasets/Builds/Schedules/Branching/CDC 细节、Views 元数据现状核对 |
+| T0 | 交付库重估（交付库已定为 OpenFoundry@`424921bd`）：**工程重估与复核完成（2026-11-17）**——[T0 重估报告](data-integration-openfoundry-t0-reestimate.md)按本仓已有证据、缺口、规模、依赖和排期假设完成 12 项复核（bottom-up 工作包，已知必做合计 314–555 工程人日，替代情景/未知量单列；跨仓复用仍须补源码位置/责任人/接口，不因未找到实现默认分仓交付）。编制 GLM-5.3、工程确认 Codex（12 项实际 review 及算术/范围/依赖复核通过；用户已明确委托）。原「负责人确认记录」如实细化为：用户授权编制与委托 review、GLM 编制、Codex 逐项工程确认记录均已形成；Allen（源路线图负责人）尚未逐项确认人日/日期——属正式跨组/日期承诺另行确认，不伪写批准。完成的是工程估算，非产品/架构裁决；源路线图估算/日期不转成本仓承诺 | 产品 + 项目负责人 + 数据与接入组 | DI-01..DI-12、全部批次规模/日期 | T0 工程门槛已满足；后续实施仍受 T1–T9 各自约束（各只约束其受影响实施）；路线图日期只作目标日期；T0 完成后用户已另行授权推进 S1 契约冻结与 WP2.1/2.2 安全修复（均已工程验收，见报告）；业务实现仍按批次计划另行授权，不因上述完成自动开启 |
+| T1 | Core 细点继承冲突：Media sets/Iceberg 有独立「后续」条目；Virtual tables/Views 无独立条目、属路线图「建议后挪」；Marketplace 产品中的虚拟表另有「随虚拟表一起后续」注记——与「细点默认跟上级 P0」的关系需裁决 | 产品 + 路线图（数据与接入组复核） | DI-01、DI-02、DI-12 | Datasets/Builds/Schedules/Branching/CDC 细节、Views 元数据现状核对；先做 Marketplace 注记与虚拟表来源映射 |
 | T2 | 管道代码交付契约：源规划 PipelineDef/TS/DuckDB vs 本仓 Go pipeline_ir.v1/local-table（不自行换引擎/改语言） | 架构组 + 数据与接入组 | DI-03/05/06/11 | 调度真实周期验收、表达式/变换执行核对（不依赖契约终稿） |
-| T3 | 健康检查类型映射：PL-26「6 类」vs 官方 checks-reference 五类 + expectations 独立 | 数据与接入组 × 可观测性组 | DI-04、DI-01 | input/pre+output/post 合同、求值框架 |
+| T3 | 健康检查类型映射：PL-26「6 类」vs 官方 checks-reference 五类 + expectations 独立；同时核对 `maintaining-pipelines/recommended-health-checks/en.md` 的推荐项与汇总表 | 数据与接入组 × 可观测性组 | DI-04、DI-01 | input/pre+output/post 合同、求值框架 |
 | T4 | S3 兼容 API 优先级（路线图暂按 P2） | 产品 | DI-12 | 动作子集与认证 profile 草案、全仓盘点 |
 | T5 | Excel Parser 分批范围（格式集/多 sheet/多输出/错误隔离等未裁剪） | 产品（数据与接入组起草） | DI-11 | raw workbook 管道输入链路 |
-| T6 | 出站 Webhook 归属（Data Connection 细点 vs Action 副作用）与租户修法 | 数据与接入组 × 本体构建/用例开发 | DI-02 | registrations.go:737/:746 租户修复 |
+| T6 | 出站 Webhook 归属（Data Connection 细点 vs Action 副作用）与租户修法 | 数据与接入组 × 本体构建/用例开发 | DI-02 | registrations.go:737/:746 租户修复（**已完成并工程验收，未提交**——WP2.1；T6 归属裁决本身仍待决） |
 | T7 | 电商连接器（紫鸟/noon/领星）实现位置映射 | 数据与接入组（Allen） | DI-02 | 通用连接器补差不依赖此项 |
+| T8 | 管道调度机制选择与接线差距：以现行 Accepted ADR-0037 的 K8s CronJob→Kafka 事件为**优先基线**，先核其接线差距（业务服务接入、CronJob 部署模板、pipeline 事件消费方）；其他已批准平台机制按适用范围评估。若要独立补齐 legacy run-due 触发链而偏离 ADR-0037，须先获限定例外或替代 ADR（范围/退出/迁移），不能把 legacy 当不需要批准的平级实现选项（对照：P2.4 当年即以限定例外方式偏离 ADR-0025）；重新引入 Temporal 同样须另获架构决策。候选可比较，但优先级与批准门槛如上——机制未选定、接线未验收 | 架构组 + 数据与接入组 + 平台运行时 | DI-01、DI-03 | 先盘点 `libs/event-scheduler`/`schedules-tick`、CronJob 模板、Kafka 事件合同和 pipeline consumer；T8 只阻塞 B2 调度实现，不阻塞连接器或安全修复 |
+| T9 | DI-08 基础预览与 SQL 扩展的产品关闭条件：基础预览可在 P1 关闭；Follow a SQL query through time 要么随 DI-09 关闭，要么保留为 DI-08 关闭门槛；Time Travel 的 Beta 标记不构成延期授权 | 产品 + 数据与接入组 | DI-08、DI-09 | 基础预览、CSV 持久化配置和非 SQL 验收可继续；DI-09 SQL 主链不提前
 
 ## 跨模块协作边界
 

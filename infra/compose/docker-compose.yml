@@ -1,3 +1,8 @@
+# DEVELOPMENT compose (local bring-up). It intentionally pins development-only
+# defaults (e.g. OPENFOUNDRY_DEPLOYMENT_ENVIRONMENT=development for the
+# connector credential-key gate) and synthetic dev secrets — production runs
+# through the Helm charts under infra/helm, never through this file.
+
 x-common: &common
   restart: unless-stopped
   logging:
@@ -690,6 +695,18 @@ services:
       PORT: 50088
       DATABASE_URL: postgres://openfoundry:openfoundry@postgres:5432/openfoundry_data_connector
       JWT_SECRET: ${OPENFOUNDRY_JWT_SECRET:-openfoundry-dev-secret}
+      # WP2.2 credential-key gate: this is the DEVELOPMENT compose, so it pins
+      # the canonical deployment-environment signal to `development`, which
+      # keeps the connector's legacy JWT-derived credential-key fallback.
+      # Override OPENFOUNDRY_DEPLOYMENT_ENVIRONMENT (e.g. `production`) in the
+      # shell/.env to exercise the fail-closed gate locally — this default
+      # never weakens the service's production/unknown/shared/staging gate.
+      # CREDENTIAL_ENCRYPTION_KEY is a pure passthrough: unset stays empty
+      # (dev fallback applies); setting a base64 32-byte key makes it
+      # independent. Note: the legacy ENVIRONMENT=development entry in
+      # .env.example is NOT the canonical signal and does not reach containers.
+      OPENFOUNDRY_DEPLOYMENT_ENVIRONMENT: ${OPENFOUNDRY_DEPLOYMENT_ENVIRONMENT:-development}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
       # S8 / ADR-0030: data-asset-catalog-service merged → dataset-versioning-service.
       DATASET_SERVICE_URL: http://dataset-versioning-service:50078
       # S8 / ADR-0030: pipeline-authoring-service merged → pipeline-build-service.
