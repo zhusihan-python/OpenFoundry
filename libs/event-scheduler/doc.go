@@ -42,4 +42,21 @@
 // the Kafka publish fails, the surrounding transaction rolls back
 // and the row remains "due", so the next tick will retry it; we
 // never silently drop fires.
+//
+// # Outbox dispatch mode (T8 decision, WP3.2)
+//
+// [OutboxScheduler.TickOutbox] is the scheduling-mode counterpart for
+// rows with dispatch_mode='pipeline_outbox_v1'. Instead of publishing
+// directly, one Postgres transaction per opportunity writes the
+// permanent scheduling.dispatch_audit record, enqueues the
+// ADR-0038 envelope through the transactional outbox (libs/outbox:
+// INSERT+DELETE in the same transaction, relayed to Kafka by the
+// Debezium CDC wiring), and advances next_run_at. Registry
+// fingerprints are verified before any claim; permanently bad
+// definitions are quarantined in-transaction (enabled=false +
+// quarantined_at/quarantine_reason) so they cannot starve other due
+// rows. The two claim queries are disjoint (IS DISTINCT FROM vs =),
+// so the legacy CLI and the outbox CLI may coexist during rollover
+// without double-firing. See outbox_scheduler.go and the T8 decision
+// record for the full contract.
 package eventscheduler

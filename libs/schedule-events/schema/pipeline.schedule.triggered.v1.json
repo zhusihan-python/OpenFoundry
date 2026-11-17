@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pipeline.schedule.triggered.v1",
+  "title": "Pipeline schedule trigger event (ADR-0037/0038, T8 decision §2)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "event_type",
+    "aggregate_id",
+    "aggregate_type",
+    "occurred_at",
+    "correlation_id",
+    "causation_id",
+    "payload"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "pipeline.schedule.triggered.v1" },
+    "aggregate_id": { "type": "string", "pattern": "^(org|personal):[0-9a-fA-F-]{36}/.+$" },
+    "aggregate_type": { "const": "pipeline_schedule" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "causation_id": { "type": "string", "minLength": 1 },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant_kind",
+        "tenant_id",
+        "schedule_key",
+        "definition_revision",
+        "scheduled_for",
+        "pipeline_rid",
+        "build_branch",
+        "grant_ref",
+        "grant_generation"
+      ],
+      "properties": {
+        "tenant_kind": { "enum": ["org", "personal"] },
+        "tenant_id": { "type": "string", "format": "uuid" },
+        "schedule_key": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9._~:-]+$" },
+        "definition_revision": { "type": "integer", "minimum": 1 },
+        "scheduled_for": { "type": "string", "format": "date-time" },
+        "pipeline_rid": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "build_branch": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "grant_ref": { "type": "string", "format": "uuid" },
+        "grant_generation": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

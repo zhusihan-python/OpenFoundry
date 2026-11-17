@@ -50,6 +50,13 @@ func (s *Scheduler) Pool() *pgxpool.Pool { return s.pg }
 // Tick runs one tick: claim every due, enabled schedule, publish its
 // payload, advance its next_run_at, and stamp last_run_at.
 //
+// Direct mode only: rows with dispatch_mode='pipeline_outbox_v1' are
+// excluded (T8 decision §3 double-dispatch rule) — they belong to
+// [OutboxScheduler.TickOutbox]. Requires the scheduling-mode columns
+// (services/pipeline-build-service migration 20261117100000, or this
+// library's 0002); an unmigrated database fails closed with
+// ErrSchemaMissing instead of double-firing.
+//
 // Returns the number of schedules that successfully fired. A row
 // whose Kafka publish or cron-recompute fails causes the whole tick
 // to abort with the corresponding [SchedulerError] so the CronJob
@@ -71,6 +78,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) (int, error) {
 			        payload_template, next_run_at, last_run_at
 			   FROM schedules.definitions
 			  WHERE enabled AND next_run_at <= $1
+			    AND dispatch_mode IS DISTINCT FROM 'pipeline_outbox_v1'
 			  ORDER BY next_run_at
 			  LIMIT 1
 			  FOR UPDATE SKIP LOCKED`,
@@ -99,7 +107,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) (int, error) {
 		}
 		if err != nil {
 			_ = tx.Rollback(ctx)
-			return fired, &SchedulerError{Kind: ErrDB, Cause: err}
+			return fired, classifyPgSchemaError(err)
 		}
 
 		// The instant for which we are firing — record both in
