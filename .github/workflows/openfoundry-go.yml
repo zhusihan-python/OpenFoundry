@@ -99,7 +99,7 @@ jobs:
       - uses: bufbuild/buf-setup-action@v1
         with:
           version: 1.47.2
-      - run: buf lint
+      - run: buf lint proto
       - run: buf generate
       - name: ensure no drift between checked-in & generated proto
         run: |
