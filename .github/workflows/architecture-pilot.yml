@@ -1,5 +1,6 @@
 name: Dataset architecture boundaries
 on:
+  workflow_call:
   pull_request:
     paths: ['services/dataset-versioning-service/**', 'tools/architecture-check/**', '.github/workflows/architecture-pilot.yml']
   push:
@@ -12,8 +13,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - run: go test ./tools/architecture-check
       - run: go run ./tools/architecture-check
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          go version
