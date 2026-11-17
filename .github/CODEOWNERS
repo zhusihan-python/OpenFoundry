@@ -4,214 +4,218 @@
 # area of the monorepo. The last matching pattern wins, so put more specific
 # rules below the generic ones.
 #
-# All entries below use placeholder GitHub team handles under the
-# `@open-foundry` organisation. Replace them with the real team handles once
-# the corresponding GitHub teams are created. Until then, GitHub will fall
-# back to the `@open-foundry/maintainers` catch-all.
+# Routes to the verified repository owner until real team assignments exist.
+# Every entry is rewritten, not only the catch-all: GitHub assigns no code
+# owner for a nonexistent team, and the last matching pattern wins without
+# falling back, so leftover @open-foundry/* entries would silently unroute
+# their paths. CODEOWNERS is routing only: required approval must also be
+# configured in repository rules. Authors cannot supply their own required
+# approval. Replace entries with actual collaborators as responsibility is
+# delegated.
 #
 # Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Default owners (catch-all)
 # ─────────────────────────────────────────────────────────────────────────────
-*                                               @open-foundry/maintainers
+*                                               @zhusihan-python
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Repository governance & top-level files
 # ─────────────────────────────────────────────────────────────────────────────
-/README.md                                      @open-foundry/maintainers
-/ARCHITECTURE.md                                @open-foundry/architecture-council
-/CONTRIBUTING.md                                @open-foundry/maintainers
-/SECURITY.md                                    @open-foundry/security-team
-/CHANGELOG.md                                   @open-foundry/maintainers
-/LICENSE                                        @open-foundry/maintainers
-/ROADMAP.md                                     @open-foundry/maintainers
-/go.mod                                         @open-foundry/architecture-council @open-foundry/platform-runtime
-/go.sum                                         @open-foundry/platform-runtime
-/Makefile                                       @open-foundry/platform-runtime
-/.golangci.yml                                  @open-foundry/architecture-council @open-foundry/platform-runtime
-/package.json                                   @open-foundry/frontend-team
-/pnpm-workspace.yaml                            @open-foundry/frontend-team
-/pnpm-lock.yaml                                 @open-foundry/frontend-team
-/justfile                                       @open-foundry/platform-runtime
+/README.md                                      @zhusihan-python
+/ARCHITECTURE.md                                @zhusihan-python
+/CONTRIBUTING.md                                @zhusihan-python
+/SECURITY.md                                    @zhusihan-python
+/CHANGELOG.md                                   @zhusihan-python
+/LICENSE                                        @zhusihan-python
+/ROADMAP.md                                     @zhusihan-python
+/go.mod                                         @zhusihan-python
+/go.sum                                         @zhusihan-python
+/Makefile                                       @zhusihan-python
+/.golangci.yml                                  @zhusihan-python
+/package.json                                   @zhusihan-python
+/pnpm-workspace.yaml                            @zhusihan-python
+/pnpm-lock.yaml                                 @zhusihan-python
+/justfile                                       @zhusihan-python
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GitHub configuration & CI
 # ─────────────────────────────────────────────────────────────────────────────
-/.github/                                       @open-foundry/maintainers
-/.github/CODEOWNERS                             @open-foundry/maintainers
-/.github/workflows/                             @open-foundry/platform-runtime
-/.github/workflows/security-audit.yml           @open-foundry/security-team
-/.github/workflows/proto-check.yml              @open-foundry/architecture-council
-/.github/dependabot.yml                         @open-foundry/security-team
-/.github/ISSUE_TEMPLATE/                        @open-foundry/maintainers
+/.github/                                       @zhusihan-python
+/.github/CODEOWNERS                             @zhusihan-python
+/.github/workflows/                             @zhusihan-python
+/.github/workflows/security-audit.yml           @zhusihan-python
+/.github/workflows/proto-check.yml              @zhusihan-python
+/.github/dependabot.yml                         @zhusihan-python
+/.github/ISSUE_TEMPLATE/                        @zhusihan-python
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared libraries (libs/)
 # ─────────────────────────────────────────────────────────────────────────────
-/libs/                                          @open-foundry/architecture-council
-/libs/core-models/                              @open-foundry/architecture-council
-/libs/auth-middleware/                          @open-foundry/security-team
-/libs/audit-trail/                              @open-foundry/security-team
-/libs/event-bus-control/                        @open-foundry/platform-runtime
-/libs/event-bus-data/                           @open-foundry/platform-runtime
-/libs/storage-abstraction/                      @open-foundry/data-platform
-/libs/query-engine/                             @open-foundry/data-platform
-/libs/vector-store/                             @open-foundry/ai-platform
-/libs/ml-kernel-go/                             @open-foundry/ai-platform
-/libs/ai-kernel-go/                             @open-foundry/ai-platform
-/libs/ontology-kernel/                          @open-foundry/ontology-team
-/libs/geospatial-core/                          @open-foundry/analytics-team
-/libs/plugin-sdk/                               @open-foundry/developer-platform
-/libs/testing/                                  @open-foundry/platform-runtime
+/libs/                                          @zhusihan-python
+/libs/core-models/                              @zhusihan-python
+/libs/auth-middleware/                          @zhusihan-python
+/libs/audit-trail/                              @zhusihan-python
+/libs/event-bus-control/                        @zhusihan-python
+/libs/event-bus-data/                           @zhusihan-python
+/libs/storage-abstraction/                      @zhusihan-python
+/libs/query-engine/                             @zhusihan-python
+/libs/vector-store/                             @zhusihan-python
+/libs/ml-kernel-go/                             @zhusihan-python
+/libs/ai-kernel-go/                             @zhusihan-python
+/libs/ontology-kernel/                          @zhusihan-python
+/libs/geospatial-core/                          @zhusihan-python
+/libs/plugin-sdk/                               @zhusihan-python
+/libs/testing/                                  @zhusihan-python
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Protobuf contracts (proto/)
 # Changes here are public API; require architecture-council sign-off.
 # ─────────────────────────────────────────────────────────────────────────────
-/proto/                                         @open-foundry/architecture-council
-/proto/buf.yaml                                 @open-foundry/architecture-council
-/proto/buf.gen.yaml                             @open-foundry/architecture-council
-/proto/auth/                                    @open-foundry/security-team @open-foundry/architecture-council
-/proto/audit/                                   @open-foundry/security-team @open-foundry/architecture-council
-/proto/ontology/                                @open-foundry/ontology-team @open-foundry/architecture-council
-/proto/ai/                                      @open-foundry/ai-platform @open-foundry/architecture-council
-/proto/ml/                                      @open-foundry/ai-platform @open-foundry/architecture-council
-/proto/dataset/                                 @open-foundry/data-platform @open-foundry/architecture-council
-/proto/data_integration/                        @open-foundry/data-platform @open-foundry/architecture-council
-/proto/pipeline/                                @open-foundry/data-platform @open-foundry/architecture-council
-/proto/query/                                   @open-foundry/data-platform @open-foundry/architecture-council
-/proto/streaming/                               @open-foundry/platform-runtime @open-foundry/architecture-council
-/proto/workflow/                                @open-foundry/workflow-team @open-foundry/architecture-council
-/proto/notification/                            @open-foundry/workflow-team @open-foundry/architecture-council
-/proto/notebook/                                @open-foundry/ai-platform @open-foundry/architecture-council
-/proto/report/                                  @open-foundry/analytics-team @open-foundry/architecture-council
-/proto/geospatial/                              @open-foundry/analytics-team @open-foundry/architecture-council
-/proto/nexus/                                   @open-foundry/analytics-team @open-foundry/architecture-council
-/proto/fusion/                                  @open-foundry/analytics-team @open-foundry/architecture-council
-/proto/marketplace/                             @open-foundry/developer-platform @open-foundry/architecture-council
-/proto/code_repo/                               @open-foundry/developer-platform @open-foundry/architecture-council
-/proto/app_builder/                             @open-foundry/developer-platform @open-foundry/architecture-council
-/proto/common/                                  @open-foundry/architecture-council
+/proto/                                         @zhusihan-python
+/proto/buf.yaml                                 @zhusihan-python
+/proto/buf.gen.yaml                             @zhusihan-python
+/proto/auth/                                    @zhusihan-python
+/proto/audit/                                   @zhusihan-python
+/proto/ontology/                                @zhusihan-python
+/proto/ai/                                      @zhusihan-python
+/proto/ml/                                      @zhusihan-python
+/proto/dataset/                                 @zhusihan-python
+/proto/data_integration/                        @zhusihan-python
+/proto/pipeline/                                @zhusihan-python
+/proto/query/                                   @zhusihan-python
+/proto/streaming/                               @zhusihan-python
+/proto/workflow/                                @zhusihan-python
+/proto/notification/                            @zhusihan-python
+/proto/notebook/                                @zhusihan-python
+/proto/report/                                  @zhusihan-python
+/proto/geospatial/                              @zhusihan-python
+/proto/nexus/                                   @zhusihan-python
+/proto/fusion/                                  @zhusihan-python
+/proto/marketplace/                             @zhusihan-python
+/proto/code_repo/                               @zhusihan-python
+/proto/app_builder/                             @zhusihan-python
+/proto/common/                                  @zhusihan-python
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SDKs (sdks/)
 # ─────────────────────────────────────────────────────────────────────────────
-/sdks/                                          @open-foundry/developer-platform
-/sdks/python/                                   @open-foundry/developer-platform
-/sdks/typescript/                               @open-foundry/developer-platform @open-foundry/frontend-team
-/sdks/java/                                     @open-foundry/developer-platform
+/sdks/                                          @zhusihan-python
+/sdks/python/                                   @zhusihan-python
+/sdks/typescript/                               @zhusihan-python
+/sdks/java/                                     @zhusihan-python
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Frontend (apps/)
 # ─────────────────────────────────────────────────────────────────────────────
-/apps/                                          @open-foundry/frontend-team
-/apps/web/                                      @open-foundry/frontend-team
+/apps/                                          @zhusihan-python
+/apps/web/                                      @zhusihan-python
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Infrastructure (infra/)
 # ─────────────────────────────────────────────────────────────────────────────
-/infra/                                         @open-foundry/platform-runtime
-/compose.yaml                                   @open-foundry/platform-runtime
-/infra/compose/                                 @open-foundry/platform-runtime
-/infra/compose/docker-compose.dev.yml           @open-foundry/platform-runtime
-/infra/compose/docker-compose.yml               @open-foundry/platform-runtime
-/infra/compose/local/nginx/                     @open-foundry/platform-runtime
-/infra/compose/local/postgres-init/             @open-foundry/data-platform
-/infra/helm/                                    @open-foundry/platform-runtime
-/infra/helm/infra/observability/                @open-foundry/observability-team @open-foundry/platform-runtime
-/infra/observability/                           @open-foundry/observability-team @open-foundry/platform-runtime
-/infra/terraform/                               @open-foundry/platform-runtime @open-foundry/security-team
-/infra/runbooks/                                @open-foundry/observability-team @open-foundry/platform-runtime
-/infra/scripts/                                 @open-foundry/platform-runtime
+/infra/                                         @zhusihan-python
+/compose.yaml                                   @zhusihan-python
+/infra/compose/                                 @zhusihan-python
+/infra/compose/docker-compose.dev.yml           @zhusihan-python
+/infra/compose/docker-compose.yml               @zhusihan-python
+/infra/compose/local/nginx/                     @zhusihan-python
+/infra/compose/local/postgres-init/             @zhusihan-python
+/infra/helm/                                    @zhusihan-python
+/infra/helm/infra/observability/                @zhusihan-python
+/infra/observability/                           @zhusihan-python
+/infra/terraform/                               @zhusihan-python
+/infra/runbooks/                                @zhusihan-python
+/infra/scripts/                                 @zhusihan-python
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Documentation (docs/)
 # ─────────────────────────────────────────────────────────────────────────────
-/docs/                                          @open-foundry/docs-team
-/docs/architecture/                             @open-foundry/architecture-council @open-foundry/docs-team
-/docs/architecture-center/                      @open-foundry/architecture-council @open-foundry/docs-team
-/docs/security-governance/                      @open-foundry/security-team @open-foundry/docs-team
-/docs/observability/                            @open-foundry/observability-team @open-foundry/docs-team
-/docs/ai-platform/                              @open-foundry/ai-platform @open-foundry/docs-team
-/docs/ml-*                                      @open-foundry/ai-platform @open-foundry/docs-team
-/docs/ontology-building/                        @open-foundry/ontology-team @open-foundry/docs-team
-/docs/data-connectivity/                        @open-foundry/data-platform @open-foundry/docs-team
-/docs/analytics/                                @open-foundry/analytics-team @open-foundry/docs-team
-/docs/operations/                               @open-foundry/platform-runtime @open-foundry/docs-team
-/docs/developer-toolchain/                      @open-foundry/developer-platform @open-foundry/docs-team
-/docs/model-connectivity/                       @open-foundry/ai-platform @open-foundry/docs-team
-/docs/management-enablement/                    @open-foundry/platform-runtime @open-foundry/docs-team
-/docs/product-delivery/                         @open-foundry/developer-platform @open-foundry/docs-team
-/docs/use-case-development/                     @open-foundry/developer-platform @open-foundry/docs-team
-/docs/getting-started/                          @open-foundry/docs-team @open-foundry/developer-platform
+/docs/                                          @zhusihan-python
+/docs/architecture/                             @zhusihan-python
+/docs/architecture-center/                      @zhusihan-python
+/docs/security-governance/                      @zhusihan-python
+/docs/observability/                            @zhusihan-python
+/docs/ai-platform/                              @zhusihan-python
+/docs/ml-*                                      @zhusihan-python
+/docs/ontology-building/                        @zhusihan-python
+/docs/data-connectivity/                        @zhusihan-python
+/docs/analytics/                                @zhusihan-python
+/docs/operations/                               @zhusihan-python
+/docs/developer-toolchain/                      @zhusihan-python
+/docs/model-connectivity/                       @zhusihan-python
+/docs/management-enablement/                    @zhusihan-python
+/docs/product-delivery/                         @zhusihan-python
+/docs/use-case-development/                     @zhusihan-python
+/docs/getting-started/                          @zhusihan-python
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tests, smoke and benchmarks
 # ─────────────────────────────────────────────────────────────────────────────
-/benchmarks/                                    @open-foundry/platform-runtime @open-foundry/architecture-council
-/smoke/                                         @open-foundry/platform-runtime
-/tools/                                         @open-foundry/platform-runtime
+/benchmarks/                                    @zhusihan-python
+/smoke/                                         @zhusihan-python
+/tools/                                         @zhusihan-python
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Services (services/)
 # Routed by capability domain. Cross-cutting changes also need
-# @open-foundry/architecture-council review (handled via the libs/proto rules).
+# @zhusihan-python review (handled via the libs/proto rules).
 # ─────────────────────────────────────────────────────────────────────────────
 
 # --- Ontology ---
-/services/ontology-actions-service/                     @open-foundry/ontology-team @open-foundry/security-team
-/services/ontology-definition-service/                  @open-foundry/ontology-team
-/services/ontology-exploratory-analysis-service/        @open-foundry/ontology-team
-/services/ontology-query-service/                       @open-foundry/ontology-team
-/services/object-database-service/                      @open-foundry/ontology-team @open-foundry/data-platform
-/services/entity-resolution-service/                    @open-foundry/ontology-team
+/services/ontology-actions-service/                     @zhusihan-python
+/services/ontology-definition-service/                  @zhusihan-python
+/services/ontology-exploratory-analysis-service/        @zhusihan-python
+/services/ontology-query-service/                       @zhusihan-python
+/services/object-database-service/                      @zhusihan-python
+/services/entity-resolution-service/                    @zhusihan-python
 
 # --- AI / ML / Models ---
-/services/agent-runtime-service/                        @open-foundry/ai-platform
-/services/ai-evaluation-service/                        @open-foundry/ai-platform
-/services/llm-catalog-service/                          @open-foundry/ai-platform
-/services/model-catalog-service/                        @open-foundry/ai-platform
-/services/model-deployment-service/                     @open-foundry/ai-platform
-/services/notebook-runtime-service/                     @open-foundry/ai-platform
-/services/retrieval-context-service/                    @open-foundry/ai-platform
-/services/document-intelligence-service/                @open-foundry/ai-platform
-/services/knowledge-index-service/                      @open-foundry/ai-platform
+/services/agent-runtime-service/                        @zhusihan-python
+/services/ai-evaluation-service/                        @zhusihan-python
+/services/llm-catalog-service/                          @zhusihan-python
+/services/model-catalog-service/                        @zhusihan-python
+/services/model-deployment-service/                     @zhusihan-python
+/services/notebook-runtime-service/                     @zhusihan-python
+/services/retrieval-context-service/                    @zhusihan-python
+/services/document-intelligence-service/                @zhusihan-python
+/services/knowledge-index-service/                      @zhusihan-python
 
 # --- Data platform / pipelines / datasets ---
-/services/connector-management-service/                 @open-foundry/data-platform
-/services/dataset-versioning-service/                   @open-foundry/data-platform
-/services/global-branch-service/                        @open-foundry/data-platform
-/services/ingestion-replication-service/                @open-foundry/data-platform
-/services/lineage-service/                              @open-foundry/data-platform
-/services/pipeline-build-service/                       @open-foundry/data-platform
-/services/sql-bi-gateway-service/                       @open-foundry/data-platform @open-foundry/analytics-team
-/services/sql-warehousing-service/                      @open-foundry/data-platform
-/services/tabular-analysis-service/                     @open-foundry/data-platform @open-foundry/analytics-team
-/services/analytical-logic-service/                     @open-foundry/data-platform @open-foundry/analytics-team
+/services/connector-management-service/                 @zhusihan-python
+/services/dataset-versioning-service/                   @zhusihan-python
+/services/global-branch-service/                        @zhusihan-python
+/services/ingestion-replication-service/                @zhusihan-python
+/services/lineage-service/                              @zhusihan-python
+/services/pipeline-build-service/                       @zhusihan-python
+/services/sql-bi-gateway-service/                       @zhusihan-python
+/services/sql-warehousing-service/                      @zhusihan-python
+/services/tabular-analysis-service/                     @zhusihan-python
+/services/analytical-logic-service/                     @zhusihan-python
 
 # --- Workflow / automation / notifications ---
-/services/approvals-service/                            @open-foundry/workflow-team
-/services/automation-operations-service/                @open-foundry/workflow-team
-/services/notification-alerting-service/                @open-foundry/workflow-team
-/services/workflow-automation-service/                  @open-foundry/workflow-team
+/services/approvals-service/                            @zhusihan-python
+/services/automation-operations-service/                @zhusihan-python
+/services/notification-alerting-service/                @zhusihan-python
+/services/workflow-automation-service/                  @zhusihan-python
 
 # --- Analytics / reports / geospatial / nexus ---
-/services/federation-product-exchange-service/          @open-foundry/analytics-team @open-foundry/data-platform
-/services/solution-design-service/                      @open-foundry/analytics-team @open-foundry/developer-platform
+/services/federation-product-exchange-service/          @zhusihan-python
+/services/solution-design-service/                      @zhusihan-python
 
 # --- Developer platform / app builder / marketplace / SDKs ---
-/services/application-composition-service/              @open-foundry/developer-platform @open-foundry/frontend-team
-/services/code-repository-review-service/               @open-foundry/developer-platform
-/services/sdk-generation-service/                       @open-foundry/developer-platform @open-foundry/architecture-council
+/services/application-composition-service/              @zhusihan-python
+/services/code-repository-review-service/               @zhusihan-python
+/services/sdk-generation-service/                       @zhusihan-python
 
 # --- Security / governance / identity ---
-/services/audit-compliance-service/                     @open-foundry/security-team
-/services/authorization-policy-service/                 @open-foundry/security-team
-/services/code-security-scanning-service/               @open-foundry/security-team
-/services/identity-federation-service/                  @open-foundry/security-team
-/services/telemetry-governance-service/                 @open-foundry/security-team @open-foundry/observability-team
+/services/audit-compliance-service/                     @zhusihan-python
+/services/authorization-policy-service/                 @zhusihan-python
+/services/code-security-scanning-service/               @zhusihan-python
+/services/identity-federation-service/                  @zhusihan-python
+/services/telemetry-governance-service/                 @zhusihan-python
 
 # --- Platform runtime / observability / tenancy ---
-/services/edge-gateway-service/                         @open-foundry/platform-runtime
-/services/tenancy-organizations-service/                @open-foundry/platform-runtime @open-foundry/security-team
+/services/edge-gateway-service/                         @zhusihan-python
+/services/tenancy-organizations-service/                @zhusihan-python

@@ -1,0 +1,23 @@
+name: Verification policy
+on:
+  workflow_call:
+  pull_request:
+    paths: ['tools/quality/**', 'AGENTS.md', '.github/pull_request_template.md', '.github/CODEOWNERS', 'docs/agent-automation/**', '.github/workflows/verification-policy.yml']
+permissions:
+  contents: read
+jobs:
+  plan-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
+      - run: python3 -m unittest discover -s tools/quality -p 'test_verification_plan.py'
+      - run: python3 -m unittest discover -s tools/quality -p 'test_joint_verification.py'
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          python3 --version

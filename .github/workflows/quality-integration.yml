@@ -1,0 +1,132 @@
+name: Joint quality verification
+
+# The reviewed pilot base covers all five PRs. Updating it requires human review.
+# No path filter: workflow/configuration-only changes must run the full gate.
+on:
+  push:
+    branches: ['codex/quality-integration-*', 'codex/dataset-pipeline-file-io']
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Combined source provenance
+    runs-on: ubuntu-latest
+    outputs:
+      lint_base: ${{ steps.source.outputs.lint_base }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate exact source and reviewed baseline
+        id: source
+        env:
+          LINT_BASE: 8d8543437da7f14b168b3667f1eb784892c629fc
+        run: |
+          python3 tools/quality/joint_verification.py preflight > provenance.json
+          cat provenance.json
+          printf 'lint_base=%s\n' "$LINT_BASE" >> "$GITHUB_OUTPUT"
+          git log --first-parent --format='%H %T %P' -8
+          git --version
+          python3 --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: joint-source-provenance
+          path: provenance.json
+          if-no-files-found: error
+
+  go:
+    needs: preflight
+    uses: ./.github/workflows/openfoundry-go.yml
+    with:
+      lint_base: ${{ needs.preflight.outputs.lint_base }}
+
+  frontend:
+    needs: preflight
+    uses: ./.github/workflows/ci-frontend.yml
+
+  excel:
+    needs: preflight
+    uses: ./.github/workflows/dataset-excel-acceptance.yml
+
+  architecture:
+    needs: preflight
+    uses: ./.github/workflows/architecture-pilot.yml
+
+  policy:
+    needs: preflight
+    uses: ./.github/workflows/verification-policy.yml
+
+  contracts:
+    name: Contract and SDK drift
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: make contracts-check
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          python3 --version
+          go version
+
+  docs:
+    name: Documentation build
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Install locked documentation dependencies
+        working-directory: docs
+        run: npm ci
+      - name: Build documentation (no deployment)
+        working-directory: docs
+        run: npm run docs:build
+      - name: Require unchanged dependency locks
+        run: git diff --exit-code -- docs/package.json docs/package-lock.json
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          python3 --version
+          node --version
+          npm --version
+
+  aggregate:
+    name: All automatic quality gates
+    if: ${{ always() }}
+    needs: [preflight, go, frontend, excel, architecture, policy, contracts, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
+      - name: Require every automatic gate to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 tools/quality/joint_verification.py aggregate
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          python3 --version
