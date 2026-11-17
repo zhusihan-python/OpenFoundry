@@ -2,8 +2,14 @@
 package config
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -54,7 +60,110 @@ type Config struct {
 	// execution and leaves callers with an explicit runner_not_wired error.
 	PythonSidecarBinary         string
 	PythonSidecarTimeoutSeconds uint32
+
+	// T8 scheduling consumer (WP3.2). DEFAULT OFF: the consumer starts
+	// only when SCHEDULER_CONSUMER_ENABLED=true, and then requires the
+	// dedicated SCHEDULER_CREDENTIAL_ENCRYPTION_KEY — base64 that decodes
+	// to exactly 32 bytes (same convention as the Connector service,
+	// e.g. `openssl rand -base64 32`) — and Kafka bootstrap servers.
+	// NO JWT-derived and NO dev fallback exists for this key.
+	Scheduler SchedulerConfig
 }
+
+// SchedulerConfig carries the T8 scheduling consumer knobs (T8 decision
+// §4: default-off, bounded grants, fenced execution). All durations are
+// SECONDS.
+type SchedulerConfig struct {
+	Enabled                 bool
+	KafkaBootstrap          string
+	GroupID                 string
+	// CredentialEncryptionKeyB64 is the raw env value (never logged);
+	// CredentialEncryptionKey is the decoded 32-byte key.
+	CredentialEncryptionKeyB64 string
+	CredentialEncryptionKey     []byte
+	LeaseTTLSeconds            uint32
+	HeartbeatSeconds           uint32
+	MaxEventAttempts           uint32
+	// Kafka client wiring. The PRODUCTION listener (9093) is mTLS
+	// (C provisions a scoped KafkaUser): protocol SSL + the three TLS
+	// file paths. SASL_SSL remains available for optional SASL
+	// deployments. Unknown protocols NEVER downgrade to plaintext;
+	// PLAINTEXT is an explicit dev-only choice.
+	KafkaSecurityProto string   // SSL | SASL_SSL | SASL_PLAINTEXT | PLAINTEXT
+	KafkaSASLUsername  string
+	KafkaSASLPassword  string
+	KafkaSASLMechanism string // SCRAM-SHA-512 (default) | SCRAM-SHA-256 | PLAIN
+	KafkaTLSCAFile     string // SCHEDULER_KAFKA_TLS_CA_FILE
+	KafkaTLSCertFile   string // SCHEDULER_KAFKA_TLS_CERT_FILE (user.crt)
+	KafkaTLSKeyFile    string // SCHEDULER_KAFKA_TLS_KEY_FILE (user.key)
+}
+
+// Validate enforces the enabled-path invariants. Error strings carry no
+// secret material. Mirrors the Connector credential-key discipline
+// (base64→32 bytes; reject the raw JWT secret and the legacy
+// JWT-derived digest) WITHOUT its dev fallback: the scheduler has no
+// JWT-derived key under any environment.
+func (s *SchedulerConfig) Validate(jwtSecret string) error {
+	if !s.Enabled {
+		return nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s.CredentialEncryptionKeyB64))
+	if err != nil {
+		return errors.New("SCHEDULER_CREDENTIAL_ENCRYPTION_KEY must be valid base64 (e.g. openssl rand -base64 32)")
+	}
+	if len(raw) != 32 {
+		return fmt.Errorf("SCHEDULER_CREDENTIAL_ENCRYPTION_KEY must decode to 32 bytes (got %d)", len(raw))
+	}
+	if jwtSecret != "" {
+		if bytes.Equal(raw, []byte(jwtSecret)) {
+			return errors.New("SCHEDULER_CREDENTIAL_ENCRYPTION_KEY must be independent of JWT_SECRET (equals the raw secret)")
+		}
+		legacy := sha256.Sum256([]byte(legacySchedulingKeyDomain + jwtSecret))
+		if bytes.Equal(raw, legacy[:]) {
+			return errors.New("SCHEDULER_CREDENTIAL_ENCRYPTION_KEY must be independent of JWT_SECRET (equals the legacy JWT-derived digest)")
+		}
+	}
+	s.CredentialEncryptionKey = raw
+	if s.KafkaBootstrap == "" {
+		return errors.New("SCHEDULER_CONSUMER_ENABLED requires SCHEDULER_KAFKA_BOOTSTRAP_SERVERS")
+	}
+	if s.HeartbeatSeconds == 0 || s.HeartbeatSeconds >= s.LeaseTTLSeconds {
+		return errors.New("SCHEDULER_HEARTBEAT_INTERVAL (seconds) must be positive and below SCHEDULER_LEASE_TTL (seconds)")
+	}
+	if s.MaxEventAttempts < 1 || s.MaxEventAttempts > 5 {
+		return errors.New("SCHEDULER_MAX_EVENT_ATTEMPTS must be between 1 and 5 (ADR-0038 retry budget)")
+	}
+	switch s.KafkaSecurityProto {
+	case "SSL":
+		// mTLS: all three files required together.
+		if s.KafkaTLSCertFile == "" || s.KafkaTLSKeyFile == "" || s.KafkaTLSCAFile == "" {
+			return errors.New("SCHEDULER_KAFKA_SECURITY_PROTOCOL=SSL requires TLS CA, cert and key files")
+		}
+	case "SASL_SSL":
+		if s.KafkaSASLUsername == "" || s.KafkaSASLPassword == "" {
+			return errors.New("SASL_SSL requires both SASL username and password")
+		}
+	case "SASL_PLAINTEXT":
+		if s.KafkaSASLUsername == "" || s.KafkaSASLPassword == "" {
+			return errors.New("SASL_PLAINTEXT requires both SASL username and password")
+		}
+	case "PLAINTEXT":
+		// explicit dev choice only
+	default:
+		return fmt.Errorf("unknown SCHEDULER_KAFKA_SECURITY_PROTOCOL %q (SSL|SASL_SSL|SASL_PLAINTEXT|PLAINTEXT)", s.KafkaSecurityProto)
+	}
+	switch s.KafkaSASLMechanism {
+	case "SCRAM-SHA-512", "SCRAM-SHA-256", "PLAIN":
+	default:
+		return fmt.Errorf("unknown SCHEDULER_KAFKA_SASL_MECHANISM %q", s.KafkaSASLMechanism)
+	}
+	return nil
+}
+
+// legacySchedulingKeyDomain reproduces the Connector legacy digest
+// domain so the known JWT-derived digest is rejected here too (same
+// separator convention; not imported across internal packages).
+const legacySchedulingKeyDomain = "openfoundry/credential-encryption/v1\x00"
 
 func FromEnv() (*Config, error) {
 	c := &Config{}
@@ -90,7 +199,52 @@ func FromEnv() (*Config, error) {
 	c.FoundryIcebergCatalogBearer = os.Getenv("FOUNDRY_ICEBERG_CATALOG_BEARER")
 	c.PythonSidecarBinary = os.Getenv("PYTHON_SIDECAR_BINARY")
 	c.PythonSidecarTimeoutSeconds = parseUint32(os.Getenv("PYTHON_SIDECAR_TIMEOUT_SECONDS"), 60)
+	c.Scheduler.Enabled = os.Getenv("SCHEDULER_CONSUMER_ENABLED") == "true"
+	c.Scheduler.KafkaBootstrap = strings.TrimSpace(os.Getenv("SCHEDULER_KAFKA_BOOTSTRAP_SERVERS"))
+	c.Scheduler.GroupID = defaultStr(os.Getenv("SCHEDULER_GROUP_ID"), "pipeline-build-service-scheduler")
+	c.Scheduler.CredentialEncryptionKeyB64 = os.Getenv("SCHEDULER_CREDENTIAL_ENCRYPTION_KEY")
+	// Numeric knobs fail CLOSED when the consumer is enabled: a typo'd
+	// value must abort startup, not silently fall back (units: seconds).
+	if err := parseSchedulerUint32(os.Getenv("SCHEDULER_LEASE_TTL"), "SCHEDULER_LEASE_TTL", 120, c.Scheduler.Enabled, &c.Scheduler.LeaseTTLSeconds); err != nil {
+		return nil, err
+	}
+	if err := parseSchedulerUint32(os.Getenv("SCHEDULER_HEARTBEAT_INTERVAL"), "SCHEDULER_HEARTBEAT_INTERVAL", 30, c.Scheduler.Enabled, &c.Scheduler.HeartbeatSeconds); err != nil {
+		return nil, err
+	}
+	if err := parseSchedulerUint32(os.Getenv("SCHEDULER_MAX_EVENT_ATTEMPTS"), "SCHEDULER_MAX_EVENT_ATTEMPTS", 5, c.Scheduler.Enabled, &c.Scheduler.MaxEventAttempts); err != nil {
+		return nil, err
+	}
+	c.Scheduler.KafkaSASLUsername = os.Getenv("SCHEDULER_KAFKA_SASL_USERNAME")
+	c.Scheduler.KafkaSASLPassword = os.Getenv("SCHEDULER_KAFKA_SASL_PASSWORD")
+	c.Scheduler.KafkaSASLMechanism = defaultStr(os.Getenv("SCHEDULER_KAFKA_SASL_MECHANISM"), "SCRAM-SHA-512")
+	c.Scheduler.KafkaSecurityProto = defaultStr(os.Getenv("SCHEDULER_KAFKA_SECURITY_PROTOCOL"), "SSL")
+	c.Scheduler.KafkaTLSCAFile = os.Getenv("SCHEDULER_KAFKA_TLS_CA_FILE")
+	c.Scheduler.KafkaTLSCertFile = os.Getenv("SCHEDULER_KAFKA_TLS_CERT_FILE")
+	c.Scheduler.KafkaTLSKeyFile = os.Getenv("SCHEDULER_KAFKA_TLS_KEY_FILE")
+	if err := c.Scheduler.Validate(c.JWTSecret); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// parseSchedulerUint32 fills dst from env: empty -> fallback; invalid
+// digits -> error when enabled (fail-closed), fallback otherwise.
+func parseSchedulerUint32(v, name string, fallback uint32, enabled bool, dst *uint32) error {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" {
+		*dst = fallback
+		return nil
+	}
+	n, err := strconv.ParseUint(trimmed, 10, 32)
+	if err != nil {
+		if enabled {
+			return fmt.Errorf("%s must be a non-negative integer (seconds), got %q", name, trimmed)
+		}
+		*dst = fallback
+		return nil
+	}
+	*dst = uint32(n)
+	return nil
 }
 
 func defaultStr(v, fallback string) string {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	authmw "github.com/openfoundry/openfoundry-go/libs/auth-middleware"
 	"github.com/openfoundry/openfoundry-go/libs/capabilities/probes"
 	"github.com/openfoundry/openfoundry-go/libs/observability"
 	pythonsidecar "github.com/openfoundry/openfoundry-go/libs/python-sidecar"
@@ -26,6 +27,7 @@ import (
 	livellogs "github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/logs"
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/postgres"
 	runtimepkg "github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/runtime"
+	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/scheduling"
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/server"
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/spark"
 )
@@ -84,6 +86,9 @@ func main() {
 	}
 
 	var pool *pgxpool.Pool
+	var repo *postgres.Repository
+	var versioningPort resolver.DatasetVersioningRepository
+	var execPorts handler.ExecutionPorts
 	if cfg.DatabaseURL != "" {
 		pool, err = pgxpool.New(ctx, cfg.DatabaseURL)
 		if err != nil {
@@ -95,7 +100,7 @@ func main() {
 			log.Error("postgres migrations failed", slog.String("error", err.Error()))
 			os.Exit(1)
 		}
-		repo := postgres.NewRepositoryFromPool(pool)
+		repo = postgres.NewRepositoryFromPool(pool)
 		metadataCommitter := handler.DatasetServiceOutputCommitter{
 			BaseURL:     cfg.DatasetServiceURL,
 			BearerToken: cfg.DatasetServiceBearer,
@@ -117,7 +122,7 @@ func main() {
 		//   - unset → co-located SQL repository; scoped callers are
 		//     gated on the dataset org columns and fail closed with a
 		//     stable 503 otherwise (no silent unscoped fallback).
-		var versioningPort resolver.DatasetVersioningRepository = repo
+		versioningPort = repo
 		if cfg.DatasetServiceURL != "" {
 			versioningPort = handler.DatasetHTTPVersioning{BaseURL: cfg.DatasetServiceURL, Client: &http.Client{Timeout: 30 * time.Second}}
 			log.Info("dataset HTTP versioning adapter wired", slog.String("base_url", cfg.DatasetServiceURL))
@@ -136,7 +141,8 @@ func main() {
 		// answered directly by dataset-versioning-service, never via a
 		// presigned or foreign redirect.
 		datasetRowReader := handler.DatasetServiceRowReader{BaseURL: cfg.DatasetServiceURL, BearerToken: cfg.DatasetServiceBearer}
-		handler.SetExecutionPorts(handler.ExecutionPorts{Plans: repo, Runs: repo, Python: pythonRuntime, LLM: llmRunner, AIP: aipGenerator, Distributed: distributedRunner, Transactions: handler.ConfigGatedTransactionManager{Metadata: repo, CatalogConfigured: cfg.FoundryIcebergCatalogURL != ""}, Committer: handler.ConfigGatedOutputCommitter{Metadata: outputCommitter, CatalogConfigured: cfg.FoundryIcebergCatalogURL != ""}, Audit: repo, DatasetRows: datasetRowReader, Parallelism: cfg.DistributedPipelineWorkers})
+		execPorts = handler.ExecutionPorts{Plans: repo, Runs: repo, Python: pythonRuntime, LLM: llmRunner, AIP: aipGenerator, Distributed: distributedRunner, Transactions: handler.ConfigGatedTransactionManager{Metadata: repo, CatalogConfigured: cfg.FoundryIcebergCatalogURL != ""}, Committer: handler.ConfigGatedOutputCommitter{Metadata: outputCommitter, CatalogConfigured: cfg.FoundryIcebergCatalogURL != ""}, Audit: repo, DatasetRows: datasetRowReader, Parallelism: cfg.DistributedPipelineWorkers}
+		handler.SetExecutionPorts(execPorts)
 		handler.SetBuildQueryRepository(repo)
 		handler.SetPipelineAuthoringRepository(repo)
 		handler.SetSparkSubmissionRepository(repo)
@@ -153,10 +159,58 @@ func main() {
 		log.Warn("kubernetes client unavailable — SparkApplication endpoints return explicit 503", slog.String("error", err.Error()))
 	}
 
+	// T8 scheduling consumer (default OFF). With SCHEDULER_CONSUMER_ENABLED
+	// the whole chain is REQUIRED: canonical runner over the production
+	// ports + Kafka source. Any init failure exits the process — a
+	// "healthy" HTTP server with a dead scheduler is fail-open and not
+	// acceptable (T8 decision §4/§6).
+	var schedulerStop func()
+	if cfg.Scheduler.Enabled {
+		if pool == nil {
+			log.Error("scheduler enabled but DATABASE_URL unset — cannot start scheduling consumer")
+			os.Exit(1)
+		}
+		cipher, cerr := scheduling.NewTokenCipher(cfg.Scheduler.CredentialEncryptionKey)
+		if cerr != nil {
+			log.Error("scheduler credential cipher init failed", slog.String("error", cerr.Error()))
+			os.Exit(1)
+		}
+		owner := scheduling.NewOwnerID()
+		runner := scheduling.NewCanonicalRunner(scheduling.CanonicalDeps{
+			Store:                repo,
+			JobSpecs:             repo,
+			Versioning:           versioningPort,
+			Locks:                repo,
+			Builds:               repo,
+			Plans:                repo,
+			NodeRunner:           handler.NewSchedulerNodeRunner(execPorts),
+			MetadataCommitter:    execPorts.Committer,
+			MetadataTransactions: execPorts.Transactions,
+			DVSBaseURL:           cfg.DatasetServiceURL,
+			HTTPClient:           &http.Client{Timeout: 60 * time.Second},
+			JWT:                  authmw.NewJWTConfig(cfg.JWTSecret),
+			Cipher:               cipher,
+			Owner:                owner,
+			Log:                  log,
+		})
+		runtime, rerr := scheduling.BuildRuntime(cfg.Scheduler, repo, scheduling.OutcomeEnqueueHook(cipher), runner, owner, log)
+		if rerr != nil {
+			log.Error("scheduler consumer init failed", slog.String("error", rerr.Error()))
+			os.Exit(1)
+		}
+		runtime.Start(ctx)
+		schedulerStop = runtime.Stop
+		log.Info("scheduler consumer started", slog.String("owner", owner), slog.String("topic", "pipeline.builds.v1"))
+	}
+
 	metrics := observability.NewMetrics()
 	srv := server.New(cfg, metrics, probes.Postgres("primary", pool))
-	if err := run(ctx, srv, log); err != nil && !errors.Is(err, context.Canceled) {
-		log.Error("server exited with error", slog.String("error", err.Error()))
+	serveErr := run(ctx, srv, log)
+	if schedulerStop != nil {
+		schedulerStop()
+	}
+	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+		log.Error("server exited with error", slog.String("error", serveErr.Error()))
 		os.Exit(1)
 	}
 }

@@ -40,8 +40,12 @@
 package server
 
 import (
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/postgres"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -54,6 +58,7 @@ import (
 	"github.com/openfoundry/openfoundry-go/libs/observability"
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/config"
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/handler"
+	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/schedulingapi"
 )
 
 func New(cfg *config.Config, m *observability.Metrics, probes ...capabilities.DependencyProbe) *http.Server {
@@ -90,6 +95,21 @@ func BuildRouter(cfg *config.Config, m *observability.Metrics, probes ...capabil
 	caps.Mount(r)
 
 	jwt := authmw.NewJWTConfig(cfg.JWTSecret)
+	// T8 scheduling API: built only when the consumer is enabled; a
+	// dedicated pool serves the scheduling schema (fail-closed: any
+	// wiring error leaves the routes unmounted, never half-alive).
+	var schedulingAPI *schedulingapi.SchedulingAPI
+	if cfg.Scheduler.Enabled && cfg.DatabaseURL != "" {
+		if pool, perr := pgxpool.New(context.Background(), cfg.DatabaseURL); perr == nil {
+			if api, aerr := schedulingapi.New(postgres.NewRepositoryFromPool(pool), jwt, cfg.Scheduler); aerr == nil {
+				schedulingAPI = api
+			} else {
+				slog.Error("scheduling api init failed", "err", aerr.Error())
+			}
+		} else {
+			slog.Error("scheduling pool init failed", "err", perr.Error())
+		}
+	}
 	// Rust-compatible SparkApplication submission surface from the Rust /api/v1/pipeline nest.
 	// Rust mounted these routes outside the JWT-protected groups and relied
 	// on the gateway; the P1.1 tenant boundary requires the verified JWT
@@ -104,6 +124,19 @@ func BuildRouter(cfg *config.Config, m *observability.Metrics, probes ...capabil
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Use(authmw.Middleware(jwt))
 		api.Use(handler.TenantScopeMiddleware())
+
+		// T8 scheduling API (default-inert: grant creation is refused
+		// with 503 unless SCHEDULER_CONSUMER_ENABLED is configured).
+		if schedulingAPI != nil {
+			api.Route("/scheduling", func(sch chi.Router) {
+				sch.Post("/grants", schedulingAPI.CreateGrant)
+				sch.Delete("/grants/{key}", schedulingAPI.RevokeGrant)
+				sch.Post("/definitions", schedulingAPI.EnableDefinition)
+				sch.Patch("/definitions/{key}/pause", schedulingAPI.PauseDefinition)
+				sch.Patch("/definitions/{key}/resume", schedulingAPI.ResumeDefinition)
+				sch.Delete("/definitions/{key}", schedulingAPI.DisableDefinition)
+			})
+		}
 
 		// Builds (v1).
 		api.Get("/builds", handler.ListBuilds)
