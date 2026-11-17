@@ -91,11 +91,4 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  # Baseline: silence pre-existing issues across the tree. `make lint`
-  # only flags issues introduced after the latest commit, which keeps
-  # the feedback loop honest for agents working on a feature branch
-  # without requiring a giant cleanup PR up front.
-  #
-  # To audit the full backlog: `golangci-lint run ./...` (no extra flags).
-  # To gate against main in CI: `--new-from-rev=origin/main`.
-  new-from-rev: HEAD
+  # The entrypoint selects an explicit branch comparison; full audits have no baseline.

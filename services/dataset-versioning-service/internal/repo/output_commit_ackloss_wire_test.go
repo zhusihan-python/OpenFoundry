@@ -21,7 +21,10 @@
 package repo
 
 import (
+	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -38,8 +41,7 @@ const (
 
 // w1bMaxParserBuf bounds the parser's reassembly buffer. The commit proof
 // only ever sees small test statements; a stream that would buffer more
-// than this is flushed and passed through un-parsed (the test then fails
-// honestly via commitFrameSeen=false) — memory stays bounded either way.
+// than this is rejected by the wrapper as unproven protocol; memory stays bounded.
 const w1bMaxParserBuf = 1 << 20
 
 // w1bCommitQueryPayload is the exact simple-query payload of pgx v5.7.4's
@@ -53,6 +55,7 @@ const w1bCommitQueryPayload = "commit\x00"
 type w1bFrame struct {
 	raw      []byte
 	isCommit bool
+	kind     w1bConnKind
 }
 
 // w1bFrameParser reassembles PostgreSQL frontend protocol frames from an
@@ -64,6 +67,7 @@ type w1bFrame struct {
 type w1bFrameParser struct {
 	buf        []byte
 	sawStartup bool
+	sawCancel  bool
 	desynced   bool
 }
 
@@ -72,17 +76,19 @@ type w1bFrameParser struct {
 // forwarded yet — that is what lets the wrapper arm suppression before
 // the server sees the last byte of the COMMIT frame).
 func (p *w1bFrameParser) feed(chunk []byte) []w1bFrame {
+	if p.sawCancel {
+		return []w1bFrame{{raw: append([]byte(nil), chunk...), kind: w1bConnInvalid}}
+	}
 	if p.desynced {
-		// Past the bound or malformed: pass through untouched, no commit
-		// detection is possible any more.
-		return []w1bFrame{{raw: append([]byte(nil), chunk...)}}
+		// A previously rejected stream remains invalid on every later write.
+		return []w1bFrame{{raw: append([]byte(nil), chunk...), kind: w1bConnInvalid}}
 	}
 	p.buf = append(p.buf, chunk...)
 	if len(p.buf) > w1bMaxParserBuf {
 		flushed := p.buf
 		p.buf = nil
 		p.desynced = true
-		return []w1bFrame{{raw: flushed}}
+		return []w1bFrame{{raw: flushed, kind: w1bConnInvalid}}
 	}
 	var frames []w1bFrame
 	for {
@@ -105,16 +111,32 @@ func (p *w1bFrameParser) feed(chunk []byte) []w1bFrame {
 					// Special pre-startup message: forwarded as-is, the
 					// connection stays in the preamble phase (a cancel
 					// connection sends nothing else at all).
-					frames = append(frames, w1bFrame{raw: w1bCopyTake(p.buf, length)})
+					kind := w1bConnPending
+					if code == w1bCancelRequestCode {
+						kind = w1bConnCancel
+					}
+					frames = append(frames, w1bFrame{raw: w1bCopyTake(p.buf, length), kind: kind})
 					p.buf = p.buf[length:]
+					if kind == w1bConnCancel {
+						p.sawCancel = true
+						if len(p.buf) > 0 {
+							p.desync(len(p.buf), &frames)
+						}
+						return frames
+					}
 					continue
 				}
 			}
 			if len(p.buf) < length {
 				break
 			}
+			// Only plaintext protocol 3.0 startup establishes a business session.
+			if binary.BigEndian.Uint32(p.buf[4:8]) != 196608 || !w1bValidStartupParams(p.buf[8:length]) {
+				p.desync(len(p.buf), &frames)
+				return frames
+			}
 			// Startup message (typeless): protocol version + parameters.
-			frames = append(frames, w1bFrame{raw: w1bCopyTake(p.buf, length)})
+			frames = append(frames, w1bFrame{raw: w1bCopyTake(p.buf, length), kind: w1bConnBusiness})
 			p.buf = p.buf[length:]
 			p.sawStartup = true
 			continue
@@ -139,17 +161,44 @@ func (p *w1bFrameParser) feed(chunk []byte) []w1bFrame {
 	return frames
 }
 
-// desync flushes everything buffered as one pass-through frame.
+// desync marks the buffered frame invalid; the wrapper rejects it before forwarding.
 func (p *w1bFrameParser) desync(n int, frames *[]w1bFrame) {
-	*frames = append(*frames, w1bFrame{raw: w1bCopyTake(p.buf, n)})
+	*frames = append(*frames, w1bFrame{raw: w1bCopyTake(p.buf, n), kind: w1bConnInvalid})
 	p.buf = nil
 	p.desynced = true
+}
+
+// A startup parameter list is NUL-terminated key/value pairs followed by
+// one empty-key terminator. An incomplete or malformed list proves no session.
+func w1bValidStartupParams(params []byte) bool {
+	for len(params) > 1 {
+		keyEnd := bytes.IndexByte(params, 0)
+		if keyEnd <= 0 {
+			return false
+		}
+		params = params[keyEnd+1:]
+		valueEnd := bytes.IndexByte(params, 0)
+		if valueEnd < 0 {
+			return false
+		}
+		params = params[valueEnd+1:]
+	}
+	return len(params) == 1 && params[0] == 0
 }
 
 // w1bCopyTake returns a copy of the first n bytes of buf.
 func w1bCopyTake(buf []byte, n int) []byte {
 	return append([]byte(nil), buf[:n]...)
 }
+
+type w1bConnKind uint8
+
+const (
+	w1bConnPending w1bConnKind = iota
+	w1bConnBusiness
+	w1bConnCancel
+	w1bConnInvalid
+)
 
 // w1bFaultState is shared by every fault connection of one fault pool
 // (MaxConns=1, so exactly one carries the transaction). It tracks the
@@ -158,6 +207,7 @@ func w1bCopyTake(buf []byte, n int) []byte {
 type w1bFaultState struct {
 	mu              sync.Mutex
 	conns           []*w1bFaultConn
+	commitConn      *w1bFaultConn
 	commitFrameSeen bool
 	suppress        bool
 	eofDelivered    bool
@@ -180,8 +230,9 @@ func (s *w1bFaultState) wrap(raw net.Conn) *w1bFaultConn {
 
 // armSuppress flips the suppression latch and publishes commitFrameSeen.
 // Called by the wrapper BEFORE forwarding the complete COMMIT frame.
-func (s *w1bFaultState) armSuppress() {
+func (s *w1bFaultState) armSuppress(c *w1bFaultConn) {
 	s.mu.Lock()
+	s.commitConn = c
 	s.commitFrameSeen = true
 	s.suppress = true
 	s.mu.Unlock()
@@ -205,12 +256,57 @@ func (s *w1bFaultState) waitCommitFrameSeen(d time.Duration) bool {
 	}
 }
 
-// connCount reports how many sockets the fault pool has dialed through
-// the wrapped DialFunc. The PID proof assumes exactly one.
-func (s *w1bFaultState) connCount() int {
+// singleBusinessSession audits every dial, including asynchronous cleanup dials.
+// Pending and malformed/unknown connections fail closed; only a complete, exact
+// CancelRequest is exempt from the one-business-session PID proof.
+func (s *w1bFaultState) singleBusinessSession() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.conns)
+	business, cancel := 0, 0
+	for i, c := range s.conns {
+		switch c.kind {
+		case w1bConnBusiness:
+			business++
+		case w1bConnCancel:
+			cancel++
+		default:
+			return fmt.Errorf("fault dial %d has unproven connection kind %d", i+1, c.kind)
+		}
+	}
+	if business != 1 {
+		return fmt.Errorf("fault pool established %d business sessions (%d cancel sockets); PID proof requires exactly one", business, cancel)
+	}
+	return nil
+}
+
+func (s *w1bFaultState) classify(c *w1bFaultConn, kind w1bConnKind) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c.kind == w1bConnInvalid || c.kind == w1bConnCancel || kind == w1bConnInvalid || (kind != w1bConnPending && c.kind != w1bConnPending) {
+		c.kind = w1bConnInvalid
+		return fmt.Errorf("invalid fault connection preamble")
+	}
+	if kind != w1bConnPending {
+		c.kind = kind
+	}
+	return nil
+}
+
+func (s *w1bFaultState) suppressConnection(c *w1bFaultConn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.suppress && s.commitConn == c
+}
+
+func (s *w1bFaultState) allClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.conns {
+		if !c.closed {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *w1bFaultState) markEOFDelivered() {
@@ -247,6 +343,8 @@ func (s *w1bFaultState) CloseAll() {
 type w1bFaultConn struct {
 	net.Conn  // underlying socket; address/deadline methods pass through
 	state     *w1bFaultState
+	kind      w1bConnKind // guarded by state.mu
+	closed    bool        // guarded by state.mu
 	parser    w1bFrameParser
 	writeMu   sync.Mutex
 	eofCh     chan struct{}
@@ -257,10 +355,13 @@ func (c *w1bFaultConn) Write(p []byte) (int, error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	for _, f := range c.parser.feed(p) {
+		if err := c.state.classify(c, f.kind); err != nil {
+			return 0, err
+		}
 		if f.isCommit {
 			// Suppress FIRST, forward second: the server must still
 			// receive and execute the COMMIT request.
-			c.state.armSuppress()
+			c.state.armSuppress(c)
 		}
 		if _, err := c.Conn.Write(f.raw); err != nil {
 			return len(p), err
@@ -271,7 +372,7 @@ func (c *w1bFaultConn) Write(p []byte) (int, error) {
 
 func (c *w1bFaultConn) Read(p []byte) (int, error) {
 	// Pre-check: hold back before even touching the socket.
-	if c.state.suppressActive() {
+	if c.state.suppressConnection(c) {
 		return c.awaitEOF()
 	}
 	n, err := c.Conn.Read(p)
@@ -281,7 +382,7 @@ func (c *w1bFaultConn) Read(p []byte) (int, error) {
 	// the returned bytes and the error are discarded and the caller parks
 	// until the validated notification closes the socket (review round 1
 	// blocker 2).
-	if c.state.suppressActive() {
+	if c.state.suppressConnection(c) {
 		return c.awaitEOF()
 	}
 	return n, err
@@ -298,6 +399,9 @@ func (c *w1bFaultConn) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.eofCh)
 		c.Conn.Close()
+		c.state.mu.Lock()
+		c.closed = true
+		c.state.mu.Unlock()
 	})
 	return nil
 }
@@ -522,7 +626,7 @@ func TestW1bReadPreCheckHoldsBackUntilClose(t *testing.T) {
 	state := newW1bFaultState()
 	raw := newW1bScriptConn()
 	conn := state.wrap(raw)
-	state.armSuppress()
+	state.armSuppress(conn)
 
 	type readResult struct {
 		n   int
@@ -575,7 +679,7 @@ func TestW1bReadPostCheckSwallowsBytesAfterSuppressArms(t *testing.T) {
 		res <- readResult{n, err}
 	}()
 	w1bWaitEntered(t, raw, "underlying Read entry")
-	state.armSuppress()
+	state.armSuppress(conn)
 	// Server "acknowledges": CommandComplete/ReadyForQuery bytes arrive
 	// from the socket after suppression is armed.
 	raw.reads <- w1bScriptRead{b: []byte("C\x00\x00\x00\x0bCOMMIT\x00")}
@@ -618,7 +722,7 @@ func TestW1bReadPostCheckSwallowsBytesWithEOFAfterSuppressArms(t *testing.T) {
 		res <- readResult{n, err}
 	}()
 	w1bWaitEntered(t, raw, "underlying Read entry")
-	state.armSuppress()
+	state.armSuppress(conn)
 	// The socket returns ACK bytes and EOF in the SAME read.
 	raw.reads <- w1bScriptRead{b: []byte("Z\x00\x00\x00\x05I"), err: io.EOF}
 	select {
@@ -683,5 +787,77 @@ func TestW1bStartupSSLAndCancelFramesPassthrough(t *testing.T) {
 	}
 	if got := cancelRaw.forwarded(); string(got) != string(frame) {
 		t.Fatal("CancelRequest must be forwarded verbatim")
+	}
+}
+
+// A cleanup CancelRequest is a different socket, never a business reconnect and
+// never a recipient of the COMMIT socket's ACK suppression.
+func TestW1bCancelSocketDoesNotInheritCommitSuppression(t *testing.T) {
+	state := newW1bFaultState()
+	business := state.wrap(newW1bScriptConn())
+	if _, err := business.Write(w1bConcat(w1bStartupFrame("user\x00w1b"), w1bTypedFrame('Q', w1bCommitQueryPayload))); err != nil {
+		t.Fatal(err)
+	}
+	raw := newW1bScriptConn()
+	cancel := state.wrap(raw)
+	defer state.CloseAll()
+	if err := state.singleBusinessSession(); err == nil {
+		t.Fatal("unclassified dial must fail closed")
+	}
+	frame := w1bCancelFrame(4242, 77)
+	for _, b := range frame {
+		if _, err := cancel.Write([]byte{b}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := state.singleBusinessSession(); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw.forwarded()) != string(frame) {
+		t.Fatal("cancel request was not forwarded verbatim")
+	}
+	raw.reads <- w1bScriptRead{err: io.EOF}
+	done := make(chan error, 1)
+	go func() { _, err := cancel.Read(make([]byte, 1)); done <- err }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("cancel read: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel socket inherited ACK suppression")
+	}
+	if _, _, eof := state.flags(); eof {
+		t.Fatal("cancel read must not count as fault COMMIT EOF evidence")
+	}
+}
+
+func TestW1bSessionAuditRejectsSecondBusinessAndUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		frame []byte
+	}{
+		{"second_business", w1bStartupFrame("user\x00other")},
+		{"unknown_protocol", binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, 8), 12345)},
+		{"malformed_length", []byte{0, 0, 0, 1}},
+		{"missing_startup_terminator", binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, 8), 196608)},
+		{"malformed_startup_params", w1bStartupFrame("user")},
+		{"incomplete_cancel", w1bCancelFrame(4242, 77)[:15]},
+		{"cancel_with_partial_tail", w1bConcat(w1bCancelFrame(4242, 77), []byte{0})},
+		{"cancel_with_trailing_frame", w1bConcat(w1bCancelFrame(4242, 77), w1bStartupFrame("user\x00other"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := newW1bFaultState()
+			defer state.CloseAll()
+			first := state.wrap(newW1bScriptConn())
+			if _, err := first.Write(w1bStartupFrame("user\x00w1b")); err != nil {
+				t.Fatal(err)
+			}
+			second := state.wrap(newW1bScriptConn())
+			_, _ = second.Write(tc.frame)
+			if err := state.singleBusinessSession(); err == nil {
+				t.Fatal("unproven or additional business connection accepted")
+			}
+		})
 	}
 }

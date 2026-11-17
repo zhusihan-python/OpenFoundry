@@ -6,7 +6,7 @@ OpenFoundry uses CI as an executable compatibility contract across Go services, 
 
 | Workflow | Purpose | Typical Local Entry Point |
 | --- | --- | --- |
-| `openfoundry-go.yml` | Go hygiene, generated proto/sqlc drift, capabilities drift, unit tests, and integration tests. | `make tools`, `make ci`, `make capabilities-check`, `make test-integration` |
+| `openfoundry-go.yml` | Go hygiene, generated proto drift, sqlc config policy (sqlc not integrated — generation reported not-applicable), capabilities drift, unit tests, and integration tests. | `make tools`, `make ci`, `make capabilities-check`, `make test-integration` |
 | `ci-frontend.yml` | React/Vite lint, TypeScript checks, unit tests, E2E, and production build. | `pnpm --filter @open-foundry/web lint`, `pnpm --filter @open-foundry/web check`, `pnpm --filter @open-foundry/web test:unit`, `pnpm --filter @open-foundry/web build` |
 | `proto-check.yml` | Buf lint plus OpenAPI and SDK validation. | `buf lint proto`, `make contracts-check` |
 | `helm-check.yml` / `helm-lint.yml` | Helm lint and render validation across deployment overlays. | Check the workflow path before running locally; active Helm sources live under `infra/helm/`. |
