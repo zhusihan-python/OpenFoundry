@@ -279,6 +279,22 @@ jobs:
     name: test (integration)
     runs-on: ubuntu-latest
     needs: [lint, test]
+    # Connector fixtures already create/drop a fresh DB per test when this
+    # DSN is set. Preserve real PG16 and isolation without per-test container
+    # lifecycle cost; keep the original package timeout and race checks.
+    services:
+      connector_db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: openfoundry
+        ports: ['5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d openfoundry"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - name: Verify exact source identity
@@ -289,12 +305,30 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Record connector PostgreSQL service version
+        env:
+          CONNECTOR_PG_ID: ${{ job.services.connector_db.id }}
+        run: |
+          docker exec "$CONNECTOR_PG_ID" psql --version
+          docker exec "$CONNECTOR_PG_ID" psql -U postgres -d openfoundry -At -v ON_ERROR_STOP=1 -c 'SHOW server_version'
       - name: run integration suite
         run: go test -race -count=1 -tags=integration ./...
         env:
-          # testcontainers-go uses the docker daemon already available
-          # on the GitHub-hosted runner.
+          # Connector tests use their existing per-test fresh database path;
+          # other integration packages retain their testcontainers fixtures.
+          CONNECTOR_DB_DSN: postgres://postgres:postgres@127.0.0.1:${{ job.services.connector_db.ports[5432] }}/openfoundry
           TESTCONTAINERS_RYUK_DISABLED: "true"
+      - name: Require connector fixture databases cleaned up
+        if: always()
+        env:
+          CONNECTOR_PG_ID: ${{ job.services.connector_db.id }}
+        run: |
+          residue="$(docker exec "$CONNECTOR_PG_ID" psql -U postgres -d openfoundry -At -v ON_ERROR_STOP=1 -c "SELECT datname FROM pg_database WHERE left(datname, 15) = 'connector_test_' OR left(datname, 5) = 'p25h_' ORDER BY datname")"
+          if [ -n "$residue" ]; then
+            printf '::error::connector fixture databases remain:\n%s\n' "$residue"
+            exit 1
+          fi
+          echo 'connector fixture database residue: 0'
       - name: Record verification tool versions
         if: always()
         run: |
