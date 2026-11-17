@@ -316,6 +316,16 @@ test('renders action forms with defaults, validation errors, and success states'
   await page.route('**/api/v1/ontology/types/Weather/objects?*', async (route) => {
     await route.fulfill({ json: { data: weatherObjects, total: weatherObjects.length, page: 1, per_page: 5000 } });
   });
+  // The runtime object-set loader issues POST /objects/query; match it explicitly
+  // (same ObjectQueryResponse shape). Any other method on this path falls back to
+  // the network so an unexpected call fails loudly instead of being satisfied here.
+  await page.route('**/api/v1/ontology/types/Weather/objects/query', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({ json: { data: weatherObjects, total: weatherObjects.length, page: 1, per_page: 5000 } });
+  });
   await page.route('**/api/v1/ontology/actions/edit-weather', async (route) => {
     await route.fulfill({ json: editActionType });
   });

@@ -1,14 +1,5 @@
 import tseslint from 'typescript-eslint';
-
-const noopRule = {
-  meta: {
-    type: 'problem',
-    schema: [],
-  },
-  create() {
-    return {};
-  },
-};
+import reactHooks from 'eslint-plugin-react-hooks';
 
 export default tseslint.config(
   {
@@ -46,11 +37,7 @@ export default tseslint.config(
       },
     },
     plugins: {
-      'react-hooks': {
-        rules: {
-          'exhaustive-deps': noopRule,
-        },
-      },
+      'react-hooks': reactHooks,
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
@@ -64,6 +51,21 @@ export default tseslint.config(
       ],
       'no-undef': 'off',
       'react-hooks/exhaustive-deps': 'off',
+    },
+  },
+  {
+    files: ['src/routes/datasets/**/*.{ts,tsx}'],
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'error',
+      'no-restricted-globals': ['error', {
+        name: 'fetch',
+        message: 'Use lib/api/datasets so authentication and errors stay consistent.',
+      }],
+      'no-restricted-properties': ['error',
+        { object: 'window', property: 'fetch', message: 'Use lib/api/datasets.' },
+        { object: 'globalThis', property: 'fetch', message: 'Use lib/api/datasets.' },
+      ],
     },
   },
 );
