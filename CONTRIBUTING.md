@@ -187,10 +187,10 @@ CI runs on every PR (see [`.github/workflows/`](.github/workflows/)):
 A PR cannot be merged with red CI. If a check is genuinely flaky,
 document it in the PR and ping a maintainer; do **not** disable it.
 
-`golangci-lint` is configured with `new-from-rev: HEAD` so it only
-flags issues introduced by your commits — the existing baseline is
-silenced. To audit the full backlog locally:
-`golangci-lint run --new-from-rev= ./...`.
+`make lint` uses the version in `.golangci-lint-version` and compares with
+`BASE_REV` (default `origin/main`). Use the PR target branch when different.
+`make lint LINT_FULL=1` audits all existing issues. Missing comparison refs
+fail rather than silently using HEAD.
 
 ## RFCs and breaking changes
 

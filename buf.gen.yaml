@@ -1,21 +1,32 @@
 version: v2
 # Generates Go code from the canonical .proto files in ./proto.
 # Output lives under libs/proto-gen and is committed so fresh checkouts compile.
-# Regenerate via `make gen-proto` (or `make gen`).
+# Regenerate via `make gen-proto` (or `make gen`) — run from the repo root.
+inputs:
+  - directory: proto
 managed:
   enabled: true
   override:
     - file_option: go_package_prefix
       value: github.com/openfoundry/openfoundry-go/libs/proto-gen
-inputs:
-  - directory: proto
+    # streaming/ intentionally hosts two proto packages in one directory
+    # (see the DIRECTORY_SAME_PACKAGE exception in proto/buf.yaml); only the
+    # Go output is split into one package per directory via these overrides.
+    - file_option: go_package
+      path: streaming/router.proto
+      value: github.com/openfoundry/openfoundry-go/libs/proto-gen/streaming/routerv1
+    - file_option: go_package
+      path: streaming/streams.proto
+      value: github.com/openfoundry/openfoundry-go/libs/proto-gen/streaming/streamsv1
 plugins:
-  - remote: buf.build/protocolbuffers/go
+  - remote: buf.build/protocolbuffers/go:v1.36.11
     out: libs/proto-gen
     opt:
-      - paths=source_relative
-  - remote: buf.build/grpc/go
+      - paths=import
+      - module=github.com/openfoundry/openfoundry-go/libs/proto-gen
+  - remote: buf.build/grpc/go:v1.5.1
     out: libs/proto-gen
     opt:
-      - paths=source_relative
+      - paths=import
+      - module=github.com/openfoundry/openfoundry-go/libs/proto-gen
       - require_unimplemented_servers=false
