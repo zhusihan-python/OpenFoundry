@@ -6,6 +6,26 @@ import tempfile
 import unittest
 from verification_plan import plan, ALL
 
+VALIDATION_PATHS = [
+    'apps/web/scripts/lint.mjs',
+    'apps/web/scripts/test-quality-rules.mjs',
+    'apps/web/package.json',
+    'apps/web/playwright.config.ts',
+    'apps/web/playwright.ofexcel.config.ts',
+    'apps/web/playwright.excel.config.ts',
+    'apps/web/playwright.p31-real.config.ts',
+    'apps/web/vite.config.ts',
+    'apps/web/vite.p31-e2e.config.ts',
+    'apps/web/vitest.config.ts',
+    'apps/web/vitest.unit.config.mts',
+    'apps/web/playwright.config.cjs',
+]
+PRODUCT_PATHS = [
+    'apps/web/src/lib/components/Trail.tsx',
+    'apps/web/e2e/workshop-filter-list.spec.ts',
+    'apps/web/src/lib/utils/vitest.config.ts',
+]
+
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'verification_plan.py')
 
 class PlanTests(unittest.TestCase):
@@ -19,6 +39,15 @@ class PlanTests(unittest.TestCase):
         self.assertIn('frontend', plan(['docs/index.md', 'apps/web/src/routes/datasets/New.tsx']))
     def test_policy_requires_human(self):
         self.assertIn('human-review', plan(['apps/web/scripts/lint-baseline.json']))
+    def test_frontend_validation_entrypoints_require_review(self):
+        for path in VALIDATION_PATHS:
+            with self.subTest(path=path):
+                self.assertIn('frontend', plan([path]))
+                self.assertIn('human-review', plan([path]))
+    def test_ordinary_frontend_files_do_not_require_review(self):
+        for path in PRODUCT_PATHS:
+            with self.subTest(path=path):
+                self.assertEqual(plan([path]), ['frontend'])
     def test_no_changes_is_empty(self):
         self.assertEqual(plan([]), [])
     def test_policy_docs_need_human_review(self):
@@ -40,6 +69,7 @@ class CliTests(unittest.TestCase):
         for rel, content in {
             'AGENTS.md': '# agents\n',
             'README.md': '# repo\n',
+            'apps/web/vite.p31-e2e.config.ts': 'export default {}\n',
             'services/dataset-versioning-service/internal/repo/publish.go': 'package repo\n',
         }.items():
             self.write(rel, content)
@@ -111,6 +141,50 @@ class CliTests(unittest.TestCase):
         report = self.report(self.base)
         self.assertIn('AGENTS.md', report['paths'])
         self.assertIn('human-review', report['required_categories'])
+
+    def test_frontend_path_matrix_through_real_cli(self):
+        for path in VALIDATION_PATHS + PRODUCT_PATHS:
+            with self.subTest(path=path):
+                tracked = path == 'apps/web/vite.p31-e2e.config.ts'
+                self.write(path, '// changed validation or product file\n')
+                try:
+                    report = self.report(self.base)
+                    self.assertIn(path, report['paths'])
+                    self.assertEqual(report['execution_status'], 'not-run')
+                    self.assertIn('frontend', report['required_categories'])
+                    if path in VALIDATION_PATHS:
+                        self.assertIn('human-review', report['required_categories'])
+                    else:
+                        self.assertEqual(report['required_categories'], ['frontend'])
+                finally:
+                    if tracked:
+                        self.write(path, 'export default {}\n')
+                    else:
+                        os.remove(os.path.join(self.repo, path))
+
+    def test_unknown_path_selects_all_not_run(self):
+        self.write('new-system/config.json', '{}\n')
+        report = self.report(self.base)
+        self.assertEqual(set(report['required_categories']), ALL)
+        self.assertEqual(report['execution_status'], 'not-run')
+
+    def test_deleted_validation_config_requires_review(self):
+        path = 'apps/web/vite.p31-e2e.config.ts'
+        self.git('rm', '-q', path)
+        report = self.report(self.base)
+        self.assertIn(path, report['paths'])
+        self.assertIn('human-review', report['required_categories'])
+        self.assertEqual(report['execution_status'], 'not-run')
+
+    def test_validation_config_renamed_to_product_path_keeps_review(self):
+        old = 'apps/web/vite.p31-e2e.config.ts'
+        new = 'apps/web/product.ts'
+        self.git('mv', old, new)
+        report = self.report(self.base)
+        self.assertIn(old, report['paths'])
+        self.assertIn(new, report['paths'])
+        self.assertIn('human-review', report['required_categories'])
+        self.assertEqual(report['execution_status'], 'not-run')
 
     def test_invalid_base_fails_without_plan(self):
         result = self.run_plan('no-such-ref')

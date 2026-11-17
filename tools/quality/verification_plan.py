@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Print required verification categories; never claim they have executed."""
 import json
+import re
 import subprocess
 import sys
 
 ALL = {'go-unit', 'go-integration', 'contracts', 'frontend', 'real-excel', 'infra-review', 'docs-links', 'human-review'}
+
+def is_frontend_validation_entrypoint(path):
+    return (path.startswith('apps/web/scripts/')
+            or path == 'apps/web/package.json'
+            or re.fullmatch(r'apps/web/(?:playwright|vite|vitest)(?:\.[^/]+)?\.config\.[cm]?[jt]s', path) is not None)
 
 def plan(paths):
     checks = set()
@@ -25,6 +31,8 @@ def plan(paths):
             checks.update({'infra-review', 'human-review'})
         else:
             checks.update(ALL)
+        if is_frontend_validation_entrypoint(path):
+            checks.add('human-review')
         if any(x in path for x in ['auth', 'identity', '/migrations/', 'proto/', 'CODEOWNERS', 'AGENTS.md', 'CLAUDE.md', 'CONTRIBUTING.md', 'quality/', '.github/', 'eslint', 'lint-baseline']):
             checks.add('human-review')
     return sorted(checks)
