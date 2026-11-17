@@ -81,9 +81,18 @@ jobs:
           if [[ ${#files[@]} -eq 0 ]]; then
             echo "no evidence files found to guard"; exit 0
           fi
-          # -q: never echo matched credential-shaped text into CI logs.
-          if grep -rq "eyJ" "${files[@]}"; then
-            echo "::error::credential-shaped string (eyJ JWT prefix) found in evidence — refusing to upload" >&2
+          # -q/-l: never echo matched credential-shaped TEXT into CI logs;
+          # on failure name the offending FILES only (diagnosable, no leak).
+          # Fail-closed: grep exit 2 (unreadable file) is NOT "no match".
+          set +e
+          grep -rq "eyJ" "${files[@]}"
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 ]]; then
+            echo "::error::credential-shaped string (eyJ JWT prefix) found in: $(grep -rl eyJ "${files[@]}" | tr '\n' ' ')— refusing to upload" >&2
+            exit 1
+          elif [[ $rc -ne 1 ]]; then
+            echo "::error::guard grep exited $rc (unreadable evidence) — failing closed, refusing to upload" >&2
             exit 1
           fi
           echo "guard ok: no JWT-shaped strings in ${#files[@]} evidence files"

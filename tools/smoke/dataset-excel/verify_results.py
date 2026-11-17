@@ -80,6 +80,7 @@ REQUIRED_STEPS = [
     "skip-control-playwright", "skip-control-shape",
     "skip-control-expected-reject", "playwright-real",
     "playwright-real-verify", "negative-controls", "verify-manifest",
+    "evidence-hygiene",
 ]
 
 

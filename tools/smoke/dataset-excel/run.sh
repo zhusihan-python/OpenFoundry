@@ -361,6 +361,35 @@ run_step "negative-controls" "$RESULTS_DIR/negative-controls.log" \
   bash "$HERE/negative_controls.sh" "$RESULTS_DIR/playwright.json" \
     "$RESULTS_DIR/evidence.json"
 
+# Evidence hygiene gate: the CI upload whitelist (see the workflow's guard)
+# must stay free of credential-shaped strings. Checked HERE first so a
+# breach fails at the runner step with FILE NAMES + LINE NUMBERS ONLY
+# (never matched text), instead of a silent CI upload refusal. Runs before
+# the final exit-codes check so its own rc is covered by that check.
+run_step "evidence-hygiene" "$RESULTS_DIR/evidence-hygiene.log" \
+  bash -c '
+    cd "$1"
+    bad=0
+    for f in exit-codes.txt versions.json stack-probe.json evidence.json \
+             playwright.json playwright-skip.json negative-controls.log; do
+      [[ -f "$f" ]] || continue
+      grep -q "eyJ" "$f"
+      rc=$?
+      if [[ $rc -eq 0 ]]; then
+        echo "[hygiene] CREDENTIAL-SHAPED STRING in $f — lines: $(grep -n eyJ "$f" | cut -d: -f1 | tr "\n" " "), count: $(grep -c eyJ "$f")"
+        bad=1
+      elif [[ $rc -ne 1 ]]; then
+        echo "[hygiene] grep exited $rc reading $f (unreadable) — failing closed" >&2
+        bad=1
+      fi
+    done
+    if [[ $bad -ne 0 ]]; then
+      echo "RUNNER FAILED: whitelist evidence contains eyJ-shaped strings or unreadable files (names above; contents never echoed)" >&2
+      exit 1
+    fi
+    echo "[hygiene] ok: upload-whitelist evidence free of eyJ strings"
+  ' _ "$RESULTS_DIR"
+
 verify_step "exit-codes-all-zero" exitcodes "$EXIT_CODES"
 
 echo

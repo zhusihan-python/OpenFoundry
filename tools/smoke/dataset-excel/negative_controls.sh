@@ -196,7 +196,8 @@ with open(f"{tmp}/codes-ok.txt", "w") as fh:
              "stack-probe = 0\nskip-control-playwright = 0\n"
              "skip-control-shape = 0\nskip-control-expected-reject = 0\n"
              "playwright-real = 0\nplaywright-real-verify = 0\n"
-             "negative-controls = 0\nverify-manifest = 0\n")
+             "negative-controls = 0\nverify-manifest = 0\n"
+             "evidence-hygiene = 0\n")
 with open(f"{tmp}/codes-dup.txt", "w") as fh:
     fh.write("build-dvs = 0\nbuild-dvs = 1\n")
 with open(f"{tmp}/codes-missing-step.txt", "w") as fh:
@@ -206,7 +207,8 @@ with open(f"{tmp}/codes-nonzero.txt", "w") as fh:
              "stack-probe = 0\nskip-control-playwright = 0\n"
              "skip-control-shape = 0\nskip-control-expected-reject = 0\n"
              "playwright-real = 0\nplaywright-real-verify = 0\n"
-             "negative-controls = 0\nverify-manifest = 2\n")
+             "negative-controls = 0\nverify-manifest = 2\n"
+             "evidence-hygiene = 0\n")
 print("[negctl] mutants built from real baselines")
 PYEOF
 
