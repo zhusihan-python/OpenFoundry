@@ -43,6 +43,9 @@ on:
       - "sqlc-policy.yaml"
       - ".github/workflows/openfoundry-go.yml"
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: lint
@@ -167,6 +170,7 @@ jobs:
       - uses: bufbuild/buf-setup-action@v1
         with:
           version: 1.47.2
+          github_token: ${{ github.token }}
       - run: buf lint proto
       - run: buf generate
       - name: ensure no drift between checked-in & generated proto
