@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 const now = '2026-05-11T00:00:00Z';
 
@@ -172,6 +172,15 @@ const appResponse = {
 };
 
 test('Filter List defaults, runtime filters, and add/remove controls feed Object Table and Chart', async ({ page }) => {
+  await exerciseFilterList(page);
+});
+
+test('Filter List range controls remain reachable in a narrow runtime grid', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 720 });
+  await exerciseFilterList(page);
+});
+
+async function exerciseFilterList(page: Page) {
   await page.addInitScript(() => {
     window.localStorage.setItem('of_access_token', 'e2e-token');
   });
@@ -249,9 +258,25 @@ test('Filter List defaults, runtime filters, and add/remove controls feed Object
   await page.getByLabel('Miles minimum').fill('8');
   await expect(table).toContainText('No objects.');
 
+  await page.getByLabel('Miles maximum').fill('9');
+  await expect(page.getByLabel('Miles minimum')).toHaveValue('8');
+  await expect(page.getByLabel('Miles maximum')).toHaveValue('9');
+  for (const control of [page.getByLabel('Remove Miles'), page.getByLabel('Miles minimum'), page.getByLabel('Miles maximum')]) {
+    await expect(control).toBeVisible();
+    const geometry = await control.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const article = element.closest('article')!.getBoundingClientRect();
+      const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+      return {
+        contained: bounds.left >= article.left && bounds.right <= article.right && bounds.top >= article.top && bounds.bottom <= article.bottom,
+        receivesPointer: hit !== null && element.contains(hit),
+      };
+    });
+    expect(geometry).toEqual({ contained: true, receivesPointer: true });
+  }
   await page.getByLabel('Remove Miles').click();
   await expect(table).toContainText('Walker Ranch');
-});
+}
 
 function applyFilters(filters: Array<{ property_name: string; operator?: string; value: unknown }>) {
   return trails.filter((trail) => filters.every((filter) => {

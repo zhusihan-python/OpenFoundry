@@ -4171,6 +4171,7 @@ export function FilterListWidgetView({ widget, variables = [] }: { widget: AppWi
             key={filter.id}
             style={{
               display: 'grid',
+              gridTemplateColumns: 'minmax(0, 1fr)',
               gap: 6,
               minWidth: layout === 'pills' ? 180 : undefined,
               padding: layout === 'pills' ? '8px 10px' : 0,
@@ -4241,7 +4242,7 @@ export function FilterListWidgetView({ widget, variables = [] }: { widget: AppWi
                   value={value.range_min ?? ''}
                   readOnly={!interactive}
                   onChange={(event) => updateFilterValue(filter, { ...value, range_min: event.target.value })}
-                  style={{ padding: '6px 10px', border: '1px solid var(--border-default)', borderRadius: 4, fontSize: 12, background: '#fff', flex: 1 }}
+                  style={{ padding: '6px 10px', border: '1px solid var(--border-default)', borderRadius: 4, fontSize: 12, background: '#fff', flex: 1, minWidth: 0 }}
                 />
                 <input
                   aria-label={`${filter.display_name} maximum`}
@@ -4249,7 +4250,7 @@ export function FilterListWidgetView({ widget, variables = [] }: { widget: AppWi
                   value={value.range_max ?? ''}
                   readOnly={!interactive}
                   onChange={(event) => updateFilterValue(filter, { ...value, range_max: event.target.value })}
-                  style={{ padding: '6px 10px', border: '1px solid var(--border-default)', borderRadius: 4, fontSize: 12, background: '#fff', flex: 1 }}
+                  style={{ padding: '6px 10px', border: '1px solid var(--border-default)', borderRadius: 4, fontSize: 12, background: '#fff', flex: 1, minWidth: 0 }}
                 />
               </div>
             )}
