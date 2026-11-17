@@ -30,5 +30,15 @@
     "deployed build versions",
     "fixture hash",
     "results and failure diagnostics"
-  ]
+  ],
+  "combined_real_check": {
+    "command": "bash tools/smoke/dataset-excel/run.sh",
+    "cwd": ".",
+    "preferred_when": "Complete five-PR combined tree; runner must exist. Builds disposable real backend and executes strict acceptance. Independent PRs retain real_check as manual fallback."
+  },
+  "joint_check": {
+    "workflow": ".github/workflows/quality-integration.yml",
+    "trigger": "Push the complete combined SHA to codex/quality-integration-*; see docs/agent-automation/joint-verification.md",
+    "scope": "All five workflows plus contracts, docs build, and fail-closed automatic aggregate; human approval remains separate."
+  }
 }
