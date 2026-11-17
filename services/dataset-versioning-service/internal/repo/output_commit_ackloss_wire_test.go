@@ -23,6 +23,7 @@ package repo
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -820,7 +821,7 @@ func TestW1bCancelSocketDoesNotInheritCommitSuppression(t *testing.T) {
 	go func() { _, err := cancel.Read(make([]byte, 1)); done <- err }()
 	select {
 	case err := <-done:
-		if err != io.EOF {
+		if !errors.Is(err, io.EOF) {
 			t.Fatalf("cancel read: %v", err)
 		}
 	case <-time.After(time.Second):
