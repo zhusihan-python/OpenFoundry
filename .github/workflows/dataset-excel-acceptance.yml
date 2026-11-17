@@ -9,6 +9,7 @@ name: Acceptance — dataset-excel real backend
 # touching the relevant paths gets the acceptance gate.
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - "apps/web/e2e/dataset-excel-real.spec.ts"
@@ -47,6 +48,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -111,3 +116,11 @@ jobs:
             tools/smoke/dataset-excel/results/*/negative-controls.log
           if-no-files-found: warn
           retention-days: 14
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          node --version
+          pnpm --version
+          python3 --version
+          docker --version
