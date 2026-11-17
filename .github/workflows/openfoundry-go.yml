@@ -13,12 +13,12 @@ on:
       - "tools/**"
       - "Makefile"
       - ".golangci.yml"
+      - ".golangci-lint-version"
       - "buf.gen.yaml"
       - "buf.yaml"
       - "sqlc.yaml"
       - ".github/workflows/openfoundry-go.yml"
   pull_request:
-    branches: [main]
     paths:
       - "**/*.go"
       - "go.mod"
@@ -29,6 +29,7 @@ on:
       - "tools/**"
       - "Makefile"
       - ".golangci.yml"
+      - ".golangci-lint-version"
       - "buf.gen.yaml"
       - "buf.yaml"
       - "sqlc.yaml"
@@ -40,14 +41,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.62.2
-          args: --timeout 5m
+          version-file: .golangci-lint-version
+          install-only: true
+      - name: prove committed regressions fail
+        run: python3 tools/quality/test_lint_go.py
+      - name: lint against event base
+        env:
+          BASE_REV: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: make lint
 
   vet:
     name: vet

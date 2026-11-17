@@ -35,7 +35,7 @@ help: ## Show this help.
 tools: ## Install pinned dev tools (buf, golangci-lint, sqlc, etc.) into ./bin.
 	@mkdir -p $(BIN_DIR)
 	GOBIN=$(PWD)/$(BIN_DIR) $(GO) install github.com/bufbuild/buf/cmd/buf@v1.47.2
-	GOBIN=$(PWD)/$(BIN_DIR) $(GO) install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
+	GOBIN=$(PWD)/$(BIN_DIR) $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$$(cat .golangci-lint-version)
 	GOBIN=$(PWD)/$(BIN_DIR) $(GO) install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
 	GOBIN=$(PWD)/$(BIN_DIR) $(GO) install mvdan.cc/gofumpt@latest
 	@echo "Tools installed to $(PWD)/$(BIN_DIR). Add it to your PATH."
@@ -138,7 +138,7 @@ cover: test ## Open the HTML coverage report.
 .PHONY: lint
 lint: ## Run golangci-lint.
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not found — run 'make tools'"; exit 1; }
-	golangci-lint run --timeout 5m
+	python3 tools/quality/lint_go.py
 
 .PHONY: fmt
 fmt: ## Apply gofumpt + gci.
@@ -159,7 +159,7 @@ vet: ## Run `go vet`.
 # Composite gates
 # ---------------------------------------------------------------------------
 .PHONY: ci
-ci: tidy vet lint contracts-check test ## Run the full CI gate locally.
+ci: tidy vet lint contracts-check capabilities-check test ## Run the full CI gate locally.
 
 .PHONY: clean
 clean: ## Remove build artifacts.
