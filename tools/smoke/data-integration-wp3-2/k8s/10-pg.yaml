@@ -1,0 +1,71 @@
+# ofwp32 isolated acceptance — pipeline source Postgres 16.
+# The producer's tick DB AND the Debezium CDC source (same database,
+# T8 decision §1): schedules.definitions + outbox.events + scheduling.*
+# all live here. Synthetic credentials only.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ofwp32
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ofwp32-pg
+  namespace: ofwp32
+type: kubernetes.io/basic-auth
+stringData:
+  username: ofwp32
+  password: ofwp32-synthetic-acc
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ofwp32-pg
+  namespace: ofwp32
+spec:
+  serviceName: ofwp32-pg
+  replicas: 1
+  selector:
+    matchLabels: { app: ofwp32-pg }
+  template:
+    metadata:
+      labels: { app: ofwp32-pg }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine   # actual server 16.15 (verified)
+          args:
+            - -c
+            - wal_level=logical
+            - -c
+            - max_wal_senders=10
+            - -c
+            - max_replication_slots=10
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: ofwp32-pg, key: username } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: ofwp32-pg, key: password } }
+            - name: POSTGRES_DB
+              value: ofwp32
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - { containerPort: 5432, name: pg }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 384Mi }
+          readinessProbe:
+            exec: { command: [pg_isready, -U, ofwp32, -d, ofwp32] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ofwp32-pg
+  namespace: ofwp32
+spec:
+  selector: { app: ofwp32-pg }
+  ports:
+    - { port: 5432, targetPort: 5432, name: pg }

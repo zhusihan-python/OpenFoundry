@@ -1,0 +1,39 @@
+# ofwp32 isolated acceptance — the REAL Kubernetes CronJob driving the
+# outbox tick (ADR-0037 time-based triggers). Schedule "*/1" so at
+# least two AUTOMATIC cycles land within the acceptance window —
+# manual `kubectl create job` invocations are never counted as cycle
+# evidence (they are only used for negative controls).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ofwp32-schedules-tick
+  namespace: ofwp32
+spec:
+  schedule: "*/1 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 60
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels: { app: ofwp32-schedules-tick }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: schedules-tick
+              image: ofwp32/schedules-tick:acc   # built+loaded by the runner
+              imagePullPolicy: IfNotPresent
+              env:
+                - { name: SCHEDULES_DISPATCH_MODE, value: "pipeline_outbox_v1" }
+                - { name: DATABASE_URL, value: "postgres://ofwp32:ofwp32-synthetic-acc@ofwp32-pg:5432/ofwp32?sslmode=disable" }
+                - { name: SCHEDULES_REGISTRY_URL, value: "http://ofwp32-apicurio:8080" }
+                - { name: SCHEDULES_REGISTRY_GROUP, value: "default" }
+                # Explicit CDC slot gate — must equal the connector's
+                # slot.name in 60-connector.json.
+                - { name: SCHEDULES_CDC_SLOT, value: "ofwp32_outbox_pipeline" }
+              resources:
+                requests: { cpu: 50m, memory: 32Mi }
+                limits: { cpu: 200m, memory: 128Mi }

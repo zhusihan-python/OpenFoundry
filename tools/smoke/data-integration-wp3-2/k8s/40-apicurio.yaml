@@ -1,0 +1,42 @@
+# ofwp32 isolated acceptance — Apicurio Registry (in-memory profile).
+# Pinned apicurio/apicurio-registry-mem:2.6.13.Final (latest release
+# tag on BOTH hub.docker.com and quay.io; v2 REST API verified against
+# the OpenAPI spec shipped at tag 2.6.13.Final). In-memory profile on
+# purpose: ephemeral acceptance, no persistence, no second database.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ofwp32-apicurio
+  namespace: ofwp32
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ofwp32-apicurio }
+  template:
+    metadata:
+      labels: { app: ofwp32-apicurio }
+    spec:
+      containers:
+        - name: apicurio
+          image: apicurio/apicurio-registry-mem:2.6.13.Final
+          env:
+            - { name: JAVA_OPTS, value: "-Xmx384m -Xms192m" }
+          ports:
+            - { containerPort: 8080, name: http }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /apis/registry/v2/system/info, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ofwp32-apicurio
+  namespace: ofwp32
+spec:
+  selector: { app: ofwp32-apicurio }
+  ports:
+    - { port: 8080, targetPort: 8080, name: http }

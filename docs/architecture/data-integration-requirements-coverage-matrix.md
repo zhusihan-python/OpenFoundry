@@ -4,6 +4,10 @@
 
 **2026-11-17 登记**：S1 工程契约 v1 已冻结（[契约文档](data-integration-s1-dataset-contract.md)，满足 B2 开工门槛）；WP2.1（Webhook 租户隔离）/WP2.2（独立凭据密钥启动门槛）两项安全修复在**当前未提交工作树**完成并通过工程验收（[验收报告](data-integration-s1-security-acceptance.md)，GLM 编制执行 / Codex review）。本文对基线 `424921bd` 的缺口描述保持原状（基线事实）；涉及项已随文标注当前工作树状态。DI-01/DI-02 整项仍未完成，验收条款不因此勾选。
 
+**2026-11-17 增登（WP3.1）**：**WP3.1（T8 决策支持）工程评估完成**（GLM 编制，Codex 两轮 review+最终局部条件复核）：[data-integration-wp3-1-t8-scheduling-assessment.md](data-integration-wp3-1-t8-scheduling-assessment.md)——A/B 两条链路接线差距、四方案比较、待裁决清单与 WP3.2 验收草案。**工程评估完成≠机制获批≠接线验收**：T8 仍未裁决（DI-03 管道调度不因此标完成），WP3.2 未实施、未验收，T2/T8 范围不变。提交状态更正：上述 S1/安全验收及此前规划登记**已随 `f4c6194ca93d2899162887bbde10ff4126fdf618` 提交并推送至 `origin/codex/dataset-pipeline-file-io`**，前段「未提交工作树」措辞保留为验收时点快照；WP3.1 评估为该提交之后新增，不包含在该提交中。
+
+**WP3.2 工程实现与真实隔离验收完成（2026-11-17，本轮纳入分支提交；提交与远端状态以 Git 记录为准）**：用户已选 ADR-0037 CronJob→Kafka 本模块基线；GLM-5.3 初始实现，额度耗尽后 GPT-6.1 Sol 继续，Codex review。API/producer/CDC/Apicurio/canonical 产品及 V1–V8 均通过，见[隔离验收报告](data-integration-wp3-2-acceptance.md)、[决策记录](data-integration-t8-scheduling-decision.md)、[部署 profile](data-integration-wp3-2-deployment-profile.md)。非生产部署、默认 Off；生产 authorizer/DSN/Secret 等前置仍须满足。DI-03/B2 不整体关闭、manual F15 不全局关闭；T2 及其他 T 项、其它 WP 状态不变，WP3.3 不自动启动。历史 P0–P3.1 与原未决措辞保留为登记快照；T0 314–555 与各 WP 冻结估算、源版本均不变。
+
 **交付库**：交付库已确定为 OpenFoundry，源码基线为 `424921bd`，无需再询问；按本仓的工程重估已完成（T0：**工程重估与复核完成 2026-11-17**，见「来源」）。路线图的「已有/补齐」和规模按「11-16 主干」粗查（`路线图.md` 第一阶段细点说明），所指仓库未确认；已核对当前仓库代码/依赖，未定位路线图所述对应实现（PipelineDef 定义、DuckDB 引擎接线、`packages/mcp-server`、紫鸟/noon/领星连接器），无法据此识别源规划主干。注意 main（`d7c40cf5`）的 [pipeline-build-service/README.md:43](../../services/pipeline-build-service/README.md) 出现「without DuckDB/DataFusion」字样（说明本仓 runtime 不依赖二者）——不能说相关文本全仓零命中，但它是描述性说明而非实现检出，也不据此认定源主干。路线图的现状、规模和日期在本仓只作参照，不转为承诺（承诺须交付负责人正式确认）；跨仓复用仍须先补源码位置、责任人和接口再定。
 
 ## 来源
@@ -119,12 +123,12 @@
 - A：定义与构建链——JobSpec canonical 定义、DryRun、发布映射、Build/Job 生命周期（P1.5 验收 9/9、26 项 PG）。
 - A：执行——REST→Dataset→FASTER 轻量管道→下载主链验收（P1 最终）；执行体 [lightweight_runtime.go](../../services/pipeline-build-service/internal/handler/lightweight_runtime.go)。
 - B：管道调度——[data_integration.go:199](../../services/pipeline-build-service/internal/handler/data_integration.go) RunDueScheduledPipelines、[repository.go:995](../../services/pipeline-build-service/internal/postgres/repository.go) ListDuePipelines/`:1020` `UpdatePipelineNextRun`、单测 data_integration_test.go:133（cron 重算 next run）。仅源码+单测，未做真实周期验收，不能用 P2.4 同步链的调度验收替代。该 run-due 路径在 [nextrun.go:4](../../services/pipeline-build-service/internal/domain/schedule/nextrun.go) 自称 legacy scheduler，入口是 HTTP `POST /pipelines/_scheduler/run-due`（[server.go:162](../../services/pipeline-build-service/internal/server/server.go)），无周期触发方。
-- C：平台调度机制（ADR-0037）——[libs/event-scheduler](../../libs/event-scheduler/doc.go) 与 `cmd/schedules-tick` 有源码与单测：K8s CronJob 每分钟跑一次 tick，`SELECT … FOR UPDATE SKIP LOCKED` 认领到期定义并向 Kafka 发事件。该库当前唯一导入方是其自带 CLI（[cmd/schedules-tick/main.go:28](../../libs/event-scheduler/cmd/schedules-tick/main.go) 导入 event-scheduler、`:74` 实例化 Scheduler；另库内单测），自带 CLI 不等于业务接线。接线差距：无业务服务接入该库；`infra/helm` 下没有 schedules-tick 的 CronJob 部署模板（仅 `of-data-engine/templates/services.yaml` 注释与 `of-platform/README.md` 提及）；pipeline-build-service 无该事件的消费方。机制选择与批准门槛见 T8。
+- C：平台调度机制（ADR-0037）——[libs/event-scheduler](../../libs/event-scheduler/doc.go) 与 `cmd/schedules-tick` 有源码与单测：K8s CronJob 每分钟跑一次 tick，`SELECT … FOR UPDATE SKIP LOCKED` 认领到期定义并向 Kafka 发事件。该库当前唯一导入方是其自带 CLI（[cmd/schedules-tick/main.go:28](../../libs/event-scheduler/cmd/schedules-tick/main.go) 导入 event-scheduler、`:74` 实例化 Scheduler；另库内单测），自带 CLI 不等于业务接线。接线差距：无业务服务接入该库；`infra/helm` 下没有 schedules-tick 的 CronJob 部署模板（仅 `of-data-engine/templates/services.yaml` 注释与 `of-platform/README.md` 提及）；pipeline-build-service 无该事件的消费方。机制选择与批准门槛见 T8；**接线差距已由 WP3.1 评估成文（2026-11-17 工程评估完成）**：[T8 评估报告](data-integration-wp3-1-t8-scheduling-assessment.md)（登记时点快照：该报告基线 `f4c6194c`；机制未获批、本项调度验收条款不因此勾选）。
 - C：变换执行面——lightweight_runtime.go:558 stack switch 无聚合/窗口；`:727` runJoin 无反连接（详见 DI-06）。
 - C：CSV/JSON 推断——DVS CSV reader [file_rows.go:367-455](../../services/dataset-versioning-service/internal/handlers/file_rows.go) 固定首行表头/逗号 tab/BOM，非参数全集（CSV 参数化归 DI-08）；管道侧 dataset_input_real_dvs_test.go:16 读的是已导入 NDJSON，不是 raw 文件推断。
 - 待对齐 T2（以 T0 为前提）：路线图与源规划按 PipelineDef/TypeScript/DuckDB 描述（「管道写成代码（PipelineDef）已有」），本仓实际是 Go `pipeline_ir.v1` + local-table runtime；不自行换引擎/改语言，「研发写代码→IR」的交付契约需架构组与数据与接入组共同裁定。
 
-**缺口**：调度机制裁定（T8）与真实周期验收（两次周期+重启+并发+身份+失败保旧）；代码交付契约落地（T2）；P2（批次 D，排在 C2 的 CSV 持久化配置交付之后，不阻塞本项 P0 收尾）：JSON 结构推断（嵌套展开策略、类型推断），CSV 通过 DI-08 的持久化配置接入。
+**调度分项已闭合**：本模块 T8 已选 ADR-0037 CronJob→Kafka，WP3.2 工程实现与真实隔离 V1–V8 验收完成（[验收报告](data-integration-wp3-2-acceptance.md)），非生产部署、DI-03 不整体关闭。**剩余缺口**：代码交付契约落地（T2）；P2（批次 D，排在 C2 的 CSV 持久化配置交付之后，不阻塞本项 P0 收尾）：JSON 结构推断（嵌套展开策略、类型推断），CSV 通过 DI-08 的持久化配置接入。
 
 **前置依赖/协作边界**：开工门槛是 DI-01 中 Dataset 的身份、版本、Schema、输入/输出发布和权限契约冻结（**已由 S1 工程契约 v1 满足，2026-11-17 冻结**，见[契约文档](data-integration-s1-dataset-contract.md)；不必等 Core 其余细点）；调度实现另以 T8 为前置；契约裁定涉及架构组；调度长期授权与 ADR-0025/ADR-0037 边界（现 P2.4 arm 身份重启/过期需重授权——不等于长期后台身份或统一 Automate）。
 
@@ -378,7 +382,7 @@
 | T5 | Excel Parser 分批范围（格式集/多 sheet/多输出/错误隔离等未裁剪） | 产品（数据与接入组起草） | DI-11 | raw workbook 管道输入链路 |
 | T6 | 出站 Webhook 归属（Data Connection 细点 vs Action 副作用）与租户修法 | 数据与接入组 × 本体构建/用例开发 | DI-02 | registrations.go:737/:746 租户修复（**已完成并工程验收，未提交**——WP2.1；T6 归属裁决本身仍待决） |
 | T7 | 电商连接器（紫鸟/noon/领星）实现位置映射 | 数据与接入组（Allen） | DI-02 | 通用连接器补差不依赖此项 |
-| T8 | 管道调度机制选择与接线差距：以现行 Accepted ADR-0037 的 K8s CronJob→Kafka 事件为**优先基线**，先核其接线差距（业务服务接入、CronJob 部署模板、pipeline 事件消费方）；其他已批准平台机制按适用范围评估。若要独立补齐 legacy run-due 触发链而偏离 ADR-0037，须先获限定例外或替代 ADR（范围/退出/迁移），不能把 legacy 当不需要批准的平级实现选项（对照：P2.4 当年即以限定例外方式偏离 ADR-0025）；重新引入 Temporal 同样须另获架构决策。候选可比较，但优先级与批准门槛如上——机制未选定、接线未验收 | 架构组 + 数据与接入组 + 平台运行时 | DI-01、DI-03 | 先盘点 `libs/event-scheduler`/`schedules-tick`、CronJob 模板、Kafka 事件合同和 pipeline consumer；T8 只阻塞 B2 调度实现，不阻塞连接器或安全修复 |
+| T8 | 本模块已选 ADR-0037 CronJob→Kafka，WP3.2 工程实现与真实隔离验收完成；四方案及批准门槛历史见 [WP3.1 评估](data-integration-wp3-1-t8-scheduling-assessment.md) | 架构组 + 数据与接入组 + 平台运行时 | DI-01、DI-03 | 本模块调度 gate 已满足，见[验收报告](data-integration-wp3-2-acceptance.md)与[决策记录](data-integration-t8-scheduling-decision.md)；生产前置仍按[部署 profile](data-integration-wp3-2-deployment-profile.md)，不整体关闭 DI-03/B2、不改变其他 T 项 |
 | T9 | DI-08 基础预览与 SQL 扩展的产品关闭条件：基础预览可在 P1 关闭；Follow a SQL query through time 要么随 DI-09 关闭，要么保留为 DI-08 关闭门槛；Time Travel 的 Beta 标记不构成延期授权 | 产品 + 数据与接入组 | DI-08、DI-09 | 基础预览、CSV 持久化配置和非 SQL 验收可继续；DI-09 SQL 主链不提前
 
 ## 跨模块协作边界

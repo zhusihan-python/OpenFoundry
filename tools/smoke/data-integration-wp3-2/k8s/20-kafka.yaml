@@ -1,0 +1,69 @@
+# ofwp32 isolated acceptance — single-node KRaft Kafka.
+# Env mirrors infra/compose/docker-compose.yml's proven dev shape
+# (apache/kafka:3.7.1, PLAINTEXT, single quorum voter), capped heap to
+# fit the 5 GiB kind node budget.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ofwp32-kafka
+  namespace: ofwp32
+spec:
+  serviceName: ofwp32-kafka
+  replicas: 1
+  selector:
+    matchLabels: { app: ofwp32-kafka }
+  template:
+    metadata:
+      labels: { app: ofwp32-kafka }
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:3.7.1   # verified pullable (daemon side)
+          env:
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker,controller" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://ofwp32-kafka:9092" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT" }
+            # Single-node combined KRaft: the quorum address MUST be
+            # localhost, not the Service DNS — a pod that is not yet
+            # Ready never enters the (legacy) Endpoints of its Service,
+            # so a Service-routed voter address deadlocks the very
+            # readiness it depends on (empty endpoints → broker cannot
+            # reach the controller → never Ready → endpoints stay
+            # empty). Compose worked because container DNS resolves
+            # directly, bypassing any readiness gate.
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@localhost:9093" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "1" }
+            - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "true" }
+            - { name: CLUSTER_ID, value: "ofwp32-kafka-cluster-1" }
+            - { name: KAFKA_HEAP_OPTS, value: "-Xmx512m -Xms256m" }
+          ports:
+            - { containerPort: 9092, name: plaintext }
+            - { containerPort: 9093, name: controller }
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          readinessProbe:
+            tcpSocket: { port: 9092 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ofwp32-kafka
+  namespace: ofwp32
+spec:
+  selector: { app: ofwp32-kafka }
+  ports:
+    - { port: 9092, targetPort: 9092, name: plaintext }
+    # Controller quorum port MUST be exposed: KAFKA_CONTROLLER_QUORUM_VOTERS
+    # dials ofwp32-kafka:9093 through this Service (compose worked because
+    # docker DNS reached the container directly on every port). Without
+    # it the broker times out registering with the quorum and crash-loops.
+    - { port: 9093, targetPort: 9093, name: controller }

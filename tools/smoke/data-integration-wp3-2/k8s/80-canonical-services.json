@@ -1,0 +1,312 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "name": "ofwp32-dvs-files",
+        "namespace": "ofwp32"
+      },
+      "spec": {
+        "accessModes": [
+          "ReadWriteOnce"
+        ],
+        "resources": {
+          "requests": {
+            "storage": "256Mi"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "name": "ofwp32-pbs-files",
+        "namespace": "ofwp32"
+      },
+      "spec": {
+        "accessModes": [
+          "ReadWriteOnce"
+        ],
+        "resources": {
+          "requests": {
+            "storage": "256Mi"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "ofwp32-dvs",
+        "namespace": "ofwp32"
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app": "ofwp32-dvs"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "ofwp32-dvs"
+            }
+          },
+          "spec": {
+            "securityContext": {
+              "runAsUser": 65532,
+              "runAsGroup": 65532,
+              "fsGroup": 65532
+            },
+            "containers": [
+              {
+                "name": "dvs",
+                "image": "ofwp32/dvs:runtime-sol",
+                "imagePullPolicy": "Never",
+                "env": [
+                  {
+                    "name": "HOST",
+                    "value": "0.0.0.0"
+                  },
+                  {
+                    "name": "JWT_SECRET",
+                    "value": "ofwp32-runtime-synthetic-jwt-20261117-only"
+                  },
+                  {
+                    "name": "DATABASE_URL",
+                    "value": "postgres://ofwp32:ofwp32-synthetic-acc@ofwp32-pg:5432/ofwp32_dvs?sslmode=disable"
+                  },
+                  {
+                    "name": "DATASET_FILES_BASE_URL",
+                    "value": "http://ofwp32-dvs:50078"
+                  },
+                  {
+                    "name": "DATASET_FILES_BASE_DIR",
+                    "value": "/data/files"
+                  },
+                  {
+                    "name": "PORT",
+                    "value": "50078"
+                  }
+                ],
+                "ports": [
+                  {
+                    "containerPort": 50078
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "50m",
+                    "memory": "64Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "384Mi"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "data",
+                    "mountPath": "/data"
+                  },
+                  {
+                    "name": "data",
+                    "mountPath": "/home/nonroot"
+                  }
+                ],
+                "readinessProbe": {
+                  "tcpSocket": {
+                    "port": 50078
+                  },
+                  "periodSeconds": 2
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "data",
+                "persistentVolumeClaim": {
+                  "claimName": "ofwp32-dvs-files"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "ofwp32-dvs",
+        "namespace": "ofwp32"
+      },
+      "spec": {
+        "selector": {
+          "app": "ofwp32-dvs"
+        },
+        "ports": [
+          {
+            "port": 50078,
+            "targetPort": 50078
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "ofwp32-pbs",
+        "namespace": "ofwp32"
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app": "ofwp32-pbs"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "ofwp32-pbs"
+            }
+          },
+          "spec": {
+            "securityContext": {
+              "runAsUser": 65532,
+              "runAsGroup": 65532,
+              "fsGroup": 65532
+            },
+            "containers": [
+              {
+                "name": "pbs",
+                "image": "ofwp32/pbs:runtime-sol-v3",
+                "imagePullPolicy": "Never",
+                "env": [
+                  {
+                    "name": "HOST",
+                    "value": "0.0.0.0"
+                  },
+                  {
+                    "name": "JWT_SECRET",
+                    "value": "ofwp32-runtime-synthetic-jwt-20261117-only"
+                  },
+                  {
+                    "name": "DATABASE_URL",
+                    "value": "postgres://ofwp32:ofwp32-synthetic-acc@ofwp32-pg:5432/ofwp32?sslmode=disable"
+                  },
+                  {
+                    "name": "DATASET_SERVICE_URL",
+                    "value": "http://ofwp32-fault-proxy:8080"
+                  },
+                  {
+                    "name": "SCHEDULER_CONSUMER_ENABLED",
+                    "value": "true"
+                  },
+                  {
+                    "name": "SCHEDULER_KAFKA_BOOTSTRAP_SERVERS",
+                    "value": "ofwp32-kafka:9092"
+                  },
+                  {
+                    "name": "SCHEDULER_GROUP_ID",
+                    "value": "ofwp32-runtime-v1"
+                  },
+                  {
+                    "name": "SCHEDULER_CREDENTIAL_ENCRYPTION_KEY",
+                    "value": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+                  },
+                  {
+                    "name": "SCHEDULER_KAFKA_SECURITY_PROTOCOL",
+                    "value": "PLAINTEXT"
+                  },
+                  {
+                    "name": "STORAGE_BACKEND",
+                    "value": "local"
+                  },
+                  {
+                    "name": "DATA_DIR",
+                    "value": "/data/pipeline"
+                  },
+                  {
+                    "name": "PORT",
+                    "value": "50081"
+                  },
+                  {
+                    "name": "SCHEDULER_LEASE_TTL",
+                    "value": "15"
+                  },
+                  {
+                    "name": "SCHEDULER_HEARTBEAT_INTERVAL",
+                    "value": "5"
+                  }
+                ],
+                "ports": [
+                  {
+                    "containerPort": 50081
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "50m",
+                    "memory": "64Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "384Mi"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "data",
+                    "mountPath": "/data"
+                  }
+                ],
+                "readinessProbe": {
+                  "tcpSocket": {
+                    "port": 50081
+                  },
+                  "periodSeconds": 2
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "data",
+                "persistentVolumeClaim": {
+                  "claimName": "ofwp32-pbs-files"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "ofwp32-pbs",
+        "namespace": "ofwp32"
+      },
+      "spec": {
+        "selector": {
+          "app": "ofwp32-pbs"
+        },
+        "ports": [
+          {
+            "port": 50081,
+            "targetPort": 50081
+          }
+        ]
+      }
+    }
+  ]
+}

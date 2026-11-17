@@ -1,0 +1,53 @@
+# ofwp32 isolated acceptance — Debezium Kafka Connect worker.
+# Pinned quay.io/debezium/connect:2.7.2.Final (2.7 series docs verified
+# by review; JsonConverter env mirrors the compose dev shape). Heap
+# capped for the 5 GiB node budget. The CONNECTOR itself is registered
+# via the REST API by the runner (no Strimzi in the isolated cluster).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ofwp32-connect
+  namespace: ofwp32
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ofwp32-connect }
+  template:
+    metadata:
+      labels: { app: ofwp32-connect }
+    spec:
+      containers:
+        - name: connect
+          image: quay.io/debezium/connect:2.7.2.Final
+          env:
+            - { name: BOOTSTRAP_SERVERS, value: "ofwp32-kafka:9092" }
+            - { name: GROUP_ID, value: "ofwp32-connect" }
+            - { name: CONFIG_STORAGE_TOPIC, value: "ofwp32_connect_configs" }
+            - { name: OFFSET_STORAGE_TOPIC, value: "ofwp32_connect_offsets" }
+            - { name: STATUS_STORAGE_TOPIC, value: "ofwp32_connect_statuses" }
+            - { name: CONFIG_STORAGE_REPLICATION_FACTOR, value: "1" }
+            - { name: OFFSET_STORAGE_REPLICATION_FACTOR, value: "1" }
+            - { name: STATUS_STORAGE_REPLICATION_FACTOR, value: "1" }
+            - { name: KEY_CONVERTER, value: "org.apache.kafka.connect.json.JsonConverter" }
+            - { name: VALUE_CONVERTER, value: "org.apache.kafka.connect.json.JsonConverter" }
+            - { name: ENABLE_DEBEZIUM_SCRIPTING, value: "false" }
+            - { name: KAFKA_HEAP_OPTS, value: "-Xmx640m -Xms320m" }
+          ports:
+            - { containerPort: 8083, name: rest }
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { cpu: "1", memory: 896Mi }
+          readinessProbe:
+            httpGet: { path: /, port: 8083 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ofwp32-connect
+  namespace: ofwp32
+spec:
+  selector: { app: ofwp32-connect }
+  ports:
+    - { port: 8083, targetPort: 8083, name: rest }
