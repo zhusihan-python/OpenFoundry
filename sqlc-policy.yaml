@@ -1,0 +1,13 @@
+status: not-integrated
+reason: >
+  Goose-style migrations under services/*/migrations are the source of truth
+  for schemas; no service has adopted sqlc queries yet. Inventory when this
+  declaration was added: zero sql entries in sqlc.yaml, zero sqlc-generated
+  files in the tree, no service queries/schema layout.
+enable_when: >
+  A service adopts sqlc: add its sql block (engine/schema/queries/gen.out)
+  to sqlc.yaml, run `make gen-sqlc`, commit the generated code, and flip
+  this status to integrated. CI then enforces a real sqlc generate plus a
+  drift check with no workflow edits. Do not flip the status without
+  committed generated code — the policy gate exists so the repo never
+  claims validation it does not have.

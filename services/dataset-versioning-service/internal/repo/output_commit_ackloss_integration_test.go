@@ -245,15 +245,22 @@ func TestPGP26DatasetWireCommitAckLossReplaysReceipt(t *testing.T) {
 	state := newW1bFaultState()
 	t.Cleanup(state.CloseAll)
 	faultPool := w1bFaultPool(ctx, t, pool.Config().ConnString(), state)
+	faultConn, err := faultPool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	faultPGConn := faultConn.Conn().PgConn()
 	var faultPID int32
-	if err := faultPool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&faultPID); err != nil {
+	err = faultConn.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&faultPID)
+	faultConn.Release()
+	if err != nil {
 		t.Fatalf("cache fault backend pid: %v", err)
 	}
 	if faultPID == 0 {
 		t.Fatal("pg_backend_pid returned 0")
 	}
-	if n := state.connCount(); n != 1 {
-		t.Fatalf("fault pool must hold exactly one connection (MaxConns=1), dialed %d", n)
+	if err := state.singleBusinessSession(); err != nil {
+		t.Fatal(err)
 	}
 
 	// Test-owned trigger, scoped to exactly this fixture row.
@@ -328,8 +335,18 @@ func TestPGP26DatasetWireCommitAckLossReplaysReceipt(t *testing.T) {
 	if !seen || !suppress || !eof {
 		t.Fatalf("wire evidence incomplete: commitFrameSeen=%v suppressActivated=%v EOFDelivered=%v", seen, suppress, eof)
 	}
-	if n := state.connCount(); n != 1 {
-		t.Fatalf("fault pool dialed %d connections; the PID proof assumes exactly one", n)
+	// pgx v5.7.4 asyncClose may dial a separate CancelRequest socket after
+	// Commit returns. Audit after cleanup, so late dials cannot escape the proof.
+	select {
+	case <-faultPGConn.CleanupDone():
+		if !state.allClosed() {
+			t.Fatal("fault sockets remain open after pgx cleanup")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("fault connection asynchronous cleanup did not finish")
+	}
+	if err := state.singleBusinessSession(); err != nil {
+		t.Fatal(err)
 	}
 	if n := buildCalls.Load(); n != 1 {
 		t.Fatalf("build must run exactly once on the faulted first attempt, ran %d", n)
@@ -397,5 +414,35 @@ func TestPGP26DatasetWireCommitAckLossReplaysReceipt(t *testing.T) {
 	}
 	if n := w1Count(t, pool, `SELECT COUNT(*) FROM dataset_output_commit_receipts WHERE dataset_id=$1 AND idempotency_key=$2`, dataset.ID, key); n != 1 {
 		t.Fatalf("replay must not insert another receipt, got %d", n)
+	}
+}
+
+// Negative control uses two actual PostgreSQL sessions: MaxConns=1 on each
+// pool cannot justify treating a second StartupMessage as a cleanup cancel.
+func TestPGW1bSessionAuditRejectsRealSecondBusinessConnection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	observer := bootPool(ctx, t)
+	state := newW1bFaultState()
+	first := w1bFaultPool(ctx, t, observer.Config().ConnString(), state)
+	second := w1bFaultPool(ctx, t, observer.Config().ConnString(), state)
+	t.Cleanup(state.CloseAll)
+	var firstPID, secondPID int32
+	if err := first.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&firstPID); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.singleBusinessSession(); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&secondPID); err != nil {
+		t.Fatal(err)
+	}
+	if firstPID == secondPID {
+		t.Fatalf("negative control did not establish distinct business PIDs: %d", firstPID)
+	}
+	if err := state.singleBusinessSession(); err == nil {
+		t.Fatal("real second PostgreSQL business session escaped the PID proof")
+	} else {
+		t.Logf("negative control rejected distinct backend PIDs %d and %d: %v", firstPID, secondPID, err)
 	}
 }

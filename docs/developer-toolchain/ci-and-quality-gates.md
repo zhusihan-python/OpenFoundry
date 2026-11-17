@@ -16,7 +16,10 @@ The Go CI pipeline does more than compile:
 - it runs `go vet ./...`
 - it checks `go.mod` / `go.sum` drift after `go mod tidy`
 - it lints with `golangci-lint`
-- it regenerates proto and sqlc outputs and fails on drift
+- it regenerates proto outputs and fails on drift
+- it gates sqlc via config policy (`sqlc-policy.yaml`): sqlc is not
+  integrated, so the job reports generation as not-applicable and only
+  claims the policy check passed
 - it checks the stable capabilities snapshot
 - it runs unit and integration tests
 
