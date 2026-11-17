@@ -64,7 +64,16 @@ pgRuntimeConfig:
   enabled: true
   instances: 3
   syncReplicas: 1
-  walLevel: replica
+  # WP3.2 / T8 (review fix 2026-11-17): this cluster hosts the pipeline
+  # library (BC pipeline_authoring, database `app`), whose outbox.events
+  # is now a Debezium CDC source — wal_level must be logical and the
+  # slot/walsender budgets match the pg-policy CDC-source shape (CNPG HA
+  # already consumes 2 walsenders/slots for its 2 standbys). Changing
+  # wal_level on an EXISTING cluster is applied by the CNPG operator via
+  # rolling restart — operator step, see
+  # docs/architecture/data-integration-wp3-2-deployment-profile.md.
+  # Bootstrap SQL alone would only cover first-init databases.
+  walLevel: logical
   storageClass: ceph-rbd
   storageSize: 100Gi
   walStorageSize: 30Gi
@@ -79,8 +88,8 @@ pgRuntimeConfig:
     workMem: 32MB
     effectiveCacheSize: 4GB
     maxConnections: "400"
-    maxReplicationSlots: "4"
-    maxWalSenders: "6"
+    maxReplicationSlots: "8"
+    maxWalSenders: "10"
 
 pgLakekeeper:
   enabled: true

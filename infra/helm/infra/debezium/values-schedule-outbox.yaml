@@ -1,0 +1,20 @@
+# WP3.2 / T8 — co-located SCHEDULE OUTBOX enablement profile (test/staging).
+#
+# Enables the outbox-pipeline KafkaConnector against the SAME database
+# the schedules-tick CronJob writes (same-source contract): the
+# pipeline library = BC `pipeline_authoring` on the pg-runtime-config
+# cluster, database `app`. Hostname/dbname below mirror the DSN that
+# postgres-clusters renders as Secret `pipeline-authoring-db-dsn`
+# (writer_url host = pg-runtime-config-rw.openfoundry.svc.cluster.local,
+# database = app) — the mechanical cross-check is part of the WP3.2
+# verification (see
+# docs/architecture/data-integration-wp3-2-deployment-profile.md).
+#
+# NOT a production topology declaration: unpausing still requires the
+# operator gates in that doc (wal_level=logical + prep SQL on
+# pg-runtime-config, schemas registered, tick CronJob enabled AFTER the
+# connector is RUNNING). The chart default (values.yaml) stays OFF.
+pipelineOutbox:
+  enabled: true
+  hostname: pg-runtime-config-rw.openfoundry.svc.cluster.local
+  dbname: app

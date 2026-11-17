@@ -78,6 +78,47 @@ spec:
           name: __dlq.outbox-pg-policy.v1
           patternType: literal
         operations: [Write, Create, Describe]
+      {{- if .Values.pipelineOutbox.enabled | default false }}
+      # WP3.2 / T8 — outbox-pipeline destinations. Connect is the ONLY
+      # Kafka producer on this chain: routed triggers
+      # (pipeline.builds.v1), consumer-published outcomes
+      # (pipeline.schedule.outcomes.v1), poison-DLQ intents the consumer
+      # writes as outbox rows (__dlq.pipeline.builds.v1), this
+      # connector's own processing-errors DLQ (__dlq.outbox-pipeline.v1)
+      # and the Debezium heartbeat topic
+      # (<topic.heartbeat.prefix>.<topicPrefix>, i.e.
+      # __debezium-heartbeat.pg-runtime-config — AbstractTopicNaming
+      # Strategy#heartbeatTopic, v2.7.2.Final source; broker auto-create
+      # is disabled, so it is pre-provisioned in the kafka-cluster chart
+      # together with these topics). The scheduling consumer
+      # (pipeline-build-service) only READS — its KafkaUser is in the
+      # kafka-cluster chart.
+      - resource:
+          type: topic
+          name: pipeline.builds.v1
+          patternType: literal
+        operations: [Write, Describe]
+      - resource:
+          type: topic
+          name: pipeline.schedule.outcomes.v1
+          patternType: literal
+        operations: [Write, Describe]
+      - resource:
+          type: topic
+          name: __dlq.pipeline.builds.v1
+          patternType: literal
+        operations: [Write, Describe]
+      - resource:
+          type: topic
+          name: __dlq.outbox-pipeline.v1
+          patternType: literal
+        operations: [Write, Create, Describe]
+      - resource:
+          type: topic
+          name: {{ .Values.pipelineOutbox.topicPrefix | default "pg-runtime-config" | printf "__debezium-heartbeat.%s" }}
+          patternType: literal
+        operations: [Write, Describe]
+      {{- end }}
       # TransactionalId for idempotent producer (Connect uses one per
       # task; literal grant scoped to this cluster's prefix).
       - resource:

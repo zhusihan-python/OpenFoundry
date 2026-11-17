@@ -65,6 +65,16 @@ spec:
       - secretName: openfoundry-cluster-ca-cert
         certificate: ca.crt
   {{- end }}
+  {{- if .Values.pipelineOutbox.enabled | default false }}
+  # WP3.2 — FileConfigProvider reads connector DB credentials from a
+  # file-mounted Secret. Strimzi 1.0 REMOVED spec.externalConfiguration
+  # (0 occurrences in the 1.0.0 KafkaConnect CRD, verified against the
+  # released CRD); the 1.0 pattern is the pod template below:
+  # spec.template.pod.volumes + template.connectContainer.volumeMounts,
+  # mounted at /mnt/<volume>/ per the 1.0 configuring docs ("Loading
+  # configuration values from external sources"). Changing the mounts
+  # requires a restart of the Connect cluster.
+  {{- end }}
   config:
     # Single-broker dev — RF and ISR cannot exceed broker count.
     config.storage.replication.factor: 1
@@ -90,6 +100,18 @@ spec:
     consumer.fetch.min.bytes: "1"
     # Health & observability.
     metrics.recording.level: INFO
+    {{- if .Values.pipelineOutbox.enabled | default false }}
+    # WP3.2 — resolve ${secrets:...} placeholders in connector configs
+    # (outbox-pipeline database.user/password) from the Secret mounted
+    # under /mnt/pipeline-outbox-cdc via spec.template.pod.volumes (see
+    # template below). org.apache.kafka.common.config.provider.
+    # FileConfigProvider ships inside kafka-clients on every Kafka
+    # worker image (verified in debezium/connect:2.7.2.Final; the
+    # Strimzi-built worker uses the same client jar), so this needs no
+    # plugin and no Kubernetes API read permissions.
+    config.providers: secrets
+    config.providers.secrets.class: org.apache.kafka.common.config.provider.FileConfigProvider
+    {{- end }}
   resources:
     requests:
       cpu: "1"
@@ -116,6 +138,19 @@ spec:
             matchLabels:
               strimzi.io/cluster: debezium
               strimzi.io/kind: KafkaConnect
+      {{- if .Values.pipelineOutbox.enabled | default false }}
+      volumes:
+        - name: pipeline-outbox-cdc
+          secret:
+            secretName: {{ .Values.pipelineOutbox.cdcCredentials.secretName | default "pg-runtime-config-debezium" }}
+      {{- end }}
+    {{- if .Values.pipelineOutbox.enabled | default false }}
+    connectContainer:
+      volumeMounts:
+        - name: pipeline-outbox-cdc
+          mountPath: /mnt/pipeline-outbox-cdc
+          readOnly: true
+    {{- end }}
     # Buildah extracts image layers via mount-namespace setup that
     # needs CAP_SYS_ADMIN ("remount /, flags: 0x44000: permission
     # denied"). For the dev cluster we let the build container run

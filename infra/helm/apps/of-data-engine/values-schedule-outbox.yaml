@@ -1,0 +1,23 @@
+# WP3.2 / T8 — co-located SCHEDULE OUTBOX enablement profile (test/staging).
+#
+# Enables the schedules-tick CronJob against the pipeline-library DSN
+# that postgres-clusters ACTUALLY generates for the `pipeline_authoring`
+# bounded context (cluster pg-runtime-config, database `app`,
+# search_path pipeline_authoring): Secret `pipeline-authoring-db-dsn`,
+# key `writer_url`. The mechanical cross-check (this secretName/key must
+# appear in the rendered postgres-clusters output, and the DSN's
+# host/database must equal the debezium pipelineOutbox host/dbname) is
+# part of the WP3.2 verification — see
+# docs/architecture/data-integration-wp3-2-deployment-profile.md.
+#
+# NOT a production topology declaration: enabling this profile on the
+# legacy prod clusters still requires the operator gates in that doc
+# (wal_level=logical + prep SQL on pg-runtime-config, outbox-pipeline
+# connector unpaused, schedule-event schemas registered, ACLs). The
+# chart default (values.yaml) stays fully OFF.
+schedulesTick:
+  enabled: true
+  dsnSecret:
+    name: pipeline-authoring-db-dsn
+    key: writer_url
+  cdcSlot: debezium_outbox_pipeline

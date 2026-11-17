@@ -372,3 +372,32 @@ services:
     # `analytical_expressions` schema is migrated by the gateway's
     # pre-install Job (`templates/sql-bi-gateway-migrations.yaml`).
     enabled: false
+
+# WP3.2 / T8 — schedules-tick outbox-dispatch CronJob (default OFF).
+# Enabling requires the outbox-pipeline Debezium connector RUNNING
+# (see infra/helm/infra/debezium/values.yaml pipelineOutbox) and both
+# schedule-event schemas registered in Apicurio; the CLI's registry
+# fingerprint + CDC slot gates fail closed otherwise.
+# WP3.2 / T8 — `schedules-tick` outbox-dispatch CronJob. Default OFF.
+#
+# SAME-SOURCE CONTRACT (review fix, 2026-11-17): when enabled,
+# dsnSecret.name/key are REQUIRED (no guessed default — the previous
+# `pg-schemas-app`/`dsn` default pointed at a different cluster than
+# the pipeline library). They MUST address the SAME database the
+# outbox-pipeline Debezium connector tails: today that is the pipeline
+# library = BC `pipeline_authoring` on the `pg-runtime-config` cluster,
+# database `app` — the Secret postgres-clusters renders as
+# `pipeline-authoring-db-dsn` (writer_url/reader_url; see
+# postgres-clusters/templates/dsn-secrets.yaml and dsnSecrets.bcs in
+# postgres-clusters/values.yaml). Pointing this at any other
+# cluster/database silently splits producer and CDC relay.
+# Render+validation profile: values-schedule-outbox.yaml.
+schedulesTick:
+  enabled: false
+  schedule: "* * * * *"
+  image: openfoundry/schedules-tick:dev
+  registryUrl: http://apicurio-registry.apicurio.svc:8080
+  cdcSlot: debezium_outbox_pipeline
+  dsnSecret:
+    name: ""   # REQUIRED when enabled — e.g. pipeline-authoring-db-dsn
+    key: ""    # REQUIRED when enabled — e.g. writer_url

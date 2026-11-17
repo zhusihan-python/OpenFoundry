@@ -1,0 +1,20 @@
+# Apicurio 2.6 profile for the kafka-cluster chart (WP3.2 / T8).
+#
+# Use when the deployed registry is pinned to the 2.6.x line
+# (apicurio/apicurio-registry-mem:2.6.13.Final in the isolated
+# acceptance; see tools/smoke/data-integration-wp3-2/CHECKPOINT.md):
+#   * the legacy ontology-reindex registration Job speaks the v3 Core
+#     API, which 2.6.x does not serve — it MUST be switched off here
+#     (registerSchemas=false) instead of letting its post-install hook
+#     fail every install;
+#   * the schedule-events registration Job (v2 API, pinned
+#     fingerprints) takes over as the only active registrar.
+#
+# Minimal version split only — the legacy Job template itself is
+# untouched (root review round 2); once the platform pins one registry
+# line for both jobs, collapse this profile back into values.yaml.
+apicurio:
+  registerSchemas: false
+  scheduleEvents:
+    enabled: true
+    group: default

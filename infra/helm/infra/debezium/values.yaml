@@ -9,3 +9,55 @@
 # blocks and to skip the `KafkaUser` resource entirely.
 kafkaAuth:
   enabled: true
+
+# WP3.2 / T8 — outbox connector for the PIPELINE service database.
+# Default OFF; when enabled the KafkaConnector still lands paused and
+# must be unpaused manually (see the template header for the unblock
+# gates). The schedules-tick CronJob's CDC slot gate must reference the
+# SAME slotName configured here.
+#
+# SAME-SOURCE CONTRACT (review fix, 2026-11-17): hostname/dbname are
+# REQUIRED when enabled — no guessed defaults. They must address the
+# SAME database schedules-tick writes (pipeline library = BC
+# `pipeline_authoring` on the `pg-runtime-config` cluster, database
+# `app`). The previous default (pg-schemas-rw) pointed at a different
+# cluster; a slot on any other database would silently miss every
+# event. CDC must connect the rw service DIRECTLY (never a
+# transaction-pooling PgBouncer). Render+validation profile:
+# values-schedule-outbox.yaml.
+pipelineOutbox:
+  enabled: false
+  # REQUIRED when enabled — e.g. pg-runtime-config-rw.openfoundry.svc.cluster.local
+  hostname: ""
+  # REQUIRED when enabled — database holding outbox.events, e.g. `app`.
+  dbname: ""
+  # Stable identity prefix (offset namespace and source label).
+  # Cluster-name convention, like outbox-pg-policy (`pg-policy`).
+  # The connector's heartbeat topic is
+  # <topic.heartbeat.prefix>.<topicPrefix> (Debezium 2.7
+  # AbstractTopicNamingStrategy#heartbeatTopic; defaults
+  # __debezium-heartbeat + ".") — if you override topicPrefix,
+  # re-provision that topic and its Connect ACL too (pre-provisioned
+  # as __debezium-heartbeat.pg-runtime-config in the kafka-cluster
+  # chart).
+  topicPrefix: pg-runtime-config
+  slotName: debezium_outbox_pipeline
+  publicationName: debezium_outbox_pipeline_pub
+  # Connector source-DB login (created by the operator prep SQL in
+  # postgres-clusters/files/pipeline-outbox-cdc-prep.sql: REPLICATION +
+  # USAGE/SELECT on outbox.events ONLY). The Secret is mounted into the
+  # Connect pods at /mnt/pipeline-outbox-cdc via spec.template.pod.
+  # volumes + template.connectContainer.volumeMounts (Strimzi 1.0
+  # removed spec.externalConfiguration) and read with the Kafka-builtin
+  # FileConfigProvider — see kafka-connect.yaml. cdcCredentials.create
+  # renders the Secret from the values below (an EXPLICIT false is
+  # honored — ESO-managed prod sets it false): dev/test placeholder,
+  # rotate via ESO/Vault in prod; the password MUST equal the one the
+  # prep SQL sets on the role.
+  cdcCredentials:
+    secretName: pg-runtime-config-debezium
+    create: true
+    username: debezium_pipeline_cdc
+    password: PLACEHOLDER_ROTATE_VIA_EXTERNAL_SECRETS
+  dlqTopic: __dlq.outbox-pipeline.v1
+  dlqReplicationFactor: "3"

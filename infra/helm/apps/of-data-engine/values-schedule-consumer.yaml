@@ -1,0 +1,70 @@
+# WP3.2 / T8 — pipeline-build-service SCHEDULING CONSUMER enablement
+# profile (mTLS over the EXISTING 9093 tls listener; no new listener is
+# created by this profile — SASL_SSL is only an option if an actual
+# listener scenario demands it later).
+#
+# Cross-task contract (root-synchronized 2026-11-17): A implements
+# exactly these Kafka auth fields; C does not invent others:
+#   SCHEDULER_KAFKA_SECURITY_PROTOCOL=SSL
+#   SCHEDULER_KAFKA_TLS_CA_FILE   = /mnt/scheduler-ca/ca.crt
+#   SCHEDULER_KAFKA_TLS_CERT_FILE = /mnt/scheduler-tls/user.crt
+#   SCHEDULER_KAFKA_TLS_KEY_FILE  = /mnt/scheduler-tls/user.key
+# Material: TLS user Secret `pipeline-build-service-scheduler`
+# (user.crt/user.key — issued by Strimzi when the kafka-cluster chart is
+# enabled with pipelineSchedulerUser.enabled=true) and the cluster CA
+# Secret `openfoundry-cluster-ca-cert` (ca.crt); both mounted read-only.
+# Two mounts, two directories (Kubernetes forbids two volumes at the
+# same mountPath).
+#
+# Operator must still supply SCHEDULER_CREDENTIAL_ENCRYPTION_KEY (base64
+# of 32 bytes, root-frozen semantics; via ESO/secret injection —
+# deliberately NOT wired here) and A's SCHEDULER_GROUP_ID default
+# (`pipeline-build-service-scheduler`) already matches the KafkaUser.
+#
+# PRECONDITION NOT MET BY TODAY'S KAFKA CR: the openfoundry Kafka CR
+# renders listeners/config/rack only — it does NOT set
+# spec.kafka.authorization, so the broker runs without an authorizer
+# and the scheduler KafkaUser ACLs are NOT enforced yet. Until an
+# authorizer decision lands, this profile wires AUTHENTICATION (mTLS)
+# only; read-only enforcement of the scheduler identity stays an
+# expectation artifact. Real mTLS/ACL/CNPG runtime is unverified this
+# round — see
+# docs/architecture/data-integration-wp3-2-deployment-profile.md §7.
+#
+# PRECONDITION — CROSS-NAMESPACE SECRET DELIVERY (cannot be skipped;
+# skipping it fails the PBS pods with FailedMount): both mounted
+# Secrets are generated in the `kafka` namespace (KafkaUser
+# `pipeline-build-service-scheduler` → user.crt/user.key; cluster CA
+# `openfoundry-cluster-ca-cert` → ca.crt), while PBS deploys to the
+# `openfoundry` namespace by default — Kubernetes does not allow
+# cross-namespace mounts. BEFORE enabling, deliver both Secrets to the
+# PBS namespace with the SAME names and keys via the existing ESO
+# (ExternalSecret + SecretStore with refreshInterval in the target
+# namespace, so rotations re-sync automatically) or an operator-side
+# equivalent — no new platform service, never copy production secret
+# values by hand. ROTATION: the consumer loads its certificates at
+# process STARTUP; after a Secret rotation PBS must be rolling-restarted
+# to reload them. Operator steps: deployment profile §6 step 7.
+services:
+  pipeline-build-service:
+    env:
+      SCHEDULER_CONSUMER_ENABLED: "true"
+      SCHEDULER_KAFKA_BOOTSTRAP_SERVERS: openfoundry-kafka-bootstrap.kafka.svc:9093
+      SCHEDULER_KAFKA_SECURITY_PROTOCOL: SSL
+      SCHEDULER_KAFKA_TLS_CA_FILE: /mnt/scheduler-ca/ca.crt
+      SCHEDULER_KAFKA_TLS_CERT_FILE: /mnt/scheduler-tls/user.crt
+      SCHEDULER_KAFKA_TLS_KEY_FILE: /mnt/scheduler-tls/user.key
+    extraVolumes:
+      - name: scheduler-tls
+        secret:
+          secretName: pipeline-build-service-scheduler
+      - name: scheduler-ca
+        secret:
+          secretName: openfoundry-cluster-ca-cert
+    extraVolumeMounts:
+      - name: scheduler-tls
+        mountPath: /mnt/scheduler-tls
+        readOnly: true
+      - name: scheduler-ca
+        mountPath: /mnt/scheduler-ca
+        readOnly: true

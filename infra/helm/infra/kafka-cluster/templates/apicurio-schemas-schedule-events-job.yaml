@@ -1,0 +1,160 @@
+{{- if and .Values.apicurio.enabled (.Values.apicurio.scheduleEvents.enabled | default false) }}
+---
+# WP3.2 / T8 — register the two frozen schedule-event JSON Schemas
+# (trigger + outcome) into Apicurio Registry.
+#
+# DELIBERATELY SEPARATE from apicurio-schemas-job.yaml: that template
+# targets the v3 Core API while the pinned registry image for this
+# round is apicurio/apicurio-registry-mem:2.6.13.Final (v2 REST API —
+# verified against the OpenAPI spec shipped in the Apicurio source
+# tree at tag 2.6.13.Final; getLatestArtifact = GET
+# /apis/registry/v2/groups/{g}/artifacts/{id}, createArtifact = POST
+# /apis/registry/v2/groups/{g}/artifacts with X-Registry-* headers).
+# The two jobs coexist; do not "consolidate" them without pinning one
+# registry line for both.
+#
+# Drift control, both directions:
+#   * files/schemas/pipeline.schedule.*.v1.json are byte-copies of
+#     libs/schedule-events/schema/*.json (the M1 single source of
+#     truth). The WP3.2 runner diffs them every acceptance run.
+#   * the Job itself verifies, post-registration, that the registered
+#     content sha256 equals the PINNED fingerprint (the same value
+#     compiled into schedules-tick): a registry that returns different
+#     bytes fails the Job loudly instead of failing every tick.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-schema-schedule-events
+  namespace: {{ .Values.apicurio.schemasNamespace | default "apicurio" }}
+  labels:
+    openfoundry.io/component: schema-registry
+    openfoundry.io/subject: schedule-events
+data:
+  # Block scalar MUST be `|` (clip), NOT `|-`: the schema files end
+  # with a single LF (7d0a) and the pinned sha256 fingerprints cover
+  # that trailing byte. `|-` strips it and every registered-content
+  # verification would fail by one byte (root review).
+  pipeline.schedule.triggered.v1.json: |
+{{ .Files.Get "files/schemas/pipeline.schedule.triggered.v1.json" | indent 4 }}
+  pipeline.schedule.outcome.v1.json: |
+{{ .Files.Get "files/schemas/pipeline.schedule.outcome.v1.json" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: register-schedule-events-schemas
+  namespace: {{ .Values.apicurio.schemasNamespace | default "apicurio" }}
+  labels:
+    openfoundry.io/component: schema-registry
+    openfoundry.io/subject: schedule-events
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: register-schedule-events-schemas
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: register
+          image: {{ .Values.apicurio.registrarImage | default "curlimages/curl:8.10.1" }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: APICURIO_BASE_URL
+              value: {{ .Values.apicurio.baseUrl | default "http://apicurio-registry.apicurio.svc:8080" | quote }}
+            - name: GROUP_ID
+              value: {{ .Values.apicurio.scheduleEvents.group | default "default" | quote }}
+            # Pinned sha256 fingerprints — MUST equal
+            # TriggerSchemaSHA256/OutcomeSchemaSHA256 in
+            # libs/event-scheduler/registry.go. Changing a schema means
+            # changing BOTH (and re-registering), never one side.
+            - name: TRIGGER_SHA256
+              value: "cd18c6212d2d9d35b0c092669daee58049c36e15d8a3174ca173e95e63eea92f"
+            - name: OUTCOME_SHA256
+              value: "aef7a88509a097fe41c8ec50d484ca75d75910c2bc1881c3104138a56fc06a12"
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              set -eu
+              for i in $(seq 1 60); do
+                if curl -sfo /dev/null "${APICURIO_BASE_URL}/apis/registry/v2/system/info"; then
+                  break
+                fi
+                echo "waiting for Apicurio Registry (${i}/60)…"
+                sleep 5
+              done
+              # Writable scratch (readOnlyRootFilesystem) for byte-exact
+              # GET bodies — never hash through a shell variable or a
+              # pipe (a failed curl would hash empty bytes silently;
+              # root review round 2).
+              TMP=$(mktemp -d /tmp/reg.XXXXXX)
+
+              register_and_verify () {
+                artifact="$1"; schema_file="$2"; pinned="$3"
+                # v2 createArtifact: raw body (no Confluent-style
+                # {"schema": "..."} wrapping), X-Registry-* headers.
+                # ifExists MUST be an IfExists enum value as published
+                # in the 2.6.x v2 OpenAPI (components.schemas.IfExists
+                # = FAIL|UPDATE|RETURN|RETURN_OR_UPDATE — root verified
+                # against the 2.6.13.Final tag spec; the lowercase
+                # "update" this script previously sent is NOT accepted:
+                # real 2.6.13.Final answers 404 "No enum constant",
+                # found by B's isolated run). RETURN_OR_UPDATE: same
+                # content → dedup'd no-op, changed content → new
+                # version. curl -f makes any non-2xx fail the Job.
+                curl -sfS -X POST \
+                  -H "Content-Type: application/json" \
+                  -H "X-Registry-ArtifactType: JSON" \
+                  -H "X-Registry-ArtifactId: ${artifact}" \
+                  --data-binary "@${schema_file}" \
+                  "${APICURIO_BASE_URL}/apis/registry/v2/groups/${GROUP_ID}/artifacts?ifExists=RETURN_OR_UPDATE" \
+                  > /dev/null
+                # Fetch the REGISTERED content to a file and only THEN
+                # hash it — the GET's own exit code is checked by -f,
+                # the bytes are hashed exactly as stored (LF included).
+                curl -sfS \
+                  -H "Accept: application/json" \
+                  -o "${TMP}/${artifact}.registered" \
+                  "${APICURIO_BASE_URL}/apis/registry/v2/groups/${GROUP_ID}/artifacts/${artifact}"
+                got=$(sha256sum "${TMP}/${artifact}.registered" | cut -d' ' -f1)
+                if [ "${got}" != "${pinned}" ]; then
+                  echo "FATAL: registry content for ${artifact} sha256=${got}, pinned=${pinned}" >&2
+                  exit 1
+                fi
+                echo "registered+verified ${artifact} (sha256 ${pinned})"
+              }
+
+              register_and_verify "pipeline.schedule.triggered.v1" \
+                /etc/openfoundry/schemas/pipeline.schedule.triggered.v1.json "${TRIGGER_SHA256}"
+              register_and_verify "pipeline.schedule.outcome.v1" \
+                /etc/openfoundry/schemas/pipeline.schedule.outcome.v1.json "${OUTCOME_SHA256}"
+              echo done
+          volumeMounts:
+            - name: schemas
+              mountPath: /etc/openfoundry/schemas
+              readOnly: true
+            - name: scratch
+              mountPath: /tmp
+      volumes:
+        - name: schemas
+          configMap:
+            name: kafka-schema-schedule-events
+        - name: scratch
+          emptyDir: {}
+{{- end }}

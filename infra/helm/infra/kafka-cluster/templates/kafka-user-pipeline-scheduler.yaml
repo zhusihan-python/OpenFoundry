@@ -1,0 +1,44 @@
+{{- if .Values.pipelineSchedulerUser.enabled | default false }}
+---
+# WP3.2 / T8 — KafkaUser for the pipeline-build-service SCHEDULING
+# consumer (T8 decision §4).
+#
+# Consumer-only: Read + Describe on pipeline.builds.v1 and Read on the
+# literal consumer group `pipeline-build-service-scheduler` (the
+# SCHEDULER_GROUP_ID default in the service config). It produces
+# NOTHING to Kafka — outcome events and poison-DLQ records are outbox
+# rows relayed by the Debezium Connect cluster (ACLs in
+# infra/helm/infra/debezium/templates/kafka-user-debezium-connect.yaml),
+# so no Write ACLs are granted here by design.
+#
+# Strimzi issues the mTLS cert into a Secret named after this KafkaUser
+# (`pipeline-build-service-scheduler`); the consumer mounts it together
+# with the cluster CA (bootstrap 9093). Exact config names are listed
+# in docs/architecture/data-integration-wp3-2-deployment-profile.md.
+#
+# EXPECTATION ARTIFACT UNTIL AN AUTHORIZER EXISTS: the openfoundry
+# Kafka CR currently renders listeners/config/rack only and does NOT
+# set spec.kafka.authorization — without an authorizer the broker does
+# not enforce these ACLs, so this resource cannot yet be claimed to
+# restrict the scheduler identity to read-only. Enabling an authorizer
+# is a production prerequisite decision (out of this feature's scope).
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: pipeline-build-service-scheduler
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: openfoundry
+    openfoundry.io/service: pipeline-build-service
+    openfoundry.io/kafka-role: consumer
+spec:
+  authentication:
+    type: tls
+  authorization:
+    type: simple
+    acls:
+      - resource: { type: topic, name: pipeline.builds.v1, patternType: literal }
+        operations: [Read, Describe]
+      - resource: { type: group, name: pipeline-build-service-scheduler, patternType: literal }
+        operations: [Read]
+{{- end }}

@@ -161,6 +161,28 @@ topics:
     - name: pipeline.builds.v1
       class: pipeline
       retentionMs: "1209600000"       # 14d
+    # WP3.2 / T8 — schedule OUTCOME events live on a dedicated topic so
+    # the scheduling consumer never consumes its own outputs (T8
+    # decision §2 topic split). Triggers ride pipeline.builds.v1 above.
+    - name: pipeline.schedule.outcomes.v1
+      class: pipeline
+      retentionMs: "1209600000"       # 14d
+    # WP3.2 / T8 — Debezium heartbeat topic for the outbox-pipeline
+    # connector. Name = String.join(topic.delimiter, topic.heartbeat.
+    # prefix, topic.prefix) per io.debezium.schema.AbstractTopicNaming
+    # Strategy#heartbeatTopic (v2.7.2.Final source): with the defaults
+    # topic.heartbeat.prefix=__debezium-heartbeat, delimiter "." and
+    # topic.prefix=pg-runtime-config this is
+    # __debezium-heartbeat.pg-runtime-config (the connector pins the
+    # prefix explicitly). Broker auto-create is disabled, so it must be
+    # pre-provisioned or the heartbeat produce fails — re-provision +
+    # Connect ACL if either prefix changes.
+    - name: __debezium-heartbeat.pg-runtime-config
+      class: cdc
+      partitions: 1
+      cleanupPolicy: compact
+      retentionMs: "604800000"        # 7d backstop for tombstones
+      segmentMs: "3600000"
     # Note: `audit.events.v1` lives in `topics-domain-v1.yaml` already;
     # do not re-declare it here.
 
@@ -187,10 +209,26 @@ topics:
     - { name: __dlq.saga.completed.v1,        class: dlq, retentionMs: "1209600000" }
     - { name: __dlq.saga.aborted.v1,          class: dlq, retentionMs: "1209600000" }
     - { name: __dlq.pipeline.builds.v1,    class: dlq, retentionMs: "1209600000" }
+    - { name: __dlq.pipeline.schedule.outcomes.v1, class: dlq, retentionMs: "1209600000" }
+    # WP3.2 / T8 — processing-errors DLQ for the outbox-pipeline
+    # Debezium connector itself (errors.deadletterqueue.topic.name in
+    # the connector config; the routed poison-DLQ topic above is a
+    # separate thing — see the WP3.2 deployment profile doc).
+    - { name: __dlq.outbox-pipeline.v1,    class: dlq, retentionMs: "1209600000" }
 
 acls:             { enabled: true }
 topicsDomainV1:   { enabled: true }
 networkPolicies:  { enabled: true }
+# WP3.2 / T8 — TLS identity + consumer ACLs for the
+# pipeline-build-service SCHEDULING consumer (T8 decision §4): Read on
+# pipeline.builds.v1 with consumer group
+# `pipeline-build-service-scheduler` (the SCHEDULER_GROUP_ID default).
+# Default OFF; enable together with the consumer itself
+# (SCHEDULER_CONSUMER_ENABLED) and the debezium outbox-pipeline
+# connector. The consumer NEVER produces to Kafka: outcome events and
+# poison-DLQ records are outbox rows relayed by the Debezium Connect
+# cluster, whose ACLs live in the debezium chart.
+pipelineSchedulerUser: { enabled: false }
 apicurio:
   enabled: true
   # Tarea 4.4 — register the `ontology.reindex.v1` JSON Schema into
@@ -215,4 +253,16 @@ apicurio:
   # API. BACKWARD means newer producers must keep older consumers
   # working — the right default for the indexer cut-over of Tarea 4.4.
   reindexV1Compatibility: BACKWARD
+
+  # WP3.2 / T8 — schedule-event schema registration (trigger+outcome
+  # artifacts, pinned fingerprints verified post-registration).
+  # Default OFF until the pinned Apicurio line (2.6.13.Final, v2 API)
+  # is the deployed registry; the legacy apicurio-schemas-job.yaml
+  # stays untouched. Enabling this against a 2.6.x registry ALSO
+  # requires registerSchemas=false above (the legacy Job speaks the
+  # v3 API, absent in 2.6) — use values-apicurio-2-6.yaml which sets
+  # both in one place.
+  scheduleEvents:
+    enabled: false
+    group: default
 regionB:          { enabled: false }

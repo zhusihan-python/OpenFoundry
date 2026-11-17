@@ -1,0 +1,142 @@
+{{- if (.Values.pipelineOutbox.enabled | default false) }}
+---
+# WP3.2 / T8 — Debezium Postgres source connector for the PIPELINE
+# service database's outbox.events (NOT pg-policy: this connector
+# tails the same database the schedules-tick producer writes to, per
+# T8 decision §1 — a slot on any other database would silently miss
+# every event).
+#
+# Double gate (mirrors outbox-pg-policy):
+#   1. Rendered only when values `pipelineOutbox.enabled=true`.
+#   2. Lands paused (`pause-reconciliation: "true"`) and must be
+#      unpaused manually AFTER:
+#        - the source cluster (pg-runtime-config — SAME database the
+#          tick writes; see the same-source contract in values.yaml)
+#          has wal_level=logical and the operator prep SQL
+#          (postgres-clusters/files/pipeline-outbox-cdc-prep.sql) ran:
+#          cdc role + pre-created publication,
+#        - the pipeline scheduling migration (20261117100000 +
+#          quarantine columns) is applied,
+#        - both schedule-event schemas are registered in Apicurio,
+#        - and BEFORE the first schedules-tick outbox CronJob runs —
+#          the producer's CDC slot gate (SCHEDULES_CDC_SLOT) refuses
+#          to fire until this connector is RUNNING and the slot is
+#          actively streaming, because outbox INSERT+DELETE events
+#          committed with no slot in place are unrecoverable.
+#
+# Unpause:
+#   kubectl annotate kafkaconnector/outbox-pipeline -n kafka \
+#     strimzi.io/pause-reconciliation="false" --overwrite
+#
+# Wire contract (Debezium 2.7 EventRouter; verified against the
+# official 2.7 outbox-event-router documentation):
+#   * route.by.field=topic + replacement ${routedByValue}: the
+#     outbox row's `topic` column is the full destination topic
+#     (pipeline.builds.v1 for triggers, pipeline.schedule.outcomes.v1
+#     for consumer-published outcomes).
+#   * event.key=aggregate_id, event.id=event_id.
+#   * `table.expand.json.payload=true` is REQUIRED with the default
+#     JsonConverter: without it the jsonb payload column is emitted as
+#     an escaped JSON string and consumers reject the envelope.
+#   * headers placement produces ONE Kafka record header whose value
+#     is the JSON map of the outbox `headers` column (it is NOT
+#     flattened into per-key ol-* headers).
+#   * tombstones.on.delete=false + snapshot.mode=never: the producer
+#     INSERTs and DELETEs in one transaction; only the WAL INSERT is
+#     relayed, nothing is snapshottable afterwards.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaConnector
+metadata:
+  name: outbox-pipeline
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: debezium
+    openfoundry.io/source: {{ .Values.pipelineOutbox.topicPrefix | default "pg-runtime-config" }}
+  annotations:
+    strimzi.io/pause-reconciliation: "true"
+spec:
+  class: io.debezium.connector.postgresql.PostgresConnector
+  tasksMax: 1
+  config:
+    # ---- Source identity ----------------------------------------
+    # Strimzi 1.0 serves only kafka.strimzi.io/v1 (v1beta2 was removed
+    # upstream) — same CRD family the sibling templates already use.
+    topic.prefix: {{ .Values.pipelineOutbox.topicPrefix | default "pg-runtime-config" }}
+    plugin.name: pgoutput
+    slot.name: {{ .Values.pipelineOutbox.slotName | default "debezium_outbox_pipeline" }}
+    publication.name: {{ .Values.pipelineOutbox.publicationName | default "debezium_outbox_pipeline_pub" }}
+    # DISABLED (verified against the 2.7.2.Final connector jar's own
+    # property description): "The connector will not attempt to create
+    # a publication at all. The expectation is that the user has
+    # created the publication up-front. If the publication isn't found
+    # to exist upon startup, the connector will throw an exception and
+    # stop." The cdc login below carries ONLY REPLICATION + SELECT, so
+    # it cannot create publications anyway; the owner-side prep SQL
+    # (postgres-clusters/files/pipeline-outbox-cdc-prep.sql) pre-creates
+    # one containing exactly outbox.events.
+    publication.autocreate.mode: disabled
+    # ---- Postgres connection (SAME pipeline DB as schedules-tick) --
+    # Required with no default: a slot on any other database silently
+    # misses every event (same-source contract; values.yaml header).
+    database.hostname: {{ required "pipelineOutbox.hostname is required when pipelineOutbox.enabled (same-source: actual rw service of the pipeline DB cluster — see docs/architecture/data-integration-wp3-2-deployment-profile.md)" .Values.pipelineOutbox.hostname | quote }}
+    database.port: "5432"
+    # Resolved by the worker's FileConfigProvider (alias `secrets`,
+    # configured in kafka-connect.yaml) from the Secret mounted at
+    # /mnt/pipeline-outbox-cdc via spec.template.pod.volumes +
+    # template.connectContainer.volumeMounts (Strimzi 1.0 removed
+    # spec.externalConfiguration; see secret-pipeline-outbox-cdc.yaml).
+    # kafka-clients ships the provider class on every Kafka image —
+    # no extra plugin, no Kubernetes API permissions.
+    database.user: ${secrets:/mnt/pipeline-outbox-cdc/cdc.properties:username}
+    database.password: ${secrets:/mnt/pipeline-outbox-cdc/cdc.properties:password}
+    database.dbname: {{ required "pipelineOutbox.dbname is required when pipelineOutbox.enabled (e.g. app — the database holding outbox.events)" .Values.pipelineOutbox.dbname | quote }}
+    # ---- Scope: outbox.events only -------------------------------
+    schema.include.list: outbox
+    table.include.list: outbox.events
+    snapshot.mode: never
+    # ---- EventRouter SMT -----------------------------------------
+    transforms: outbox
+    transforms.outbox.type: io.debezium.transforms.outbox.EventRouter
+    transforms.outbox.route.by.field: topic
+    transforms.outbox.route.topic.replacement: ${routedByValue}
+    transforms.outbox.table.field.event.id: event_id
+    transforms.outbox.table.field.event.key: aggregate_id
+    transforms.outbox.table.field.event.payload: payload
+    # REQUIRED for the jsonb payload to arrive as a JSON object under
+    # the default JsonConverter (escaped-string otherwise).
+    transforms.outbox.table.expand.json.payload: "true"
+    transforms.outbox.table.fields.additional.placement: "headers:header"
+    tombstones.on.delete: "false"
+    # ---- Converters (JSON wire format, M1 envelope) ---------------
+    key.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    key.converter.schemas.enable: "false"
+    value.converter.schemas.enable: "false"
+    # ---- Heartbeat to bound replication-slot lag ------------------
+    heartbeat.interval.ms: "30000"
+    # Pinned explicitly (equals the 2.7 default). Heartbeat topic name =
+    # String.join(topic.delimiter, topic.heartbeat.prefix, topic.prefix)
+    # (io.debezium.schema.AbstractTopicNamingStrategy#heartbeatTopic,
+    # verified against the v2.7.2.Final source) →
+    # __debezium-heartbeat.pg-runtime-config, which is pre-provisioned
+    # in the kafka-cluster chart (broker auto-create is disabled).
+    # Changing topicPrefix or this prefix requires re-provisioning the
+    # topic and the Connect ACL.
+    topic.heartbeat.prefix: __debezium-heartbeat
+    # ---- Producer hardening (same contract as outbox-pg-policy) ---
+    producer.override.acks: all
+    producer.override.enable.idempotence: "true"
+    producer.override.compression.type: zstd
+    producer.override.max.in.flight.requests.per.connection: "5"
+    producer.override.retries: "2147483647"
+    # ---- Decimal / numeric handling ------------------------------
+    decimal.handling.mode: string
+    time.precision.mode: connect
+    # ---- DLQ ------------------------------------------------------
+    errors.tolerance: all
+    errors.deadletterqueue.topic.name: {{ .Values.pipelineOutbox.dlqTopic | default "__dlq.outbox-pipeline.v1" | quote }}
+    errors.deadletterqueue.topic.replication.factor: {{ .Values.pipelineOutbox.dlqReplicationFactor | default "3" | quote }}
+    errors.deadletterqueue.context.headers.enable: "true"
+    errors.log.enable: "true"
+    errors.log.include.messages: "false"
+{{- end }}
