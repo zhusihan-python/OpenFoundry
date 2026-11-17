@@ -427,6 +427,9 @@ test('renders Workshop Map widget with MapLibre layers and nonblank canvas', asy
         display_name: 'Plan trail',
         description: '',
         object_type_id: 'Trail',
+        // Required by the wire contract (ActionType.operation_kind); omitting it
+        // crashed actionOperationLabel() on undefined.replaceAll when the dialog opened.
+        operation_kind: 'invoke_function',
         input_schema: [
           { name: 'object', display_name: 'Trail', property_type: 'object_reference', required: true },
         ],
