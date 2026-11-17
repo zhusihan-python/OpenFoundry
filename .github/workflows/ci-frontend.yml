@@ -45,7 +45,8 @@ jobs:
 
   test-e2e:
     name: E2E Tests
-    runs-on: ubuntu-latest
+    # playwright-core 1.59 ships no native deps for ubuntu26.04; 24.04 is supported.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
