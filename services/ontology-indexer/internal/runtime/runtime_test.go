@@ -21,6 +21,7 @@ import (
 )
 
 type fakeReader struct {
+	mu        sync.Mutex
 	topics    []string
 	messages  []KafkaMessage
 	committed []KafkaMessage
@@ -42,9 +43,19 @@ func (r *fakeReader) FetchMessage(ctx context.Context) (KafkaMessage, error) {
 	return msg, r.fetchErr
 }
 func (r *fakeReader) CommitMessages(_ context.Context, msgs ...KafkaMessage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.committed = append(r.committed, msgs...)
 	return nil
 }
+
+// committedCount is safe to call while the runtime goroutine is committing.
+func (r *fakeReader) committedCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.committed)
+}
+
 func (r *fakeReader) Close() error { r.closed = true; return nil }
 
 type fakeBackend struct {
@@ -140,7 +151,7 @@ func TestRunWithReaderHappyPathFakeReaderAndBackend(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { done <- RunWithReader(ctx, cfg, discardLog(), reader, backend) }()
-	require.Eventually(t, func() bool { return len(reader.committed) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return reader.committedCount() == 1 }, time.Second, 10*time.Millisecond)
 	cancel()
 	require.NoError(t, <-done)
 	assert.Equal(t, SubscribeTopics, reader.topics)
@@ -162,7 +173,7 @@ func TestRunWithReaderObjectUpsertCommitsAfterIndex(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { done <- RunWithReader(ctx, cfg, discardLog(), reader, backend) }()
-	require.Eventually(t, func() bool { return len(reader.committed) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return reader.committedCount() == 1 }, time.Second, 10*time.Millisecond)
 	cancel()
 	require.NoError(t, <-done)
 	require.Len(t, backend.indexed, 1)
@@ -182,7 +193,7 @@ func TestRunWithReaderObjectDeleteCommitsAfterDelete(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- RunWithReader(ctx, cfg, discardLog(), reader, backend) }()
-	require.Eventually(t, func() bool { return len(reader.committed) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return reader.committedCount() == 1 }, time.Second, 10*time.Millisecond)
 	cancel()
 	require.NoError(t, <-done)
 	assert.Equal(t, []repos.ObjectId{"obj-1"}, backend.deleted)
@@ -200,7 +211,7 @@ func TestRunWithReaderLinkChangeIndexesLinkDocument(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- RunWithReader(ctx, cfg, discardLog(), reader, backend) }()
-	require.Eventually(t, func() bool { return len(reader.committed) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return reader.committedCount() == 1 }, time.Second, 10*time.Millisecond)
 	cancel()
 	require.NoError(t, <-done)
 	require.Len(t, backend.indexed, 1)
@@ -217,7 +228,7 @@ func TestRunWithReaderMalformedJSONSkipsAndCommits(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- RunWithReader(ctx, cfg, discardLog(), reader, backend) }()
-	require.Eventually(t, func() bool { return len(reader.committed) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return reader.committedCount() == 1 }, time.Second, 10*time.Millisecond)
 	cancel()
 	require.NoError(t, <-done)
 	assert.Empty(t, backend.indexed)
@@ -248,7 +259,7 @@ func TestRunWithReaderSkipsDuplicateAndStaleVersions(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- RunWithReader(ctx, cfg, discardLog(), reader, backend) }()
-	require.Eventually(t, func() bool { return len(reader.committed) == 3 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return reader.committedCount() == 3 }, time.Second, 10*time.Millisecond)
 	cancel()
 	require.NoError(t, <-done)
 	require.Len(t, backend.indexed, 1)
@@ -270,7 +281,7 @@ func TestRunWithOptionsRetriesThenPublishesDLQAndCommits(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- RunWithOptions(ctx, cfg, discardLog(), reader, backend, dlq) }()
-	require.Eventually(t, func() bool { return len(reader.committed) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return reader.committedCount() == 1 }, time.Second, 10*time.Millisecond)
 	cancel()
 	require.NoError(t, <-done)
 	assert.Equal(t, 2, backend.failures)

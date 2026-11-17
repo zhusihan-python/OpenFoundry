@@ -1,6 +1,12 @@
 name: openfoundry-go CI
 
 on:
+  workflow_call:
+    inputs:
+      lint_base:
+        description: Reviewed full SHA covering the combined changes (never HEAD)
+        required: true
+        type: string
   push:
     branches: [main]
     paths:
@@ -13,12 +19,13 @@ on:
       - "tools/**"
       - "Makefile"
       - ".golangci.yml"
+      - ".golangci-lint-version"
       - "buf.gen.yaml"
       - "buf.yaml"
       - "sqlc.yaml"
+      - "sqlc-policy.yaml"
       - ".github/workflows/openfoundry-go.yml"
   pull_request:
-    branches: [main]
     paths:
       - "**/*.go"
       - "go.mod"
@@ -29,9 +36,11 @@ on:
       - "tools/**"
       - "Makefile"
       - ".golangci.yml"
+      - ".golangci-lint-version"
       - "buf.gen.yaml"
       - "buf.yaml"
       - "sqlc.yaml"
+      - "sqlc-policy.yaml"
       - ".github/workflows/openfoundry-go.yml"
 
 jobs:
@@ -40,31 +49,89 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.62.2
-          args: --timeout 5m
+          version-file: .golangci-lint-version
+          install-only: true
+      - name: prove committed regressions fail
+        run: python3 tools/quality/test_lint_go.py
+      - name: Resolve and validate lint base
+        env:
+          CALL_INPUTS: ${{ toJSON(inputs) }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, re, subprocess
+          inputs = json.loads(os.environ['CALL_INPUTS'])
+          if inputs is None:
+              inputs = {}  # Inputs context is absent on standalone events.
+          if not isinstance(inputs, dict):
+              raise SystemExit('unexpected reusable inputs context')
+          if 'lint_base' in inputs:
+              base = inputs['lint_base']
+              if not isinstance(base, str) or not re.fullmatch(r'[0-9a-f]{40}', base) or base == '0' * 40:
+                  raise SystemExit('reusable lint_base must be a nonzero full commit SHA')
+              head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+              if base == head:
+                  raise SystemExit('reusable lint_base must not equal HEAD')
+              subprocess.run(['git', 'merge-base', '--is-ancestor', base, head], check=True)
+          else:
+              # Preserve the real pull_request/push event base for standalone CI.
+              base = os.environ['EVENT_BASE']
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('BASE_REV=' + base + '\n')
+          PYCODE
+      - name: lint against reviewed or event base
+        run: make lint
+
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          go version
+          python3 --version
+          golangci-lint version --short
 
   vet:
     name: vet
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - run: go vet ./...
 
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          go version
+
   tidy:
     name: tidy (drift check)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -78,11 +145,21 @@ jobs:
             exit 1
           fi
 
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          go version
+
   proto:
     name: proto / buf
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -90,7 +167,7 @@ jobs:
       - uses: bufbuild/buf-setup-action@v1
         with:
           version: 1.47.2
-      - run: buf lint
+      - run: buf lint proto
       - run: buf generate
       - name: ensure no drift between checked-in & generated proto
         run: |
@@ -102,20 +179,35 @@ jobs:
             exit 1
           fi
 
-  sqlc:
-    name: sqlc (drift check)
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          go version
+          buf --version
+
+  sqlc-policy:
+    name: sqlc-policy (config policy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: sqlc policy unit tests
+        run: go test ./tools/sqlc-policy
       - name: install sqlc
         run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
-      - name: sqlc generate
-        run: sqlc generate
-      - name: ensure no drift between checked-in & generated sqlc code
+      - name: Apply declared SQLC integration status
+        run: go run ./tools/sqlc-policy
+      - name: sqlc generate (no-op unless status=integrated)
+        run: go run ./tools/sqlc-policy --generate
+      - name: ensure worktree unchanged after sqlc steps (drift check applies only when integrated)
         run: |
           status="$(git status --porcelain=v1 --untracked-files=all)"
           if [ -n "$status" ]; then
@@ -125,11 +217,22 @@ jobs:
             exit 1
           fi
 
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          go version
+          sqlc version
+
   capabilities:
     name: capabilities (drift check)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -137,11 +240,21 @@ jobs:
       - name: ensure stable-capabilities snapshot is up to date
         run: go run ./tools/capabilities-snapshot -check
 
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          go version
+
   test:
     name: test (unit)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -152,12 +265,22 @@ jobs:
           name: coverage
           path: coverage.out
 
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          go version
+
   integration:
     name: test (integration)
     runs-on: ubuntu-latest
     needs: [lint, test]
     steps:
       - uses: actions/checkout@v4
+      - name: Verify exact source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source_sha=%s\nsource_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -168,3 +291,9 @@ jobs:
           # testcontainers-go uses the docker daemon already available
           # on the GitHub-hosted runner.
           TESTCONTAINERS_RYUK_DISABLED: "true"
+      - name: Record verification tool versions
+        if: always()
+        run: |
+          git --version
+          go version
+          docker --version

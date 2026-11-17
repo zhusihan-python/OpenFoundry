@@ -67,16 +67,17 @@ pnpm --filter @open-foundry/web test   # vitest
   justfile was full of `cargo` recipes pointing at a Rust workspace
   that no longer exists in this tree. If you see `just <recipe>` in
   legacy docs, mentally translate to `make <recipe>`.)
-- **`make lint` baselines pre-existing issues.** `.golangci.yml` is
-  configured with `new-from-rev: HEAD`, so `make lint` only flags
-  issues introduced *after* the latest commit. To audit the full
-  backlog: `golangci-lint run --new-from-rev= ./...` (mostly spelling
-  + staticcheck style nits, tracked as tech debt rather than a feature
-  gate).
+- **`make lint` compares against the branch base.** Set `BASE_REV` to the
+  target branch or SHA (defaults to `origin/main`). Committed changes and
+  working-tree changes are checked. A missing base fails closed.
+  Run `make lint LINT_FULL=1` for a full-backlog audit.
 - **Go CI lives in `.github/workflows/openfoundry-go.yml`.** Jobs:
   `lint` (golangci-lint), `vet`, `tidy` (drift check on go.mod/go.sum),
   `proto` (`buf lint` + `buf generate` drift check on `libs/proto-gen`),
-  `sqlc` (`sqlc generate` drift check), `test` (unit, race +
+  `sqlc-policy` (config policy gate — sqlc is **not integrated**; the job
+  reports generation as not-applicable until `sqlc-policy.yaml` at the root
+  flips to integrated, after which it runs a real generate + drift check),
+  `test` (unit, race +
   coverage), `integration` (build tag `integration`, runs after
   lint+test, uses GH runner Docker for testcontainers). It mirrors
   `make ci` plus full generation drift checks. The legacy `ci.yml`

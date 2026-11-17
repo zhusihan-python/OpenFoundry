@@ -4,8 +4,10 @@ version: "2"
 # `services/<name>/internal/repo/queries/*.sql` and the schema lives at
 # `services/<name>/internal/repo/schema.sql`.
 #
-# Run via: `make sqlc` or `sqlc generate`.
-sql:
+# Run via: `make gen-sqlc` or `sqlc generate`.
+# Integration status is declared in sqlc-policy.yaml (gated by
+# `make sqlc-policy`); this list stays empty until a service adopts sqlc.
+sql: []
   # Example block — uncomment and duplicate per service when its DB
   # schema migration is in place.
   #
