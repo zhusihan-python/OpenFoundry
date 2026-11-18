@@ -102,6 +102,14 @@ func (h *Handlers) CommitDatasetOutput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.IdempotencyKey == "" {
+		// The staged path exists only as a keyed commit: without a key it
+		// must fail closed here, never fall through to the legacy
+		// pipeline (whose staged-file CHECK would only fail later, after
+		// opening a transaction).
+		if stagedCommitRequested(body) {
+			writeJSONErr(w, http.StatusBadRequest, "staged commit requires idempotency_key")
+			return
+		}
 		h.commitDatasetOutputLegacy(w, r, body, claims)
 		return
 	}
@@ -333,6 +341,15 @@ func (h *Handlers) commitDatasetOutputKeyed(w http.ResponseWriter, r *http.Reque
 		writeJSONErr(w, http.StatusBadRequest, errKeyedBranchRequired.Error())
 		return
 	}
+	// Staged commits carry their own deterministic shape contract; it is a
+	// pure function of the bytes, so a byte-identical replay can never
+	// fail it after the fingerprint short-circuit.
+	if stagedCommitRequested(body) {
+		if err := validateStagedCommitRequest(body); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	for _, link := range body.LineageLinks {
 		if err := validateLineageLink(link.Direction, link.TargetRID); err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
@@ -349,7 +366,12 @@ func (h *Handlers) commitDatasetOutputKeyed(w http.ResponseWriter, r *http.Reque
 	}
 	scope := tenantScopeFromClaims(claims)
 	fingerprint := requestFingerprint(raw)
-	build := h.keyedOutputCommitBuild(r, body, branchName, datasetID, scope, claims)
+	var build func(context.Context, repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error)
+	if stagedCommitRequested(body) {
+		build = h.stagedKeyedOutputCommitBuild(r, body, branchName, datasetID, scope, claims)
+	} else {
+		build = h.keyedOutputCommitBuild(r, body, branchName, datasetID, scope, claims)
+	}
 	receipt, replayed, err := h.Repo.WithIdempotentOutputCommit(r.Context(), scope, datasetID, key, fingerprint, build)
 	if err != nil {
 		writeKeyedCommitError(w, err)
@@ -545,6 +567,9 @@ func (h *Handlers) GetDatasetOutputCommit(w http.ResponseWriter, r *http.Request
 func writeKeyedCommitError(w http.ResponseWriter, err error) {
 	var fileErr keyedFileError
 	var objectErr keyedObjectError
+	if writeStagedCommitError(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, repo.ErrIdempotencyKeyConflict):
 		writeJSON(w, http.StatusConflict, models.ErrorEnvelope{Error: err.Error(), Code: strPtr("IDEMPOTENCY_KEY_CONFLICT")})

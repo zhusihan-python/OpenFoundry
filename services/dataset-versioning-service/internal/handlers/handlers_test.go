@@ -240,9 +240,14 @@ type fakeStore struct {
 	// outputCommitReceipts backs the keyed outputs:commit fake (see
 	// output_commit_keyed_test.go): first writer wins per (dataset, key).
 	outputCommitReceipts map[outputReceiptKey]models.OutputCommitReceipt
-	versionConflict      bool
-	branchConflict       bool
-	permissionConflict   bool
+	// stagedObjects backs the WP3.3 staged-output fake state machine (see
+	// the Acquire/Seal/Release methods at the bottom of this file).
+	stagedObjects      map[uuid.UUID]*repo.StagedOutputObject
+	stagedAcquireErr   error
+	stagedSealErr      error
+	versionConflict    bool
+	branchConflict     bool
+	permissionConflict bool
 	// publishErr, when set, makes CommitTransactionWithPublish fail after
 	// the commit core and roll every in-memory mutation back — the fault
 	// injection for the atomic-publish regression.
@@ -849,6 +854,33 @@ func (f *fakeStore) StageTransactionFiles(_ context.Context, datasetID uuid.UUID
 	}
 	f.stagedFiles[txnID] = append([]models.StageTransactionFile(nil), files...)
 	return nil
+}
+
+func (f *fakeStore) GetTransactionStagedFile(_ context.Context, txnID uuid.UUID, logicalPath string) (*models.StageTransactionFile, error) {
+	for _, file := range f.stagedFiles[txnID] {
+		if file.LogicalPath == logicalPath {
+			copy := file
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
+
+// ListTransactionStagedFilesFrom mirrors the repo keyset query: staged
+// files with logical_path >= fromPath in ascending path order.
+func (f *fakeStore) ListTransactionStagedFilesFrom(_ context.Context, txnID uuid.UUID, fromPath string, limit int) ([]models.StageTransactionFile, error) {
+	all := append([]models.StageTransactionFile(nil), f.stagedFiles[txnID]...)
+	sort.Slice(all, func(i, j int) bool { return all[i].LogicalPath < all[j].LogicalPath })
+	out := []models.StageTransactionFile{}
+	for _, file := range all {
+		if file.LogicalPath >= fromPath {
+			out = append(out, file)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeStore) MergeTransactionMetadata(_ context.Context, datasetID uuid.UUID, txnID uuid.UUID, metadata models.JSONValue) error {
@@ -2253,4 +2285,159 @@ func TestBranchOpenTransactionBlocksNewTransactionButAllowsChildBranch(t *testin
 	require.Equal(t, "child", child.Name)
 	require.NotNil(t, child.ParentBranchID)
 	require.Equal(t, masterID, *child.ParentBranchID)
+}
+
+// WP3.3 staged-output fake: an in-memory single-artifact state machine
+// mirroring repo.AcquireStagedUploadLease / SealStagedOutput /
+// ReleaseStagedLease closely enough to drive the HTTP handler in unit
+// tests (real-PG semantics are covered by the integration suite).
+func (f *fakeStore) AcquireStagedUploadLease(_ context.Context, scope repo.TenantScope, b repo.StagedBinding, attemptID uuid.UUID, leaseTTL time.Duration) (*repo.StagedOutputObject, *uuid.UUID, bool, error) {
+	// The real repo reads clock_timestamp() after the row lock; the fake
+	// uses the local clock at the equivalent point.
+	now := time.Now().UTC()
+	if f.stagedObjects == nil {
+		f.stagedObjects = map[uuid.UUID]*repo.StagedOutputObject{}
+	}
+	if f.stagedAcquireErr != nil {
+		return nil, nil, false, f.stagedAcquireErr
+	}
+	if ds := f.datasetByID(b.DatasetID); ds == nil {
+		return nil, nil, false, repo.ErrNotFound
+	}
+	resv, ok := f.runtimeTransactions[b.ReservationID]
+	if !ok || resv.DatasetID != b.DatasetID {
+		return nil, nil, false, repo.ErrNotFound
+	}
+	if err := repo.ValidateStagedReservation(&resv, b, uuid.Nil); err != nil {
+		return nil, nil, false, err
+	}
+	for _, obj := range f.stagedObjects {
+		if obj.ReservationID != b.ReservationID {
+			continue
+		}
+		switch obj.Status {
+		case repo.StagedObjectStatusConsumed:
+			return nil, nil, false, repo.ErrStagedObjectAlreadyPublished
+		case repo.StagedObjectStatusSealed:
+			// Re-transmission only reuses the same binding within its TTL
+			// (the real repo checks this against the database clock).
+			if obj.DatasetID != b.DatasetID || obj.BranchName != b.BranchName ||
+				obj.ReservationID != b.ReservationID || obj.BuildID != b.BuildID ||
+				obj.ActorID != b.ActorID || obj.IdempotencyKey != b.IdempotencyKey ||
+				obj.LogicalPath != b.LogicalPath {
+				return nil, nil, false, repo.ErrStagedBindingMismatch
+			}
+			if obj.ExpiresAt != nil && now.After(*obj.ExpiresAt) {
+				return nil, nil, false, repo.ErrStagedObjectExpired
+			}
+			return obj, nil, true, nil
+		default:
+			if obj.LeaseExpiresAt != nil && obj.LeaseExpiresAt.After(now) {
+				return nil, nil, false, repo.ErrStagedUploadInFlight
+			}
+			old := obj.ID
+			delete(f.stagedObjects, obj.ID)
+			fresh := &repo.StagedOutputObject{
+				ID: attemptID, DatasetID: b.DatasetID, BranchName: b.BranchName,
+				ReservationID: b.ReservationID, BuildID: b.BuildID, ActorID: b.ActorID,
+				IdempotencyKey: b.IdempotencyKey, LogicalPath: b.LogicalPath,
+				Status:         repo.StagedObjectStatusStaging,
+				LeaseExpiresAt: ptrTime(now.Add(leaseTTL)),
+				CreatedAt:      now,
+			}
+			f.stagedObjects[attemptID] = fresh
+			return fresh, &old, false, nil
+		}
+	}
+	fresh := &repo.StagedOutputObject{
+		ID: attemptID, DatasetID: b.DatasetID, BranchName: b.BranchName,
+		ReservationID: b.ReservationID, BuildID: b.BuildID, ActorID: b.ActorID,
+		IdempotencyKey: b.IdempotencyKey, LogicalPath: b.LogicalPath,
+		Status:         repo.StagedObjectStatusStaging,
+		LeaseExpiresAt: ptrTime(now.Add(leaseTTL)),
+		CreatedAt:      now,
+	}
+	f.stagedObjects[attemptID] = fresh
+	return fresh, nil, false, nil
+}
+
+func (f *fakeStore) SealStagedOutput(_ context.Context, scope repo.TenantScope, b repo.StagedBinding, attemptID uuid.UUID, sizeBytes int64, sha256Hex string, recordCount int64, sealedPath string, ttl time.Duration) (*repo.StagedOutputObject, error) {
+	if f.stagedSealErr != nil {
+		return nil, f.stagedSealErr
+	}
+	obj, ok := f.stagedObjects[attemptID]
+	if !ok || obj.Status != repo.StagedObjectStatusStaging || obj.ReservationID != b.ReservationID {
+		return nil, repo.ErrStagedLeaseLost
+	}
+	// The real repo reads the database wall clock under the locks; the
+	// fake uses the local clock, which is equivalent for unit purposes.
+	dbNow := time.Now().UTC()
+	if obj.LeaseExpiresAt == nil || !obj.LeaseExpiresAt.After(dbNow) {
+		return nil, repo.ErrStagedLeaseLost
+	}
+	obj.Status = repo.StagedObjectStatusSealed
+	obj.SizeBytes = sizeBytes
+	obj.SHA256 = sha256Hex
+	obj.RecordCount = recordCount
+	obj.SealedPath = sealedPath
+	obj.SealedAt = ptrTime(dbNow)
+	obj.ExpiresAt = ptrTime(dbNow.Add(ttl))
+	return obj, nil
+}
+
+func (f *fakeStore) ReleaseStagedLease(_ context.Context, attemptID uuid.UUID) error {
+	if obj, ok := f.stagedObjects[attemptID]; ok && obj.Status == repo.StagedObjectStatusStaging {
+		delete(f.stagedObjects, attemptID)
+	}
+	return nil
+}
+
+func (f *fakeStore) datasetByID(id uuid.UUID) *models.Dataset {
+	for i := range f.datasets {
+		if f.datasets[i].ID == id {
+			return &f.datasets[i]
+		}
+	}
+	return nil
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
+
+// Remaining WP3.3 staged-commit txStore surface for the fake: the keyed
+// build callback receives *fakeStore as repo.OutputCommitTxStore in the
+// unit-test keyed tests.
+func (f *fakeStore) GetRuntimeTransactionForUpdate(_ context.Context, datasetID uuid.UUID, txnID uuid.UUID) (*models.RuntimeTransaction, error) {
+	resv, ok := f.runtimeTransactions[txnID]
+	if !ok || resv.DatasetID != datasetID {
+		return nil, nil
+	}
+	return &resv, nil
+}
+
+func (f *fakeStore) AbortReservedTransaction(_ context.Context, datasetID uuid.UUID, txnID uuid.UUID) error {
+	resv, ok := f.runtimeTransactions[txnID]
+	if !ok || resv.DatasetID != datasetID || resv.Status != models.TransactionStatusOpen {
+		return repo.ErrInvalidTransition
+	}
+	resv.Status = models.TransactionStatusAborted
+	f.runtimeTransactions[txnID] = resv
+	return nil
+}
+
+func (f *fakeStore) LoadStagedObjectForUpdate(_ context.Context, datasetID uuid.UUID, stagedObjectID uuid.UUID) (*repo.StagedOutputObject, error) {
+	if obj, ok := f.stagedObjects[stagedObjectID]; ok && obj.DatasetID == datasetID {
+		return obj, nil
+	}
+	return nil, repo.ErrNotFound
+}
+
+func (f *fakeStore) ConsumeStagedObject(_ context.Context, stagedObjectID uuid.UUID, consumingTxn uuid.UUID) error {
+	obj, ok := f.stagedObjects[stagedObjectID]
+	if !ok || obj.Status != repo.StagedObjectStatusSealed {
+		return repo.ErrInvalidTransition
+	}
+	obj.Status = repo.StagedObjectStatusConsumed
+	obj.ConsumedAt = ptrTime(time.Now().UTC())
+	obj.ConsumedByTransaction = &consumingTxn
+	return nil
 }

@@ -246,6 +246,13 @@ const (
 	FileOperationAdd     FileOperation = "ADD"
 	FileOperationReplace FileOperation = "REPLACE"
 	FileOperationRemove  FileOperation = "REMOVE"
+	// FileOperationStagedAdd is the WP3.3 wire marker for staged-output
+	// commits: the file's bytes are referenced through a sealed staged
+	// object (StagedObjectID), never inline. It is converted to ADD before
+	// any staged-file row is written — the database CHECK on
+	// dataset_transaction_files.op only accepts ADD/REPLACE/REMOVE, which
+	// is exactly what makes older services fail closed on this operation.
+	FileOperationStagedAdd FileOperation = "STAGED_ADD"
 
 	BranchStatusActive   BranchStatus = "ACTIVE"
 	BranchStatusArchived BranchStatus = "ARCHIVED"
@@ -1117,6 +1124,11 @@ type CommitDatasetOutputRequest struct {
 	PreviewRows     [][]JSONValue           `json:"preview_rows,omitempty"`
 	LineageLinks    []PutDatasetLineageLink `json:"lineage_links,omitempty"`
 	Metadata        JSONValue               `json:"metadata,omitempty"`
+	// ReservationID and BuildID declare the WP3.3 staged-commit binding:
+	// together with the STAGED_ADD file entry they must match the sealed
+	// staged object's descriptor. Empty keeps the historical request shape.
+	ReservationID string `json:"reservation_id,omitempty"`
+	BuildID       string `json:"build_id,omitempty"`
 }
 
 type CommitOutputFile struct {
@@ -1126,6 +1138,14 @@ type CommitOutputFile struct {
 	ContentType *string       `json:"content_type,omitempty"`
 	Metadata    JSONValue     `json:"metadata,omitempty"`
 	Operation   FileOperation `json:"operation,omitempty"`
+	// StagedObjectID references the sealed staged object this file
+	// publishes when Operation is STAGED_ADD. Empty for every historical
+	// operation; ignored otherwise.
+	StagedObjectID string `json:"staged_object_id,omitempty"`
+	// SHA256 is the caller-computed hex digest declared for the staged
+	// object. The service publishes only when it equals the sealed digest
+	// (caller-computed, declared and sealed values must agree).
+	SHA256 string `json:"sha256,omitempty"`
 	// ContentBase64 carries the actual file bytes for a server-side write.
 	// nil (field absent or JSON null) keeps the historical metadata-only
 	// commit; a non-nil slice — including an empty one for zero-row
@@ -1164,6 +1184,24 @@ type OutputCommitReceipt struct {
 	Transaction        RuntimeTransaction `json:"transaction"`
 	ResponseBody       json.RawMessage    `json:"response_body"`
 	CreatedAt          time.Time          `json:"created_at"`
+}
+
+// StageDatasetOutputResponse is the reply of POST /datasets/{rid}/outputs:stage.
+// StagedObjectID is the only reference callers may use later — never a raw
+// storage path. A byte-identical re-transmission against an already sealed
+// object returns the stored descriptor with HTTP 200 instead of 201.
+type StageDatasetOutputResponse struct {
+	StagedObjectID string    `json:"staged_object_id"`
+	DatasetRID     string    `json:"dataset_rid"`
+	Branch         string    `json:"branch"`
+	ReservationID  string    `json:"reservation_id"`
+	BuildID        string    `json:"build_id"`
+	LogicalPath    string    `json:"logical_path"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	SizeBytes      int64     `json:"size_bytes"`
+	SHA256         string    `json:"sha256"`
+	RecordCount    int64     `json:"record_count"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 
 type ValidateRequest struct {

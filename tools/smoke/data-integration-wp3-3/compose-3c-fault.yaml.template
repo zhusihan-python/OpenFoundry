@@ -1,0 +1,36 @@
+# Rendered by run3c.sh setup next to compose.yaml. Applied ONLY for the
+# ACK-fault scenario: `docker compose -f compose.yaml -f compose-3c-fault.yaml
+# up -d faultproxy pbs` recreates pbs with DATASET_SERVICE_URL pointing at
+# the 3C fault proxy (chunked-capable transparent forwarder; see
+# fault_proxy_3c.py). Memory runs never apply this override.
+name: __OF33C_PROJECT__
+
+services:
+  faultproxy:
+    image: python:3.12-alpine
+    container_name: __OF33C_PROJECT__-faultproxy
+    volumes:
+      - __OF_ROOT__/tools/smoke/data-integration-wp3-3/fault_proxy_3c.py:/srv/fault_proxy_3c.py:ro
+      - __FAULT_EVIDENCE__:/evidence
+    command: ["python3", "-I", "/srv/fault_proxy_3c.py", "--listen", "0.0.0.0",
+              "--port", "8080", "--control", "8081",
+              "--upstream", "http://dvs:50078",
+              "--evidence-dir", "/evidence", "--timeout", "300"]
+    depends_on:
+      dvs:
+        condition: service_started
+    ports:
+      # control plane reachable from the host driver only
+      - "127.0.0.1:17179:8081"
+
+  pbs:
+    environment:
+      # override replaces the direct URL for this scenario
+      DATASET_SERVICE_URL: http://faultproxy:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dvs:
+        condition: service_started
+      faultproxy:
+        condition: service_started

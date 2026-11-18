@@ -516,6 +516,30 @@ VALUES ($1,$2,$3) ON CONFLICT (job_id, output_dataset_rid) DO UPDATE SET transac
 			}
 		}
 	}
+	if resolved.BatchConfig != nil {
+		// Same transaction as the jobs: PREPARING → PENDING records the
+		// opened reservation so execute/abort never see a resolved batched
+		// build without its reservation binding. BUILD_QUEUED builds (no
+		// jobs, no reservation) still record PENDING with an empty
+		// reservation — execute refuses them explicitly (queued), never
+		// the legacy empty-plan fallback.
+		reservation := ""
+		configUUID, configOK := datasetUUIDFromRef(resolved.BatchConfig.OutputDatasetRID)
+		for _, opened := range resolved.OpenedTransactions {
+			// The spec's output spelling (possibly a bare UUID) and the
+			// frozen configuration's canonical RID must meet as the SAME
+			// parsed UUID — a string mismatch here would leave the
+			// reservation empty and the run unschedulable.
+			openedUUID, openedOK := datasetUUIDFromRef(opened.DatasetRID)
+			if configOK && openedOK && openedUUID == configUUID {
+				reservation = opened.TransactionRID
+				break
+			}
+		}
+		if err := ResolveBatchedPrepared(ctx, db, resolved.BuildID, reservation); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -530,7 +554,13 @@ func datasetForTransaction(items []models.OpenedTransaction, txRID string) strin
 
 func (r *Repository) MarkBuildFailed(ctx context.Context, buildID uuid.UUID, reason string) error {
 	_, err := r.db.Exec(ctx, `UPDATE builds SET state='BUILD_FAILED', error_message=$2, finished_at=NOW() WHERE id=$1`, buildID, reason)
-	return err
+	if err != nil {
+		return err
+	}
+	// A batched build whose CreateBuild failed after the prepare insert
+	// leaves its marker in PREPARING — terminalize it so execute/abort
+	// stop answering "preparing". No-op for non-batched builds.
+	return r.FailBatchedPreparing(ctx, buildID, reason)
 }
 
 // ListBuilds and GetBuild are production query helpers used by route handlers

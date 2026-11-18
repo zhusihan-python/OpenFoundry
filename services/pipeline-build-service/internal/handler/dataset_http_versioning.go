@@ -251,15 +251,42 @@ func (d DatasetHTTPVersioning) ViewSchema(ctx context.Context, datasetRID, branc
 
 // OpenTransaction implements resolver.DatasetVersioningRepository.
 func (d DatasetHTTPVersioning) OpenTransaction(ctx context.Context, datasetRID, branch string) (string, error) {
+	return d.openTransaction(ctx, datasetRID, branch, nil)
+}
+
+// OpenTransactionForBuild implements resolver.BuildAwareTransactionOpener:
+// the WP3.3 3B opt-in reservation. Identical wire call, but providence
+// carries the build-bound marker (origin/purpose/build_id) the dataset
+// service's staged-output protocol requires on stage and keyed commit.
+// The returned RID is the canonical transaction RID, exactly like
+// OpenTransaction.
+func (d DatasetHTTPVersioning) OpenTransactionForBuild(ctx context.Context, datasetRID, branch string, buildID uuid.UUID, purpose string) (string, error) {
+	if purpose == "" {
+		return "", &DatasetHTTPError{Status: http.StatusBadRequest, Code: "invalid_reservation_purpose", Detail: "reservation purpose is required for build-bound transactions"}
+	}
+	if buildID == uuid.Nil {
+		return "", &DatasetHTTPError{Status: http.StatusBadRequest, Code: "invalid_build_id", Detail: "build id is required for build-bound transactions"}
+	}
+	return d.openTransaction(ctx, datasetRID, branch, map[string]any{
+		"origin":   "pipeline-build-service",
+		"purpose":  purpose,
+		"build_id": buildID.String(),
+	})
+}
+
+func (d DatasetHTTPVersioning) openTransaction(ctx context.Context, datasetRID, branch string, providence map[string]any) (string, error) {
 	rid, err := canonicalDatasetRID(datasetRID)
 	if err != nil {
 		return "", &DatasetHTTPError{Status: http.StatusBadRequest, Code: "invalid_dataset_rid", Detail: err.Error()}
 	}
 	datasetRID = rid
+	if providence == nil {
+		providence = map[string]any{"origin": "pipeline-build-service"}
+	}
 	body, _ := json.Marshal(map[string]any{
 		"type":       "UPDATE",
 		"summary":    "pipeline-build output transaction",
-		"providence": map[string]any{"origin": "pipeline-build-service"},
+		"providence": providence,
 	})
 	status, payload, err := d.do(ctx, http.MethodPost, "/v1/datasets/"+url.PathEscape(datasetRID)+"/branches/"+url.PathEscape(branch)+"/transactions", body)
 	if err != nil {
@@ -275,6 +302,34 @@ func (d DatasetHTTPVersioning) OpenTransaction(ctx context.Context, datasetRID, 
 		return "", &DatasetHTTPError{Status: http.StatusServiceUnavailable, Code: "bad_response", Detail: "transaction response missing id", Upstream: true}
 	}
 	return "ri.foundry.main.transaction." + created.ID.String(), nil
+}
+
+// DatasetActiveBranch fetches the dataset's active branch as seen by the
+// dataset service for the CALLER (tenant-checked). The WP3.3 3B batched
+// preflight uses it to prove the build branch is the output dataset's
+// active branch before the build row exists; the dataset runtime still
+// re-checks at stage/commit time (this is an early answer, not a lock).
+func (d DatasetHTTPVersioning) DatasetActiveBranch(ctx context.Context, datasetRID string) (string, error) {
+	rid, err := canonicalDatasetRID(datasetRID)
+	if err != nil {
+		return "", &DatasetHTTPError{Status: http.StatusBadRequest, Code: "invalid_dataset_rid", Detail: err.Error()}
+	}
+	// The dataset GET route parses the parameter as a bare UUID (no RID
+	// prefix handling), so the canonical RID is stripped to its UUID.
+	status, payload, err := d.do(ctx, http.MethodGet, "/v1/datasets/"+url.PathEscape(strings.TrimPrefix(rid, datasetRIDPrefix)), nil)
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusOK {
+		return "", datasetErrorFromResponse(status, payload)
+	}
+	var view struct {
+		ActiveBranch string `json:"active_branch"`
+	}
+	if err := json.Unmarshal(payload, &view); err != nil || strings.TrimSpace(view.ActiveBranch) == "" {
+		return "", &DatasetHTTPError{Status: http.StatusServiceUnavailable, Code: "bad_response", Detail: "dataset response missing active_branch", Upstream: true}
+	}
+	return view.ActiveBranch, nil
 }
 
 // AbortTransaction implements TransactionAborter. The dataset service

@@ -302,9 +302,27 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 	// Read-only preflight (specs, cycles, inputs, output visibility)
 	// rejects deterministic errors BEFORE the build row, any remote
 	// transaction or any local lock exists.
-	if _, _, err := resolver.PreflightBuild(ctx, args, ports.JobSpecs, ports.Versioning); err != nil {
+	specs, _, err := resolver.PreflightBuild(ctx, args, ports.JobSpecs, ports.Versioning)
+	if err != nil {
 		writeResolutionHTTPError(w, err)
 		return
+	}
+	// WP3.3 3B opt-in detection runs on the REAL preflight specs: the
+	// frozen batched configuration, the build-bound reservation protocol
+	// and the active-branch proof all gate BEFORE the build row exists.
+	batchedCfg, err := prepareBatchedCreateBuild(ctx, ports, body, &args, specs)
+	if err != nil {
+		var specErr *batchedSpecError
+		if errors.As(err, &specErr) {
+			writeJSON(w, specErr.Status, map[string]string{"error": specErr.Code, "detail": specErr.Detail})
+			return
+		}
+		writeResolutionHTTPError(w, err)
+		return
+	}
+	if batchedCfg != nil {
+		frozen := batchedCfg
+		args.SpecFreezer = func(fresh []models.JobSpec) error { return batchedSpecsEquivalent(frozen, fresh) }
 	}
 	buildID, err := uuid.NewV7()
 	if err != nil {
@@ -322,7 +340,22 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 
 	openCtx, cancelOpen := detachedWrite()
 	defer cancelOpen()
-	if err := ports.Builds.OpenBuild(openCtx, args, buildID); err != nil {
+	if batchedCfg != nil {
+		// The build row and the opt-in marker land in ONE transaction:
+		// from the moment the build exists, execute/abort route on the
+		// batched configuration — there is no window that could fall
+		// back into the legacy empty-plan path.
+		preparer, preparerOK := ports.Builds.(batchedPrepareStore)
+		if !preparerOK {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "batched_persistence_unavailable", "detail": "batched builds require the batched prepare store"})
+			return
+		}
+		batchedCfg.BuildID = buildID
+		if err := preparer.OpenBatchedPrepare(openCtx, args, buildID, batchedCfg); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "build_open_failed", "detail": err.Error()})
+			return
+		}
+	} else if err := ports.Builds.OpenBuild(openCtx, args, buildID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "build_open_failed", "detail": err.Error()})
 		return
 	}
@@ -349,6 +382,12 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 	}
 	persistCtx, cancelPersist := detachedWrite()
 	defer cancelPersist()
+	if batchedCfg != nil {
+		// The frozen configuration rides the resolved build into the SAME
+		// persistence transaction (PREPARING → PENDING with the opened
+		// reservation RID); execute reads exactly this row.
+		resolved.BatchConfig = batchedCfg
+	}
 	if err := ports.Builds.PersistResolvedBuild(persistCtx, resolved); err != nil {
 		// Persistence failed after transactions were opened: compensate
 		// (abort this run's transactions, release this build's locks)

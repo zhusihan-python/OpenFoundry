@@ -54,6 +54,16 @@ type TransactionAborter interface {
 	AbortTransaction(ctx context.Context, datasetRID, branch, transactionRID string) error
 }
 
+// BuildAwareTransactionOpener opens an output transaction whose providence
+// carries the build-bound reservation marker. WP3.3 3B opt-in builds use it
+// (DatasetHTTPVersioning implements it with
+// providence {origin, purpose, build_id}); every other resolution keeps the
+// plain OpenTransaction call. A purpose-carrying resolve whose port does not
+// implement this interface fails closed before any transaction is opened.
+type BuildAwareTransactionOpener interface {
+	OpenTransactionForBuild(ctx context.Context, datasetRID, branch string, buildID uuid.UUID, purpose string) (string, error)
+}
+
 // LockReleaser releases a build lock acquired earlier in the SAME run for
 // (outputDatasetRID, buildID). Implementations must not touch locks held
 // by other builds.
@@ -149,6 +159,20 @@ type ResolveBuildArgs struct {
 	RequestedBy       string
 	TriggerKind       string
 	AbortPolicy       string
+	// ReservationPurpose, when non-empty, opens output transactions through
+	// BuildAwareTransactionOpener so the remote providence carries the
+	// build-bound marker (WP3.3 3B opt-in). Empty keeps the plain
+	// OpenTransaction call — legacy resolution is untouched. A non-empty
+	// purpose against a port without the opener fails closed before any
+	// transaction is opened.
+	ReservationPurpose string
+	// SpecFreezer, when non-nil, is invoked with the specs ResolveBuild
+	// ITSELF loaded (its internal PreflightBuild re-runs the spec load),
+	// right after preflight and before any lock or transaction exists. An
+	// error fails the whole resolution with zero side effects. WP3.3 3B
+	// uses it to prove the freshly loaded graph still equals the spec the
+	// CreateBuild preflight froze the batched configuration from.
+	SpecFreezer func([]models.JobSpec) error
 }
 
 // BranchNotFoundError marks an output dataset whose branch listing is
@@ -305,6 +329,15 @@ func ResolveBuild(ctx context.Context, args ResolveBuildArgs, jobSpecs JobSpecRe
 	if err != nil {
 		return nil, err
 	}
+	// The freeze hook sees the graph THIS resolution will consume — never
+	// a first preflight stitched onto a different freshly loaded graph —
+	// and runs before any lock or transaction exists, so a mismatch fails
+	// closed with zero side effects.
+	if args.SpecFreezer != nil {
+		if err := args.SpecFreezer(specs); err != nil {
+			return nil, err
+		}
+	}
 
 	var buildID uuid.UUID
 	if args.BuildID != nil {
@@ -328,7 +361,7 @@ func ResolveBuild(ctx context.Context, args ResolveBuildArgs, jobSpecs JobSpecRe
 		}
 	}
 
-	opened, err := AcquireLocks(ctx, buildID, specs, args.BuildBranch, versioning, locks, recorder...)
+	opened, err := AcquireLocks(ctx, buildID, specs, args.BuildBranch, args.ReservationPurpose, versioning, locks, recorder...)
 	if err != nil {
 		return nil, err
 	}
@@ -477,7 +510,10 @@ func ValidateInputs(ctx context.Context, buildBranch string, specs []models.JobS
 }
 
 // AcquireLocks opens one transaction per output and delegates lock persistence.
-func AcquireLocks(ctx context.Context, buildID uuid.UUID, specs []models.JobSpec, buildBranch string, client DatasetVersioningRepository, locks BranchLockRepository, recorder ...PendingTxnRecorder) ([]models.OpenedTransaction, error) {
+// reservationPurpose routes the open through BuildAwareTransactionOpener
+// (build-bound providence marker) when non-empty; the port must then
+// implement it or the resolution fails closed before any transaction.
+func AcquireLocks(ctx context.Context, buildID uuid.UUID, specs []models.JobSpec, buildBranch, reservationPurpose string, client DatasetVersioningRepository, locks BranchLockRepository, recorder ...PendingTxnRecorder) ([]models.OpenedTransaction, error) {
 	opened := make([]models.OpenedTransaction, 0)
 	seenOutputs := map[string]struct{}{}
 	fail := func(err error) ([]models.OpenedTransaction, error) {
@@ -500,7 +536,19 @@ func AcquireLocks(ctx context.Context, buildID uuid.UUID, specs []models.JobSpec
 				continue
 			}
 			seenOutputs[output] = struct{}{}
-			txnRID, err := client.OpenTransaction(ctx, output, buildBranch)
+			var txnRID string
+			var err error
+			if reservationPurpose != "" {
+				opener, openerOK := client.(BuildAwareTransactionOpener)
+				if !openerOK {
+					// Fail closed before anything is opened: the opt-in
+					// reservation protocol requires the build-aware opener.
+					return fail(&ClientResolutionError{Message: "batched_reservation_opener_unavailable: the versioning port cannot open build-bound reservation transactions"})
+				}
+				txnRID, err = opener.OpenTransactionForBuild(ctx, output, buildBranch, buildID, reservationPurpose)
+			} else {
+				txnRID, err = client.OpenTransaction(ctx, output, buildBranch)
+			}
 			if err != nil {
 				return fail(mapClientErr(err))
 			}

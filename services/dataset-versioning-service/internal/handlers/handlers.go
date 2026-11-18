@@ -92,6 +92,8 @@ type Store interface {
 	StorageDetails(ctx context.Context, datasetID uuid.UUID, fsID string, driver string, baseDir string, ttlSeconds uint64) (*models.StorageDetailsOut, error)
 	StartTransaction(ctx context.Context, datasetID uuid.UUID, branchID uuid.UUID, branchName string, txType models.TransactionType, summary string, providence models.JSONValue, startedBy uuid.UUID) (*models.RuntimeTransaction, error)
 	StageTransactionFiles(ctx context.Context, datasetID uuid.UUID, transactionID uuid.UUID, files []models.StageTransactionFile) error
+	GetTransactionStagedFile(ctx context.Context, transactionID uuid.UUID, logicalPath string) (*models.StageTransactionFile, error)
+	ListTransactionStagedFilesFrom(ctx context.Context, transactionID uuid.UUID, fromPath string, limit int) ([]models.StageTransactionFile, error)
 	MergeTransactionMetadata(ctx context.Context, datasetID uuid.UUID, transactionID uuid.UUID, metadata models.JSONValue) error
 	GetRuntimeTransaction(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID) (*models.RuntimeTransaction, error)
 	ListRuntimeTransactions(ctx context.Context, datasetID uuid.UUID, branch *string, before *time.Time, limit int) ([]models.RuntimeTransaction, error)
@@ -100,6 +102,9 @@ type Store interface {
 	AbortTransaction(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID) error
 	WithIdempotentOutputCommit(ctx context.Context, scope repo.TenantScope, datasetID uuid.UUID, key string, fingerprint string, build func(ctx context.Context, tx repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error)) (*models.OutputCommitReceipt, bool, error)
 	GetOutputCommitReceipt(ctx context.Context, scope repo.TenantScope, datasetID uuid.UUID, key string) (*models.OutputCommitReceipt, error)
+	AcquireStagedUploadLease(ctx context.Context, scope repo.TenantScope, binding repo.StagedBinding, attemptID uuid.UUID, leaseTTL time.Duration) (*repo.StagedOutputObject, *uuid.UUID, bool, error)
+	SealStagedOutput(ctx context.Context, scope repo.TenantScope, binding repo.StagedBinding, attemptID uuid.UUID, sizeBytes int64, sha256Hex string, recordCount int64, sealedPath string, ttl time.Duration) (*repo.StagedOutputObject, error)
+	ReleaseStagedLease(ctx context.Context, attemptID uuid.UUID) error
 	GetDatasetQuality(ctx context.Context, datasetID uuid.UUID) (*models.DatasetQualityResponse, error)
 	UpsertQualityRule(ctx context.Context, datasetID uuid.UUID, body *models.CreateQualityRuleRequest) (*models.DatasetQualityRule, error)
 	UpdateQualityRule(ctx context.Context, datasetID uuid.UUID, ruleID uuid.UUID, body *models.UpdateQualityRuleRequest) error
@@ -117,6 +122,27 @@ type Handlers struct {
 	// single outputs:commit request. Zero falls back to
 	// DefaultMaxOutputCommitContentBytes.
 	MaxOutputCommitContentBytes int64
+	// StagedOutputRoot is the absolute path of the private staging
+	// directory for WP3.3 staged output objects. It must live on the same
+	// filesystem as the backing store but outside the backing object
+	// namespace (checked per use on the resolved paths). Empty disables
+	// the staged-output feature: outputs:stage and STAGED_ADD commits
+	// fail closed with 503.
+	StagedOutputRoot string
+	// StagedOutputMaxBytes caps one streaming stage attempt's total body
+	// bytes. Zero falls back to DefaultStagedOutputMaxBytes.
+	StagedOutputMaxBytes int64
+	// StagedOutputMaxRecords caps the record count of one staged object.
+	// Zero falls back to DefaultStagedOutputMaxRecords.
+	StagedOutputMaxRecords int64
+	// StagedOutputLeaseTTL bounds the single in-flight upload lease of a
+	// reservation. Zero falls back to DefaultStagedOutputLeaseTTL.
+	StagedOutputLeaseTTL time.Duration
+	// StagedOutputTTL bounds how long a sealed staged object stays
+	// committable before it expires (no server-side GC in v1 — expired
+	// artifacts are retained and listable). Zero falls back to
+	// DefaultStagedOutputTTL.
+	StagedOutputTTL time.Duration
 	// Resolver computes effective dataset markings by walking lineage
 	// upstream. When nil, marking endpoints fall back to the direct rows
 	// returned by Repo.ListDatasetMarkings — keeps tests light and lets

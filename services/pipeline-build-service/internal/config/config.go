@@ -60,6 +60,13 @@ type Config struct {
 	// execution and leaves callers with an explicit runner_not_wired error.
 	PythonSidecarBinary         string
 	PythonSidecarTimeoutSeconds uint32
+	// WP3.3 3B batched execution (scan paging, bounded decode, stage
+	// attempt timeout, execute-lease fence).
+	BatchedScanPageRows         int
+	BatchedScanMaxResponseBytes int64
+	BatchedScanMaxPages         int
+	BatchedStageTimeoutSecs     uint32
+	BatchedExecuteLeaseTTLSecs  uint32
 
 	// T8 scheduling consumer (WP3.2). DEFAULT OFF: the consumer starts
 	// only when SCHEDULER_CONSUMER_ENABLED=true, and then requires the
@@ -74,13 +81,13 @@ type Config struct {
 // §4: default-off, bounded grants, fenced execution). All durations are
 // SECONDS.
 type SchedulerConfig struct {
-	Enabled                 bool
-	KafkaBootstrap          string
-	GroupID                 string
+	Enabled        bool
+	KafkaBootstrap string
+	GroupID        string
 	// CredentialEncryptionKeyB64 is the raw env value (never logged);
 	// CredentialEncryptionKey is the decoded 32-byte key.
 	CredentialEncryptionKeyB64 string
-	CredentialEncryptionKey     []byte
+	CredentialEncryptionKey    []byte
 	LeaseTTLSeconds            uint32
 	HeartbeatSeconds           uint32
 	MaxEventAttempts           uint32
@@ -89,7 +96,7 @@ type SchedulerConfig struct {
 	// file paths. SASL_SSL remains available for optional SASL
 	// deployments. Unknown protocols NEVER downgrade to plaintext;
 	// PLAINTEXT is an explicit dev-only choice.
-	KafkaSecurityProto string   // SSL | SASL_SSL | SASL_PLAINTEXT | PLAINTEXT
+	KafkaSecurityProto string // SSL | SASL_SSL | SASL_PLAINTEXT | PLAINTEXT
 	KafkaSASLUsername  string
 	KafkaSASLPassword  string
 	KafkaSASLMechanism string // SCRAM-SHA-512 (default) | SCRAM-SHA-256 | PLAIN
@@ -199,6 +206,13 @@ func FromEnv() (*Config, error) {
 	c.FoundryIcebergCatalogBearer = os.Getenv("FOUNDRY_ICEBERG_CATALOG_BEARER")
 	c.PythonSidecarBinary = os.Getenv("PYTHON_SIDECAR_BINARY")
 	c.PythonSidecarTimeoutSeconds = parseUint32(os.Getenv("PYTHON_SIDECAR_TIMEOUT_SECONDS"), 60)
+	// WP3.3 3B batched execution knobs (defaults mirror the dataset
+	// service's own page/line budgets; see handler/batched_dataset_client.go).
+	c.BatchedScanPageRows = int(parseUint32(os.Getenv("BATCHED_SCAN_PAGE_ROWS"), 500))
+	c.BatchedScanMaxResponseBytes = int64(parseUint64(os.Getenv("BATCHED_SCAN_MAX_RESPONSE_BYTES"), 64<<20))
+	c.BatchedScanMaxPages = int(parseUint32(os.Getenv("BATCHED_SCAN_MAX_PAGES"), 10000))
+	c.BatchedStageTimeoutSecs = parseUint32(os.Getenv("BATCHED_STAGE_TIMEOUT_SECONDS"), 30)
+	c.BatchedExecuteLeaseTTLSecs = parseUint32(os.Getenv("BATCHED_EXECUTE_LEASE_TTL_SECONDS"), 1800)
 	c.Scheduler.Enabled = os.Getenv("SCHEDULER_CONSUMER_ENABLED") == "true"
 	c.Scheduler.KafkaBootstrap = strings.TrimSpace(os.Getenv("SCHEDULER_KAFKA_BOOTSTRAP_SERVERS"))
 	c.Scheduler.GroupID = defaultStr(os.Getenv("SCHEDULER_GROUP_ID"), "pipeline-build-service-scheduler")

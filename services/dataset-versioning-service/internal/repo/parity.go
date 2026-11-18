@@ -834,6 +834,52 @@ func (r *Repo) StageTransactionFiles(ctx context.Context, datasetID uuid.UUID, t
 	return nil
 }
 
+// GetTransactionStagedFile returns the one staged file a transaction
+// registered under logicalPath, or nil when the path was not staged. The
+// caller must already have validated the transaction belongs to the dataset
+// it is resolving for (e.g. via GetRuntimeTransaction).
+func (r *Repo) GetTransactionStagedFile(ctx context.Context, transactionID uuid.UUID, logicalPath string) (*models.StageTransactionFile, error) {
+	row := r.Pool.QueryRow(ctx, `SELECT logical_path, physical_path, size_bytes, op
+		FROM dataset_transaction_files WHERE transaction_id = $1 AND logical_path = $2`, transactionID, logicalPath)
+	var file models.StageTransactionFile
+	err := row.Scan(&file.LogicalPath, &file.PhysicalPath, &file.SizeBytes, &file.Operation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &file, nil
+}
+
+// ListTransactionStagedFilesFrom returns up to limit staged files of the
+// transaction whose logical_path is >= fromPath, in the database's
+// logical_path order (an empty fromPath starts at the beginning). The
+// equality prefix on transaction_id plus the range on logical_path lets
+// PostgreSQL 16 serve both the filter and the ORDER BY ... LIMIT straight
+// off the (transaction_id, logical_path) primary-key btree, so callers get
+// keyset pagination without loading the whole file set. The caller must
+// already have validated the transaction belongs to the dataset it is
+// resolving for (e.g. via GetRuntimeTransaction).
+func (r *Repo) ListTransactionStagedFilesFrom(ctx context.Context, transactionID uuid.UUID, fromPath string, limit int) ([]models.StageTransactionFile, error) {
+	rows, err := r.Pool.Query(ctx, `SELECT logical_path, physical_path, size_bytes, op
+		FROM dataset_transaction_files WHERE transaction_id = $1 AND logical_path >= $2
+		ORDER BY logical_path ASC LIMIT $3`, transactionID, fromPath, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []models.StageTransactionFile{}
+	for rows.Next() {
+		var file models.StageTransactionFile
+		if err := rows.Scan(&file.LogicalPath, &file.PhysicalPath, &file.SizeBytes, &file.Operation); err != nil {
+			return nil, err
+		}
+		out = append(out, file)
+	}
+	return out, rows.Err()
+}
+
 func (r *Repo) MergeTransactionMetadata(ctx context.Context, datasetID uuid.UUID, transactionID uuid.UUID, metadata models.JSONValue) error {
 	_, err := r.Pool.Exec(ctx, `UPDATE dataset_transactions
 		SET metadata = metadata || $3::jsonb

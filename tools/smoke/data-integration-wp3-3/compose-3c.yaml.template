@@ -1,0 +1,100 @@
+# Rendered by tools/smoke/data-integration-wp3-3/run3c.sh setup into
+# <envdir>/compose.yaml. Placeholders: __OF_ROOT__ (repo root),
+# __RUN_BIN__ (built linux binaries dir), __OF33C_PROJECT__ (unique compose
+# project name). Secrets come from the generated .env next to this file
+# (umask 077, never committed, never printed).
+#
+# Port plan (host 127.0.0.1): dvs 17178, pbs 17181 — isolated from the P1
+# (17078/17081), file-IO (16078/16081) and 15078/15081 environments.
+# Postgres is not published to the host.
+#
+# The fault override (compose-3c-fault.yaml.template) adds the 3C fault
+# proxy and repoints PBS at it for the ACK-fault scenario only. Memory
+# measurement runs always use the DIRECT DATASET_SERVICE_URL below.
+name: __OF33C_PROJECT__
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: __OF33C_PROJECT__-postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: openfoundry
+      POSTGRES_PASSWORD: ${OF33C_PG_PASSWORD:?}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - __OF_ROOT__/tools/smoke/data-integration-wp3-3/init-3c.sql:/docker-entrypoint-initdb.d/01-init-3c.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "openfoundry", "-d", "postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 35
+
+  dvs:
+    image: alpine:3.22
+    container_name: __OF33C_PROJECT__-dvs
+    entrypoint: ["/service"]
+    volumes:
+      - __RUN_BIN__/dataset-versioning-service:/service:ro
+      - dvs-data:/var/of
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50078
+      DATABASE_URL: postgres://openfoundry:${OF33C_PG_PASSWORD:?}@postgres:5432/wp33c_dvs
+      JWT_SECRET: ${OF33C_JWT_SECRET:?}
+      # Local backing FS root and the WP3.3 staged-output root are SIBLINGS
+      # on the same volume (hard-link install needs one filesystem; the
+      # stage root must live outside the backing root).
+      DATASET_FILES_BASE_URL: http://127.0.0.1:17178
+      DATASET_FILES_ROOT_DIR: /var/of/backing
+      DATASET_STAGED_OUTPUTS_DIR: /var/of/staging
+      # No GOMEMLIMIT / GOGC overrides: memory thresholds observe the real
+      # Go runtime defaults.
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:50078/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    ports:
+      - "127.0.0.1:17178:50078"
+
+  pbs:
+    image: alpine:3.22
+    container_name: __OF33C_PROJECT__-pbs
+    entrypoint: ["/service"]
+    volumes:
+      - __RUN_BIN__/pipeline-build-service:/service:ro
+      - __OF_ROOT__/services/pipeline-build-service/config.yaml:/etc/openfoundry/config.yaml:ro
+      - pbs-data:/var/lib/openfoundry/pipeline-build
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50081
+      DATABASE_URL: postgres://openfoundry:${OF33C_PG_PASSWORD:?}@postgres:5432/wp33c_pbs
+      JWT_SECRET: ${OF33C_JWT_SECRET:?}
+      # Direct connection to the real DVS process (no gateway hop for the
+      # large-scale streaming path). DATASET_SERVICE_BEARER is deliberately
+      # NOT set: the WP3.3 batched path forwards the caller JWT and no
+      # static service bearer exists in this environment.
+      DATASET_SERVICE_URL: http://dvs:50078
+      STORAGE_BACKEND: local
+      DATA_DIR: /var/lib/openfoundry/pipeline-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dvs:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:50081/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    ports:
+      - "127.0.0.1:17181:50081"
+
+volumes:
+  postgres-data:
+  dvs-data:
+  pbs-data:

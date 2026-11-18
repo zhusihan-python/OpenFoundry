@@ -71,6 +71,12 @@ type OutputCommitTxStore interface {
 	StageTransactionFiles(ctx context.Context, datasetID uuid.UUID, transactionID uuid.UUID, files []models.StageTransactionFile) error
 	MergeTransactionMetadata(ctx context.Context, datasetID uuid.UUID, transactionID uuid.UUID, metadata models.JSONValue) error
 	CommitTransactionWithPublish(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID, files []models.PutDatasetFileIndexEntry, links []models.PutDatasetLineageLink) (*PublishSnapshot, error)
+	// WP3.3 staged commits (all row locks are taken inside this outer
+	// transaction, after the datasets row lock):
+	GetRuntimeTransactionForUpdate(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID) (*models.RuntimeTransaction, error)
+	AbortReservedTransaction(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID) error
+	LoadStagedObjectForUpdate(ctx context.Context, datasetID uuid.UUID, stagedObjectID uuid.UUID) (*StagedOutputObject, error)
+	ConsumeStagedObject(ctx context.Context, stagedObjectID uuid.UUID, consumingTxn uuid.UUID) error
 }
 
 // outputCommitReceiptSelect qualifies every column with the `r` alias: the

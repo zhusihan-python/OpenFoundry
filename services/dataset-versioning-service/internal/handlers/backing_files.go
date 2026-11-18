@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	storageabstraction "github.com/openfoundry/openfoundry-go/libs/storage-abstraction"
 
@@ -111,6 +112,10 @@ func (h *Handlers) UploadData(w http.ResponseWriter, r *http.Request) {
 	logical := uploadLogicalPath(r.MultipartForm, header)
 	if !safeObjectKey(logical) {
 		writeJSONErr(w, http.StatusBadRequest, "invalid logical_path")
+		return
+	}
+	if reservedServerObjectSubtree(logical) {
+		writeJSONErr(w, http.StatusBadRequest, "logical_path is reserved: transactions/<uuid>/ under a dataset is reserved for server-written transaction objects and cannot be uploaded")
 		return
 	}
 	data, err := io.ReadAll(file)
@@ -216,6 +221,31 @@ func uploadLogicalPath(form *multipart.Form, header *multipart.FileHeader) strin
 
 func stableUploadObjectKey(baseDir string, datasetID string, logical string) string {
 	return strings.Trim(path.Join(baseDir, "datasets", datasetID, logical), "/")
+}
+
+// reservedServerObjectSubtree reports whether a canonical logical path
+// lands in the server-reserved transaction-object subtree that
+// outputCommitObjectKey writes into (…/datasets/<id>/transactions/<txn
+// UUID>/…). Uploads must not write there: committed version bytes stay
+// byte-stable only if no client-writeable entrypoint can overwrite them.
+// Only paths whose second segment is a UUID are reserved — that is the
+// exact shape that can collide with a committed transaction object — so
+// ordinary user paths like transactions/notes.csv keep their legacy upload
+// semantics. The directory match is case-insensitive: on case-insensitive
+// local volumes (macOS, Windows) a "Transactions/<uuid>/…" spelling hits
+// the same physical directory the server writes. The input must already
+// have passed safeObjectKey, whose canonicalization rejects the alias
+// spellings ("..", "//", leading/trailing slashes).
+func reservedServerObjectSubtree(canonicalLogical string) bool {
+	first, rest, _ := strings.Cut(canonicalLogical, "/")
+	if !strings.EqualFold(first, "transactions") {
+		return false
+	}
+	second, _, _ := strings.Cut(rest, "/")
+	if _, err := uuid.Parse(second); err != nil {
+		return false
+	}
+	return true
 }
 
 func emptyStringPtr(v string) *string {

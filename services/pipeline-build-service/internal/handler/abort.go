@@ -53,13 +53,21 @@ type abortBuildResponse struct {
 // AbortBuild mirrors the Rust v1 abort flow for build rows and extends it with
 // executor cancellation + best-effort open-output transaction aborts.
 func AbortBuild(w http.ResponseWriter, r *http.Request) {
-	ports, abortRepo, ok := requireAbortPorts(w)
-	if !ok {
-		return
-	}
 	id := buildIDParam(r)
 	if strings.TrimSpace(id) == "" {
 		writeJSON(w, http.StatusBadRequest, "build id is required")
+		return
+	}
+	// WP3.3 3B opt-in builds abort through the batched guard BEFORE the
+	// legacy abort ports are even required (the batched path needs
+	// neither the transaction manager nor the committer): the legacy
+	// job-outputs sweep below must never touch a build whose commit
+	// intent may be durable. Non-batched builds fall through untouched.
+	if abortBatchedBuildIfConfigured(w, r, id) {
+		return
+	}
+	ports, abortRepo, ok := requireAbortPorts(w)
+	if !ok {
 		return
 	}
 	// Dataset aborts run as the calling user (remote transactions were

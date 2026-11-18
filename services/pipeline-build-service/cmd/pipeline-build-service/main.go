@@ -128,6 +128,18 @@ func main() {
 			log.Info("dataset HTTP versioning adapter wired", slog.String("base_url", cfg.DatasetServiceURL))
 		}
 		handler.SetBuildLifecyclePorts(handler.BuildLifecyclePorts{JobSpecs: repo, Versioning: versioningPort, Locks: repo, Builds: repo})
+		// WP3.3 3B batched dataset client: direct dataset-versioning access,
+		// every request carries the CALLER's bearer (no service token,
+		// redirects refused); knobs default to the dataset service budgets.
+		handler.SetBatchedDatasetClient(handler.BatchedClientConfig{
+			BaseURL:              cfg.DatasetServiceURL,
+			Client:               &http.Client{Timeout: 60 * time.Second},
+			ScanPageRows:         cfg.BatchedScanPageRows,
+			ScanMaxResponseBytes: cfg.BatchedScanMaxResponseBytes,
+			ScanMaxPages:         cfg.BatchedScanMaxPages,
+			StageTimeout:         time.Duration(cfg.BatchedStageTimeoutSecs) * time.Second,
+			LeaseTTL:             time.Duration(cfg.BatchedExecuteLeaseTTLSecs) * time.Second,
+		})
 		distributedRunner := handler.NewSparkFlinkDistributedRunner(handler.DistributedRuntimeConfig{
 			Namespace:    cfg.SparkNamespace,
 			RunnerImage:  cfg.PipelineRunnerImage,

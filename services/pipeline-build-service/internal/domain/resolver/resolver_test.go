@@ -76,14 +76,14 @@ func TestAcquireLocksSuccessAndFailure(t *testing.T) {
 	locks := newMockLockRepo()
 	buildID := uuid.New()
 
-	opened, err := AcquireLocks(ctx, buildID, []models.JobSpec{spec}, "master", versioning, locks)
+	opened, err := AcquireLocks(ctx, buildID, []models.JobSpec{spec}, "master", "", versioning, locks)
 	require.NoError(t, err)
 	require.Len(t, opened, 1)
 	require.Equal(t, "out.locked", opened[0].DatasetRID)
 	require.Equal(t, buildID, locks.holder("out.locked"))
 
 	secondBuild := uuid.New()
-	_, err = AcquireLocks(ctx, secondBuild, []models.JobSpec{spec}, "master", versioning, locks)
+	_, err = AcquireLocks(ctx, secondBuild, []models.JobSpec{spec}, "master", "", versioning, locks)
 	require.Error(t, err)
 	var held *LockHeldError
 	require.True(t, errors.As(err, &held), "got %T: %v", err, err)

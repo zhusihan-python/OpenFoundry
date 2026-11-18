@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/url"
 	"os"
 	"path"
@@ -169,10 +170,28 @@ func (l *LocalBackingFS) WriteLocalObject(key string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
+// OpenLocalObject opens a previously written local object for streaming
+// reads (and seeking) without loading it whole into memory. It runs the
+// same lexical key validation as ReadLocalObject/WriteLocalObject and then
+// opens with os.OpenInRoot, which additionally refuses symlinks that would
+// escape RootDir (lexical validation alone cannot see through symlinks).
+// Callers own closing the returned reader.
+func (l *LocalBackingFS) OpenLocalObject(key string) (io.ReadSeekCloser, error) {
+	cleanKey, err := l.localObjectKey(key)
+	if err != nil {
+		return nil, err
+	}
+	root := l.RootDir
+	if root == "" {
+		root = "."
+	}
+	return os.OpenInRoot(root, cleanKey)
+}
+
 func (l *LocalBackingFS) localPath(key string) (string, error) {
-	cleanKey := path.Clean("/" + strings.TrimSpace(key))[1:]
-	if cleanKey == "." || cleanKey == "" || cleanKey != strings.Trim(key, "/") || hasDotDot(cleanKey) {
-		return "", errors.New("invalid local object key")
+	cleanKey, err := l.localObjectKey(key)
+	if err != nil {
+		return "", err
 	}
 	root := l.RootDir
 	if root == "" {
@@ -183,6 +202,10 @@ func (l *LocalBackingFS) localPath(key string) (string, error) {
 		return "", err
 	}
 	absPath := filepath.Join(absRoot, filepath.FromSlash(cleanKey))
+	// Containment re-check relative to the absolute root: this is the
+	// historical defense for Windows-style backslash separators and rooted
+	// spellings that pure slash cleaning cannot see, and must stay for
+	// ReadLocalObject/WriteLocalObject behavior compatibility.
 	rel, err := filepath.Rel(absRoot, absPath)
 	if err != nil {
 		return "", err
@@ -191,6 +214,18 @@ func (l *LocalBackingFS) localPath(key string) (string, error) {
 		return "", errors.New("local object key escapes root")
 	}
 	return absPath, nil
+}
+
+// localObjectKey is the shared lexical validation for local object keys:
+// trimmed, cleaned, dot-dot-free and free of leading/trailing slashes.
+// ReadLocalObject, WriteLocalObject and OpenLocalObject all gate on it so
+// no reader or writer accepts a key family the others reject.
+func (l *LocalBackingFS) localObjectKey(key string) (string, error) {
+	cleanKey := path.Clean("/" + strings.TrimSpace(key))[1:]
+	if cleanKey == "." || cleanKey == "" || cleanKey != strings.Trim(key, "/") || hasDotDot(cleanKey) {
+		return "", errors.New("invalid local object key")
+	}
+	return cleanKey, nil
 }
 
 func hasDotDot(key string) bool {

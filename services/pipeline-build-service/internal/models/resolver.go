@@ -71,4 +71,11 @@ type ResolvedBuild struct {
 	FanOutStages       [][]string          `json:"fan_out_stages"`
 	QueuedReason       *string             `json:"queued_reason,omitempty"`
 	ResolvedAt         time.Time           `json:"resolved_at"`
+	// BatchConfig, when non-nil, marks this as a WP3.3 3B opt-in batched
+	// build: the configuration was frozen from the CreateBuild preflight
+	// specs and persisted when the build row was opened (stage PREPARING);
+	// PersistResolvedBuild moves it to PENDING in the same transaction as
+	// the jobs. Execute reads the persisted configuration, never the
+	// current job_specs mapping.
+	BatchConfig *BatchedBuildConfig `json:"batched_config,omitempty"`
 }

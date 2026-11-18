@@ -124,8 +124,10 @@ func (m ConfigGatedTransactionManager) Abort(ctx context.Context, tx executor.Ou
 
 type executionSlot struct{ ports ExecutionPorts }
 
-var executionPorts atomic.Value // stores *executionSlot
-var executionCancels sync.Map   // stores map[uuid.UUID]context.CancelFunc
+var (
+	executionPorts   atomic.Value // stores *executionSlot
+	executionCancels sync.Map     // stores map[uuid.UUID]context.CancelFunc
+)
 
 // SetExecutionPorts injects executor dependencies for ExecutePipeline and
 // TriggerPipelineRun. It returns a restore function for tests.
@@ -224,6 +226,11 @@ func ExecutePipeline(w http.ResponseWriter, r *http.Request) {
 	var body executePipelineRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
+		return
+	}
+	// WP3.3 3B opt-in builds run the closed manual orchestration instead
+	// of the generic executor; non-batched builds fall through untouched.
+	if runBatchedBuildIfConfigured(w, r, ports, body) {
 		return
 	}
 	plan, err := planFromExecuteRequest(r.Context(), body, ports)

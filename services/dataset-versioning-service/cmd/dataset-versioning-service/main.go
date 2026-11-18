@@ -68,9 +68,52 @@ func main() {
 	if baseURL == "" {
 		baseURL = "http://" + srvAddr(cfg.Server.Host, cfg.Server.Port)
 	}
+	// DATASET_FILES_ROOT_DIR is an opt-in absolute local root for the
+	// backing filesystem (empty keeps the historical cwd default). The
+	// WP3.3 staged-output feature requires a private staging directory on
+	// the same filesystem but outside this root; deployments that enable
+	// DATASET_STAGED_OUTPUTS_DIR should pin both to sibling directories.
 	backingFS := storageabstraction.NewLocalBackingFS(baseURL, os.Getenv("DATASET_FILES_BASE_DIR"), []byte(cfg.JWTSecret))
+	backingFS.RootDir = os.Getenv("DATASET_FILES_ROOT_DIR")
 	store := &repo.Repo{Pool: pool}
-	h := &handlers.Handlers{Repo: store, BackingFS: backingFS, PresignTTL: 15 * time.Minute}
+	h := &handlers.Handlers{
+		Repo:             store,
+		BackingFS:        backingFS,
+		PresignTTL:       15 * time.Minute,
+		StagedOutputRoot: os.Getenv("DATASET_STAGED_OUTPUTS_DIR"),
+	}
+	if raw := os.Getenv("DATASET_STAGED_OUTPUTS_MAX_BYTES"); raw != "" {
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v > 0 {
+			h.StagedOutputMaxBytes = v
+		} else {
+			log.Error("invalid DATASET_STAGED_OUTPUTS_MAX_BYTES", slog.String("value", raw))
+			os.Exit(1)
+		}
+	}
+	if raw := os.Getenv("DATASET_STAGED_OUTPUTS_MAX_RECORDS"); raw != "" {
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v > 0 {
+			h.StagedOutputMaxRecords = v
+		} else {
+			log.Error("invalid DATASET_STAGED_OUTPUTS_MAX_RECORDS", slog.String("value", raw))
+			os.Exit(1)
+		}
+	}
+	if raw := os.Getenv("DATASET_STAGED_OUTPUTS_LEASE_TTL"); raw != "" {
+		if v, err := time.ParseDuration(raw); err == nil && v > 0 {
+			h.StagedOutputLeaseTTL = v
+		} else {
+			log.Error("invalid DATASET_STAGED_OUTPUTS_LEASE_TTL", slog.String("value", raw))
+			os.Exit(1)
+		}
+	}
+	if raw := os.Getenv("DATASET_STAGED_OUTPUTS_TTL"); raw != "" {
+		if v, err := time.ParseDuration(raw); err == nil && v > 0 {
+			h.StagedOutputTTL = v
+		} else {
+			log.Error("invalid DATASET_STAGED_OUTPUTS_TTL", slog.String("value", raw))
+			os.Exit(1)
+		}
+	}
 	metrics := observability.NewMetrics()
 
 	if cfg.RetentionWorkerEnabled {
