@@ -108,10 +108,10 @@ WEB_PID=$!
 wait_http "http://127.0.0.1:$web_port"
 
 {
-  "$PYTHON" -I - "$RUN_ID" "$web_port" "$token_file" "$WP33C_EVIDENCE" "$OF33C_ENVDIR" <<'PY'
+  "$PYTHON" -I - "$web_port" "$token_file" "$WP33C_EVIDENCE" "$OF33C_ENVDIR" <<'PY'
 import json
 import sys
-keys = ("run_id", "web_port", "token_file", "evidence", "envdir")
+keys = ("web_port", "token_file", "evidence", "envdir")
 print("const input = " + json.dumps(dict(zip(keys, sys.argv[1:], strict=True))) + ";")
 PY
   cat "$HERE/browser.mjs"

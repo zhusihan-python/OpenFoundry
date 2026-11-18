@@ -66,7 +66,7 @@ func decodeParquetOrdersFixedColumn(column int, data []byte, rows []parquetOrder
 		case 1:
 			value := int64(binary.BigEndian.Uint64(cell))
 			if value <= -1_000_000_000_000_000_000 || value >= 1_000_000_000_000_000_000 {
-				return errors.New("Parquet decimal exceeds precision 18")
+				return errors.New("invalid Parquet decimal precision")
 			}
 			rows[i].amount = value
 		case 2:
@@ -177,7 +177,7 @@ func (row parquetOrderRow) wire() (parquetOrderJSON, error) {
 	date := time.Unix(int64(row.date)*86_400, 0).UTC()
 	orderedAt := time.UnixMicro(row.orderedAt).UTC()
 	if date.Year() < 0 || date.Year() > 9999 || orderedAt.Year() < 0 || orderedAt.Year() > 9999 {
-		return parquetOrderJSON{}, errors.New("Parquet date or timestamp is outside the JSON year range")
+		return parquetOrderJSON{}, errors.New("invalid Parquet date or timestamp year for JSON")
 	}
 	amount, sign := row.amount, ""
 	if amount < 0 {
