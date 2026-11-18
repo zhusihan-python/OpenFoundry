@@ -177,6 +177,11 @@ func TestStagedParquetRejectsBadFormatAndBody(t *testing.T) {
 	badSchema := rewriteParquetFooter(t, valid, footerOffset, func(m *metadata.FileMetaData) {
 		m.FileMetaData.Schema[1].Name = "forged"
 	})
+	badAnnotation := rewriteParquetFooter(t, valid, footerOffset, func(m *metadata.FileMetaData) {
+		field := m.FileMetaData.Schema[1].LogicalType
+		field.INTEGER = nil
+		initParquetTestAnnotation(&field.GEOMETRY)
+	})
 	// A tiny footer uses one declared large list with no available elements.
 	// This must be rejected before Arrow's generated reader allocates.
 	forgedCount := makeOversizedParquetMetadataList(t)
@@ -203,6 +208,7 @@ func TestStagedParquetRejectsBadFormatAndBody(t *testing.T) {
 		{"column-ranges", badRange, testParquetMIME, nil, "STAGED_PARQUET_INVALID"},
 		{"record-count", badRows, testParquetMIME, nil, "STAGED_PARQUET_INVALID"},
 		{"schema", badSchema, testParquetMIME, nil, "STAGED_PARQUET_INVALID"},
+		{"schema-annotation", badAnnotation, testParquetMIME, nil, "STAGED_PARQUET_INVALID"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fx := newStageFixture(t)
@@ -217,6 +223,8 @@ func TestStagedParquetRejectsBadFormatAndBody(t *testing.T) {
 		})
 	}
 }
+
+func initParquetTestAnnotation[T any](field **T) { *field = new(T) }
 
 func rewriteParquetFooter(t *testing.T, good []byte, offset int, mutate func(*metadata.FileMetaData)) []byte {
 	t.Helper()

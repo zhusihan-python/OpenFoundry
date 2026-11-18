@@ -222,14 +222,13 @@ func validStagedOrdersSchema(meta *metadata.FileMetaData) bool {
 		name      string
 		physical  parquet.Type
 		converted schema.ConvertedType
-		logical   schema.LogicalType
 	}{
-		{"order_id", parquet.Types.Int64, schema.ConvertedTypes.Int64, schema.NewIntLogicalType(64, true)},
-		{"amount", parquet.Types.FixedLenByteArray, schema.ConvertedTypes.Decimal, schema.NewDecimalLogicalType(18, 4)},
-		{"order_date", parquet.Types.Int32, schema.ConvertedTypes.Date, schema.DateLogicalType{}},
-		{"ordered_at", parquet.Types.Int64, schema.ConvertedTypes.TimestampMicros, schema.NewTimestampLogicalType(true, schema.TimeUnitMicros)},
-		{"source_time_zone", parquet.Types.ByteArray, schema.ConvertedTypes.UTF8, schema.StringLogicalType{}},
-		{"note", parquet.Types.ByteArray, schema.ConvertedTypes.UTF8, schema.StringLogicalType{}},
+		{"order_id", parquet.Types.Int64, schema.ConvertedTypes.Int64},
+		{"amount", parquet.Types.FixedLenByteArray, schema.ConvertedTypes.Decimal},
+		{"order_date", parquet.Types.Int32, schema.ConvertedTypes.Date},
+		{"ordered_at", parquet.Types.Int64, schema.ConvertedTypes.TimestampMicros},
+		{"source_time_zone", parquet.Types.ByteArray, schema.ConvertedTypes.UTF8},
+		{"note", parquet.Types.ByteArray, schema.ConvertedTypes.UTF8},
 	}
 	raw := meta.FileMetaData.Schema
 	if len(raw) != 1+len(expected) || raw[0].IsSetType() || raw[0].GetNumChildren() != int32(len(expected)) ||
@@ -250,15 +249,33 @@ func validStagedOrdersSchema(meta *metadata.FileMetaData) bool {
 			field.LogicalType == nil || field.LogicalType.CountSetFieldsLogicalType() != 1 {
 			return false
 		}
-		if field.LogicalType.TIMESTAMP != nil && field.LogicalType.TIMESTAMP.Unit.CountSetFieldsTimeUnit() != 1 {
-			return false
-		}
-		if want.name == "amount" && (field.GetTypeLength() != 8 || field.GetPrecision() != 18 || field.GetScale() != 4) {
-			return false
-		}
-		node, err := schema.PrimitiveNodeFromThrift(field)
-		if err != nil || !want.logical.Equals(node.LogicalType()) {
-			return false
+		// Check the exact Thrift annotations. Arrow's generic schema
+		// converter can panic on other logical types or malformed units.
+		logical := field.LogicalType
+		switch want.converted {
+		case schema.ConvertedTypes.Int64:
+			if logical.INTEGER == nil || logical.INTEGER.GetBitWidth() != 64 || !logical.INTEGER.GetIsSigned() {
+				return false
+			}
+		case schema.ConvertedTypes.Decimal:
+			if logical.DECIMAL == nil || logical.DECIMAL.GetPrecision() != 18 || logical.DECIMAL.GetScale() != 4 ||
+				field.GetTypeLength() != 8 || field.GetPrecision() != 18 || field.GetScale() != 4 {
+				return false
+			}
+		case schema.ConvertedTypes.Date:
+			if logical.DATE == nil {
+				return false
+			}
+		case schema.ConvertedTypes.TimestampMicros:
+			ts := logical.TIMESTAMP
+			if ts == nil || !ts.GetIsAdjustedToUTC() || ts.Unit == nil ||
+				ts.Unit.GetMICROS() == nil || ts.Unit.CountSetFieldsTimeUnit() != 1 {
+				return false
+			}
+		case schema.ConvertedTypes.UTF8:
+			if logical.STRING == nil {
+				return false
+			}
 		}
 	}
 	hasSchemaVersion := false
