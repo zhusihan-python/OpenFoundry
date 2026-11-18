@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 ### Added
 - Manual batched dataset builds can explicitly publish an `orders.v1` Parquet
   file using the staged output transaction.
+- Paginate committed `orders.v1` Parquet files by dataset version, and use the
+  same version binding in dataset history previews and pinned pipeline inputs.
 
 ### Changed
 - _(add entries here)_

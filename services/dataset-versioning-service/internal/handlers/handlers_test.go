@@ -866,6 +866,17 @@ func (f *fakeStore) GetTransactionStagedFile(_ context.Context, txnID uuid.UUID,
 	return nil, nil
 }
 
+func (f *fakeStore) TransactionStagedFileFormats(_ context.Context, txnID uuid.UUID) (hasParquet, hasOther bool, err error) {
+	for _, file := range f.stagedFiles[txnID] {
+		if strings.HasSuffix(file.LogicalPath, ".parquet") {
+			hasParquet = true
+		} else {
+			hasOther = true
+		}
+	}
+	return hasParquet, hasOther, nil
+}
+
 // ListTransactionStagedFilesFrom mirrors the repo keyset query: staged
 // files with logical_path >= fromPath in ascending path order.
 func (f *fakeStore) ListTransactionStagedFilesFrom(_ context.Context, txnID uuid.UUID, fromPath string, limit int) ([]models.StageTransactionFile, error) {

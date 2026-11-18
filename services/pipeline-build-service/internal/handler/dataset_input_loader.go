@@ -50,13 +50,15 @@ type DatasetRowsRequest struct {
 }
 
 type DatasetRowsResult struct {
-	DatasetID string                       `json:"dataset_id"`
-	Path      string                       `json:"path"`
-	Format    string                       `json:"format"`
-	Source    string                       `json:"source"`
-	Columns   []string                     `json:"columns"`
-	Rows      []map[string]json.RawMessage `json:"rows"`
-	Truncated bool                         `json:"truncated"`
+	DatasetID     string                       `json:"dataset_id"`
+	Path          string                       `json:"path"`
+	Format        string                       `json:"format"`
+	SchemaVersion string                       `json:"schema_version,omitempty"`
+	Schema        *datasetRowsSchema           `json:"schema,omitempty"`
+	Source        string                       `json:"source"`
+	Columns       []string                     `json:"columns"`
+	Rows          []map[string]json.RawMessage `json:"rows"`
+	Truncated     bool                         `json:"truncated"`
 }
 
 // DatasetServiceRowReader reads parsed rows from dataset-versioning-service.

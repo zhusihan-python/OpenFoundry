@@ -35,6 +35,26 @@ const testParquetMIME = "application/vnd.apache.parquet"
 
 func makeStagedOrdersParquet(t *testing.T, groupCount int, schemaVersion string) []byte {
 	t.Helper()
+	return makeOrdersParquetTestFile(t, groupCount, schemaVersion, func(b *array.RecordBuilder, _ int) {
+		appendOrdersParquetTestRow(b, 9_007_199_254_740_993, 32100, 19782, 1709144400123456, "Asia/Kathmandu", nil)
+	})
+}
+
+func appendOrdersParquetTestRow(b *array.RecordBuilder, id, amount int64, day arrow.Date32, at arrow.Timestamp, zone string, note *string) {
+	b.Field(0).(*array.Int64Builder).Append(id)
+	b.Field(1).(*array.Decimal128Builder).Append(decimal128.FromI64(amount))
+	b.Field(2).(*array.Date32Builder).Append(day)
+	b.Field(3).(*array.TimestampBuilder).Append(at)
+	b.Field(4).(*array.StringBuilder).Append(zone)
+	if note == nil {
+		b.Field(5).(*array.StringBuilder).AppendNull()
+	} else {
+		b.Field(5).(*array.StringBuilder).Append(*note)
+	}
+}
+
+func makeOrdersParquetTestFile(t *testing.T, groupCount int, schemaVersion string, appendGroup func(*array.RecordBuilder, int)) []byte {
+	t.Helper()
 	kv := arrow.NewMetadata([]string{"openfoundry.schema_version"}, []string{schemaVersion})
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: "order_id", Type: arrow.PrimitiveTypes.Int64},
@@ -57,16 +77,12 @@ func makeStagedOrdersParquet(t *testing.T, groupCount int, schemaVersion string)
 
 	b := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer b.Release()
-	b.Field(0).(*array.Int64Builder).Append(9_007_199_254_740_993)
-	b.Field(1).(*array.Decimal128Builder).Append(decimal128.FromI64(32100))
-	b.Field(2).(*array.Date32Builder).Append(19782)
-	b.Field(3).(*array.TimestampBuilder).Append(1709144400123456)
-	b.Field(4).(*array.StringBuilder).Append("Asia/Kathmandu")
-	b.Field(5).(*array.StringBuilder).AppendNull()
-	record := b.NewRecordBatch()
-	defer record.Release()
-	for range groupCount {
-		require.NoError(t, w.Write(record))
+	for i := range groupCount {
+		appendGroup(b, i)
+		record := b.NewRecordBatch()
+		err := w.Write(record)
+		record.Release()
+		require.NoError(t, err)
 	}
 	require.NoError(t, w.Close())
 	return buf.Bytes()

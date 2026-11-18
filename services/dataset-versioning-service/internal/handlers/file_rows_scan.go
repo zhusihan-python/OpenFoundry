@@ -126,17 +126,19 @@ func decodeScanCursor(raw string) (scanCursor, error) {
 }
 
 type datasetFileScanResponse struct {
-	DatasetID     string            `json:"dataset_id"`
-	Branch        string            `json:"branch"`
-	Version       int32             `json:"version"`
-	TransactionID string            `json:"transaction_id"`
-	Path          string            `json:"path"`
-	Format        string            `json:"format"`
-	Rows          []json.RawMessage `json:"rows"`
-	NextCursor    *string           `json:"next_cursor"`
-	RowCount      int               `json:"row_count"`
-	PageBytes     int64             `json:"page_bytes"`
-	SizeBytes     int64             `json:"size_bytes"`
+	DatasetID     string                `json:"dataset_id"`
+	Branch        string                `json:"branch"`
+	Version       int32                 `json:"version"`
+	TransactionID string                `json:"transaction_id"`
+	Path          string                `json:"path"`
+	Format        string                `json:"format"`
+	SchemaVersion string                `json:"schema_version,omitempty"`
+	Schema        *models.DatasetSchema `json:"schema,omitempty"`
+	Rows          []json.RawMessage     `json:"rows"`
+	NextCursor    *string               `json:"next_cursor"`
+	RowCount      int                   `json:"row_count"`
+	PageBytes     int64                 `json:"page_bytes"`
+	SizeBytes     int64                 `json:"size_bytes"`
 }
 
 // ScanDatasetFileRows serves GET /v1/datasets/{rid}/files/rows:scan.
@@ -256,6 +258,10 @@ func (h *Handlers) ScanDatasetFileRows(w http.ResponseWriter, r *http.Request) {
 
 	if allFiles {
 		h.scanAllFiles(w, r, datasetID, branch, target.branch, target.txn, version, limit, pred, rawCursor)
+		return
+	}
+	if strings.HasSuffix(logical, stagedParquetExtension) {
+		h.scanParquetPath(w, r, datasetID, branch, target.branch, target.txn, version, logical, limit, pred, rawCursor)
 		return
 	}
 	if predPresent {

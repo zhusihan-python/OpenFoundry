@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -299,7 +300,18 @@ func (h *Handlers) PreviewViewData(w http.ResponseWriter, r *http.Request) { h.p
 func (h *Handlers) PreviewMaterializedView(w http.ResponseWriter, r *http.Request) {
 	h.previewData(w, r, true)
 }
-func (h *Handlers) PreviewDataset(w http.ResponseWriter, r *http.Request) { h.previewData(w, r, false) }
+func (h *Handlers) PreviewDataset(w http.ResponseWriter, r *http.Request) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid query encoding")
+		return
+	}
+	if query.Has("version") || query.Has("cursor") {
+		h.previewPinnedDataset(w, r, query)
+		return
+	}
+	h.previewData(w, r, false)
+}
 
 func (h *Handlers) previewData(w http.ResponseWriter, r *http.Request, scopedView bool) {
 	datasetID, ok := h.resolveDatasetForCatalog(w, r)

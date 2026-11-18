@@ -435,6 +435,11 @@ func (rt *lightweightTableRuntime) datasetInputRows(ctx context.Context, node ex
 		meta["dataset_branch"] = ref.Snapshot.Branch
 		meta["dataset_version"] = ref.Snapshot.Version
 		meta["dataset_transaction_id"] = "ri.foundry.main.transaction." + ref.Snapshot.TransactionID.String()
+		if result.Schema != nil {
+			meta["columns"] = result.Columns
+			meta["dataset_schema_version"] = result.SchemaVersion
+			meta["dataset_schema"] = result.Schema
+		}
 	} else if ref.Branch != "" {
 		meta["dataset_branch"] = ref.Branch
 	}

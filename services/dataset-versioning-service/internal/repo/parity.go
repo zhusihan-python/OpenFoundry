@@ -852,6 +852,17 @@ func (r *Repo) GetTransactionStagedFile(ctx context.Context, transactionID uuid.
 	return &file, nil
 }
 
+// TransactionStagedFileFormats checks the whole pinned registry without
+// downloading paths or opening objects. The caller has authorized the
+// transaction. Legacy formats are still checked by the existing NDJSON scan.
+func (r *Repo) TransactionStagedFileFormats(ctx context.Context, transactionID uuid.UUID) (hasParquet, hasOther bool, err error) {
+	err = r.Pool.QueryRow(ctx, `SELECT
+		COALESCE(bool_or(logical_path LIKE '%.parquet'), false),
+		COALESCE(bool_or(logical_path NOT LIKE '%.parquet'), false)
+		FROM dataset_transaction_files WHERE transaction_id = $1`, transactionID).Scan(&hasParquet, &hasOther)
+	return hasParquet, hasOther, err
+}
+
 // ListTransactionStagedFilesFrom returns up to limit staged files of the
 // transaction whose logical_path is >= fromPath, in the database's
 // logical_path order (an empty fromPath starts at the beginning). The

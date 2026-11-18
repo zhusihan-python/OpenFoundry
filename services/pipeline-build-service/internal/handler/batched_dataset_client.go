@@ -204,6 +204,7 @@ type batchedScanStats struct {
 	Pages     int
 	Rows      int64
 	PageBytes int64
+	Metadata  batchedScanMetadata
 }
 
 // batchedClientError carries the DVS status and machine code so the
@@ -294,7 +295,7 @@ func (c batchedDatasetClient) ScanStream(ctx context.Context, in batchedScanInpu
 			_ = resp.Body.Close()
 			return stats, batchedErrorFromResponse(resp.StatusCode, body)
 		}
-		pageStats, pageCursor, scanErr := c.decodeScanPage(resp.Body, expectedDataset, in, &pinnedTxn, emit)
+		pageStats, pageCursor, scanErr := c.decodeScanPage(resp.Body, expectedDataset, in, &pinnedTxn, &stats.Metadata, emit)
 		_ = resp.Body.Close()
 		if scanErr != nil {
 			return stats, scanErr
@@ -321,7 +322,7 @@ func (c batchedDatasetClient) ScanStream(ctx context.Context, in batchedScanInpu
 // hostile/buggy order that only reveals a mismatch after rows still
 // fails the page — the caller's writer is closed with the error and
 // nothing seals or publishes.
-func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uuid.UUID, in batchedScanInput, pinnedTxn *uuid.UUID, emit func(record []byte) error) (rowsEmitted int64, nextCursor *string, err error) {
+func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uuid.UUID, in batchedScanInput, pinnedTxn *uuid.UUID, pinnedMetadata *batchedScanMetadata, emit func(record []byte) error) (rowsEmitted int64, nextCursor *string, err error) {
 	// Count every byte the decoder pulls (its internal buffer may hold
 	// bytes past the parsed value, so a later probe on the reader would
 	// under-count): padding or junk past the hard bound is detected by
@@ -345,6 +346,11 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 		envRowCount int64 = -1
 		envNext     *string
 		preRowCheck func() error
+		metadata    batchedScanMetadata
+		seenFormat  bool
+		seenVersion bool
+		seenSchema  bool
+		parquetErr  error
 	)
 	preRowCheck = func() error {
 		if envDataset == "" || envBranch == "" || envTxn == "" || envVersion < 0 {
@@ -379,6 +385,19 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 				if derr := dec.Decode(&record); derr != nil {
 					return 0, nil, fmt.Errorf("batched_scan_decode: %w", derr)
 				}
+				// JSON object field order is immaterial. If the page's format
+				// trails its rows, retain the first provisional Parquet row
+				// validation error and apply it once the format is known.
+				if !seenFormat || metadata.Format == batchedParquetFormat {
+					if parquetErr == nil {
+						if _, err := decodeParquetOrder(record); err != nil {
+							parquetErr = fmt.Errorf("batched_scan_record_invalid: %s row %d: %w", ordersSchemaVersion, pageRows+1, err)
+						}
+					}
+					if seenFormat && parquetErr != nil {
+						return 0, nil, parquetErr
+					}
+				}
 				if eerr := emit(record); eerr != nil {
 					return 0, nil, eerr
 				}
@@ -398,6 +417,30 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 		case "row_count":
 			if derr := dec.Decode(&envRowCount); derr != nil {
 				return 0, nil, fmt.Errorf("batched_scan_decode: %w", derr)
+			}
+		case "format":
+			if seenFormat {
+				return 0, nil, errors.New("batched_scan_decode: duplicate format field")
+			}
+			seenFormat = true
+			if derr := dec.Decode(&metadata.Format); derr != nil {
+				return 0, nil, fmt.Errorf("batched_scan_decode: format: %w", derr)
+			}
+		case "schema_version":
+			if seenVersion {
+				return 0, nil, errors.New("batched_scan_decode: duplicate schema_version field")
+			}
+			seenVersion = true
+			if derr := dec.Decode(&metadata.SchemaVersion); derr != nil {
+				return 0, nil, fmt.Errorf("batched_scan_decode: schema_version: %w", derr)
+			}
+		case "schema":
+			if seenSchema {
+				return 0, nil, errors.New("batched_scan_decode: duplicate schema field")
+			}
+			seenSchema = true
+			if derr := dec.Decode(&metadata.Schema); derr != nil {
+				return 0, nil, fmt.Errorf("batched_scan_decode: schema: %w", derr)
 			}
 		case "dataset_id":
 			if derr := dec.Decode(&envDataset); derr != nil {
@@ -450,6 +493,12 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 	}
 	if verr := validateScanBinding(expectedDataset, in, pinnedTxn, envDataset, envBranch, envTxn, envVersion); verr != nil {
 		return 0, nil, verr
+	}
+	if err := bindScanMetadata(in.Path, pinnedMetadata, metadata); err != nil {
+		return 0, nil, err
+	}
+	if metadata.Format == batchedParquetFormat && parquetErr != nil {
+		return 0, nil, parquetErr
 	}
 	if envRowCount >= 0 && envRowCount != pageRows {
 		return 0, nil, fmt.Errorf("batched_scan_row_count_mismatch: page reports %d rows but %d were streamed", envRowCount, pageRows)

@@ -73,34 +73,52 @@ func (h *Handlers) streamStageParquetBody(w http.ResponseWriter, r *http.Request
 	}
 }
 
+func inspectStagedParquet(ctx context.Context, src io.ReaderAt, size, maxRecords int64) (int64, error) {
+	meta, _, err := readStagedParquetMetadata(ctx, src, size, maxRecords)
+	if err != nil {
+		return 0, err
+	}
+	var pages stagedParquetPageValidator
+	for _, group := range meta.RowGroups {
+		for _, chunk := range group.Columns {
+			col := chunk.MetaData
+			if err := pages.validateColumn(ctx, src, col.DataPageOffset, col.DataPageOffset+col.TotalCompressedSize,
+				col.TotalUncompressedSize, group.NumRows, nil); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return meta.NumRows, nil
+}
+
 // Arrow's file reader allocates the declared footer size, and its generated
 // metadata decoder allocates each compact-Thrift list before reading the
-// elements. Bound both at the source, then validate bounded pages within
-// each column's verified ranges.
-func inspectStagedParquet(ctx context.Context, src io.ReaderAt, size, maxRecords int64) (int64, error) {
+// elements. Bound both at the source. The returned metadata describes the
+// verified chunk ranges and the number of bytes read for the header/footer.
+func readStagedParquetMetadata(ctx context.Context, src io.ReaderAt, size, maxRecords int64) (*metadata.FileMetaData, int64, error) {
 	const headerBytes = int64(len(stagedParquetMagic))
 	if size <= headerBytes+stagedParquetTrailerBytes {
-		return 0, errors.New("missing Parquet header or footer")
+		return nil, 0, errors.New("missing Parquet header or footer")
 	}
 	var magic [headerBytes]byte
 	if _, err := src.ReadAt(magic[:], 0); err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	var trailer [stagedParquetTrailerBytes]byte
 	if _, err := src.ReadAt(trailer[:], size-stagedParquetTrailerBytes); err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	if string(magic[:]) != stagedParquetMagic || string(trailer[4:]) != stagedParquetMagic {
-		return 0, errors.New("expected unencrypted Parquet magic")
+		return nil, 0, errors.New("expected unencrypted Parquet magic")
 	}
 	footerLen := int64(binary.LittleEndian.Uint32(trailer[:4]))
 	footerOffset := size - stagedParquetTrailerBytes - footerLen
 	if footerLen == 0 || footerLen > stagedParquetMaxFooterBytes || footerOffset < headerBytes {
-		return 0, errors.New("invalid Parquet footer length")
+		return nil, 0, errors.New("invalid Parquet footer length")
 	}
 	data := make([]byte, footerLen)
 	if _, err := src.ReadAt(data, footerOffset); err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 
 	transport := &thrift.TMemoryBuffer{Buffer: bytes.NewBuffer(data)}
@@ -112,35 +130,34 @@ func inspectStagedParquet(ctx context.Context, src io.ReaderAt, size, maxRecords
 	arrowMeta.FileMetaData = newStagedParquetThriftValue(arrowMeta.FileMetaData)
 	footer := arrowMeta.FileMetaData
 	if err := footer.Read(ctx, decoder); err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	if transport.Len() != 0 || footer.Version != 2 || footer.IsSetEncryptionAlgorithm() || footer.IsSetFooterSigningKeyMetadata() {
-		return 0, errors.New("invalid or encrypted Parquet metadata")
+		return nil, 0, errors.New("invalid or encrypted Parquet metadata")
 	}
 	if footer.NumRows < 0 {
-		return 0, errors.New("negative Parquet record count")
+		return nil, 0, errors.New("negative Parquet record count")
 	}
 	if footer.NumRows > maxRecords {
-		return 0, fmt.Errorf("%w: %d", errStagedRecordCountLimit, maxRecords)
+		return nil, 0, fmt.Errorf("%w: %d", errStagedRecordCountLimit, maxRecords)
 	}
 	if !validStagedOrdersSchema(&arrowMeta) {
-		return 0, errors.New("expected Parquet schema " + stagedParquetSchemaVersion)
+		return nil, 0, errors.New("expected Parquet schema " + stagedParquetSchemaVersion)
 	}
 
 	var records int64
-	var pages stagedParquetPageValidator
 	nextOffset := headerBytes
 	for i, group := range footer.RowGroups {
 		if err := ctx.Err(); err != nil {
-			return 0, err
+			return nil, 0, err
 		}
 		if group.NumRows <= 0 || group.NumRows > stagedParquetMaxGroupRows ||
 			group.NumRows > footer.NumRows-records || len(group.Columns) != len(footer.Schema)-1 {
-			return 0, errors.New("invalid Parquet row group")
+			return nil, 0, errors.New("invalid Parquet row group")
 		}
 		if (group.IsSetFileOffset() && group.GetFileOffset() != nextOffset) ||
 			(group.IsSetOrdinal() && int(group.GetOrdinal()) != i) {
-			return 0, errors.New("invalid Parquet row group offset or ordinal")
+			return nil, 0, errors.New("invalid Parquet row group offset or ordinal")
 		}
 		groupStart := nextOffset
 		var uncompressed int64
@@ -158,28 +175,24 @@ func inspectStagedParquet(ctx context.Context, src io.ReaderAt, size, maxRecords
 				len(col.Encodings) != 2 || parquet.Encoding(col.Encodings[0]) != parquet.Encodings.Plain ||
 				parquet.Encoding(col.Encodings[1]) != parquet.Encodings.RLE ||
 				col.TotalUncompressedSize > stagedParquetMaxChunkBytes {
-				return 0, errors.New("invalid Parquet column metadata")
+				return nil, 0, errors.New("invalid Parquet column metadata")
 			}
 			if col.DataPageOffset != nextOffset || col.TotalCompressedSize <= 0 ||
 				col.TotalCompressedSize > footerOffset-nextOffset {
-				return 0, errors.New("invalid Parquet column ranges")
+				return nil, 0, errors.New("invalid Parquet column ranges")
 			}
-			end := nextOffset + col.TotalCompressedSize
-			if err := pages.validateColumn(ctx, src, nextOffset, end, col.TotalUncompressedSize, group.NumRows); err != nil {
-				return 0, err
-			}
-			nextOffset = end
+			nextOffset += col.TotalCompressedSize
 			uncompressed += col.TotalUncompressedSize
 		}
 		if group.TotalByteSize != uncompressed || (group.IsSetTotalCompressedSize() && group.GetTotalCompressedSize() != nextOffset-groupStart) {
-			return 0, errors.New("inconsistent Parquet column and row group sizes")
+			return nil, 0, errors.New("inconsistent Parquet column and row group sizes")
 		}
 		records += group.NumRows
 	}
 	if records != footer.NumRows || nextOffset != footerOffset {
-		return 0, errors.New("inconsistent Parquet row groups and file size")
+		return nil, 0, errors.New("inconsistent Parquet row groups and file size")
 	}
-	return records, nil
+	return &arrowMeta, size - footerOffset + headerBytes, nil
 }
 
 // The generated Thrift type is exposed as a field of Arrow FileMetaData.

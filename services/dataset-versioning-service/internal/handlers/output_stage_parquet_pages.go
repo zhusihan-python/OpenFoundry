@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -19,19 +20,25 @@ const stagedParquetMaxPageHeaderBytes = 64 << 10
 // Page headers and Snappy blocks are checked in reusable bounded buffers.
 // Publishing does not interpret column values.
 type stagedParquetPageValidator struct {
-	header  [stagedParquetMaxPageHeaderBytes]byte
+	input   *bufio.Reader
 	encoded []byte
 	decoded []byte
 }
 
-func (v *stagedParquetPageValidator) validateColumn(ctx context.Context, src io.ReaderAt, offset, end, uncompressedBytes, rows int64) error {
+func (v *stagedParquetPageValidator) validateColumn(ctx context.Context, src io.ReaderAt, offset, end, uncompressedBytes, rows int64, consume func([]byte, int) error) error {
+	column := io.NewSectionReader(src, offset, end-offset)
+	if v.input == nil {
+		v.input = bufio.NewReaderSize(column, stagedParquetMaxPageHeaderBytes)
+	} else {
+		v.input.Reset(column)
+	}
 	var actualRows, actualBytes int64
 	for offset < end {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		raw := v.header[:min(end-offset, int64(len(v.header)))]
-		if _, err := src.ReadAt(raw, offset); err != nil {
+		raw, err := v.input.Peek(int(min(end-offset, stagedParquetMaxPageHeaderBytes)))
+		if err != nil {
 			return err
 		}
 		page, headerLen, err := readStagedParquetPageHeader(ctx, raw)
@@ -45,7 +52,10 @@ func (v *stagedParquetPageValidator) validateColumn(ctx context.Context, src io.
 			return errors.New("invalid Parquet page sizes or record count")
 		}
 		v.encoded = slices.Grow(v.encoded[:0], int(encodedLen))[:encodedLen]
-		if _, err := src.ReadAt(v.encoded, offset+headerLen); err != nil {
+		if _, err := v.input.Discard(int(headerLen)); err != nil {
+			return err
+		}
+		if _, err := io.ReadFull(v.input, v.encoded); err != nil {
 			return err
 		}
 		if page.crcSet && crc32.ChecksumIEEE(v.encoded) != uint32(page.crc) {
@@ -58,6 +68,11 @@ func (v *stagedParquetPageValidator) validateColumn(ctx context.Context, src io.
 		v.decoded = slices.Grow(v.decoded[:0], n)[:n]
 		if _, err := snappy.Decode(v.decoded, v.encoded); err != nil {
 			return errors.New("invalid Parquet Snappy block")
+		}
+		if consume != nil {
+			if err := consume(v.decoded, int(page.numValues)); err != nil {
+				return err
+			}
 		}
 		offset += headerLen + encodedLen
 		actualBytes += headerLen + decodedLen

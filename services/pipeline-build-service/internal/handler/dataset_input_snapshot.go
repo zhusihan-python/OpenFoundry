@@ -160,7 +160,7 @@ func (r DatasetServiceRowReader) readDatasetSnapshotRows(ctx context.Context, re
 	rows := make([]map[string]json.RawMessage, 0, limit)
 	var totalBytes int64
 	expectedTxn := req.Snapshot.TransactionID
-	if _, scanErr := client.ScanStream(ctx, batchedScanInput{
+	scan, scanErr := client.ScanStream(ctx, batchedScanInput{
 		DatasetRID:            rid,
 		Branch:                req.Snapshot.Branch,
 		Version:               req.Snapshot.Version,
@@ -180,15 +180,19 @@ func (r DatasetServiceRowReader) readDatasetSnapshotRows(ctx context.Context, re
 		}
 		rows = append(rows, row)
 		return nil
-	}); scanErr != nil {
+	})
+	if scanErr != nil {
 		return DatasetRowsResult{}, scanErr
 	}
 	return DatasetRowsResult{
-		DatasetID: datasetUUID.String(),
-		Path:      req.Path,
-		Format:    "ndjson",
-		Source:    "dataset-versioning-scan",
-		Rows:      rows,
+		DatasetID:     datasetUUID.String(),
+		Path:          req.Path,
+		Format:        scan.Metadata.Format,
+		SchemaVersion: scan.Metadata.SchemaVersion,
+		Schema:        scan.Metadata.Schema,
+		Source:        "dataset-versioning-scan",
+		Columns:       scan.Metadata.Schema.columns(),
+		Rows:          rows,
 	}, nil
 }
 

@@ -106,12 +106,16 @@ type scanCursorV2 struct {
 const scanCursorV2PrefixLen = 90
 
 func encodeScanCursorV2(c scanCursorV2) string {
+	return encodeScanCursorToken(c, scanCursorV2Magic)
+}
+
+func encodeScanCursorToken(c scanCursorV2, magic string) string {
 	location := c.path
 	if c.mode == scanCursorV2ModeAllFiles {
 		location = c.file
 	}
 	buf := make([]byte, 0, scanCursorV2PrefixLen+len(location)+8)
-	buf = append(buf, scanCursorV2Magic...)
+	buf = append(buf, magic...)
 	buf = append(buf, c.datasetID[:]...)
 	buf = append(buf, c.branchID[:]...)
 	buf = binary.LittleEndian.AppendUint32(buf, c.version)
@@ -127,6 +131,10 @@ func encodeScanCursorV2(c scanCursorV2) string {
 // decodeScanCursorV2 strictly decodes an s2 cursor: exact length, no
 // trailing bytes, bounded fields, consistent mode/flag invariants.
 func decodeScanCursorV2(raw string) (scanCursorV2, error) {
+	return decodeScanCursorToken(raw, scanCursorV2Magic)
+}
+
+func decodeScanCursorToken(raw, magic string) (scanCursorV2, error) {
 	var zero scanCursorV2
 	if len(raw) > 1024 {
 		return zero, fmt.Errorf("cursor too long")
@@ -135,7 +143,7 @@ func decodeScanCursorV2(raw string) (scanCursorV2, error) {
 	if err != nil {
 		return zero, fmt.Errorf("cursor encoding invalid")
 	}
-	if len(decoded) < scanCursorV2PrefixLen+8 || string(decoded[:2]) != scanCursorV2Magic {
+	if len(decoded) < scanCursorV2PrefixLen+8 || string(decoded[:2]) != magic {
 		return zero, fmt.Errorf("unrecognized cursor")
 	}
 	locationLen := int(binary.LittleEndian.Uint16(decoded[88:90]))
@@ -199,17 +207,19 @@ func scanCursorBindingMismatch(cursor scanCursorV2, datasetID uuid.UUID, branchI
 // datasetScanAllFilesResponse is the mode-2 page. It reports only what this
 // page produced — no whole-version sums, no duplicated statistics.
 type datasetScanAllFilesResponse struct {
-	DatasetID     string            `json:"dataset_id"`
-	Branch        string            `json:"branch"`
-	Version       int32             `json:"version"`
-	TransactionID string            `json:"transaction_id"`
-	Format        string            `json:"format"`
-	Mode          string            `json:"mode"`
-	Rows          []json.RawMessage `json:"rows"`
-	NextCursor    *string           `json:"next_cursor"`
-	RowCount      int               `json:"row_count"`
-	PageBytes     int64             `json:"page_bytes"`
-	FilesAccessed int               `json:"files_accessed"`
+	DatasetID     string                `json:"dataset_id"`
+	Branch        string                `json:"branch"`
+	Version       int32                 `json:"version"`
+	TransactionID string                `json:"transaction_id"`
+	Format        string                `json:"format"`
+	SchemaVersion string                `json:"schema_version,omitempty"`
+	Schema        *models.DatasetSchema `json:"schema,omitempty"`
+	Mode          string                `json:"mode"`
+	Rows          []json.RawMessage     `json:"rows"`
+	NextCursor    *string               `json:"next_cursor"`
+	RowCount      int                   `json:"row_count"`
+	PageBytes     int64                 `json:"page_bytes"`
+	FilesAccessed int                   `json:"files_accessed"`
 }
 
 // scanPathWithPredicate serves mode 1: one explicit logical path, streamed
@@ -302,6 +312,33 @@ func (h *Handlers) scanPathWithPredicate(w http.ResponseWriter, r *http.Request,
 // entered mid-page whose first record exceeds the remaining byte budget is
 // deferred whole (cursor at that file, offset 0) — still an advance.
 func (h *Handlers) scanAllFiles(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, branchName string, branchRow *models.RuntimeBranch, txn *models.RuntimeTransaction, version int32, limit int, pred *scanPredicate, rawCursor string) {
+	resp, ok := h.scanAllFilesPage(w, r, datasetID, branchName, branchRow, txn, version, limit, pred, rawCursor)
+	if !ok {
+		return
+	}
+	h.emitScanModeAudit(r, datasetID, branchName, version, "*", "all_files", limit, resp.RowCount, resp.NextCursor != nil)
+	writeScanJSON(w, http.StatusOK, resp)
+}
+
+// scanAllFilesPage reads an already resolved, authorized SNAPSHOT. It writes
+// only errors so versioned preview can reuse the exact same read boundaries.
+func (h *Handlers) scanAllFilesPage(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, branchName string, branchRow *models.RuntimeBranch, txn *models.RuntimeTransaction, version int32, limit int, pred *scanPredicate, rawCursor string) (datasetScanAllFilesResponse, bool) {
+	parquet, other, err := h.Repo.TransactionStagedFileFormats(r.Context(), txn.ID)
+	if err != nil {
+		writeDatasetRowsError(w, datasetRowsErr(http.StatusInternalServerError, "failed to load staged file formats"))
+		return datasetScanAllFilesResponse{}, false
+	}
+	if parquet && other {
+		writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_scan_mixed_formats: rows:scan all_files requires one file format"))
+		return datasetScanAllFilesResponse{}, false
+	}
+	if parquet {
+		return h.scanParquetAllFilesPage(w, r, datasetID, branchName, branchRow, txn, version, limit, pred, rawCursor)
+	}
+	return h.scanNDJSONAllFilesPage(w, r, datasetID, branchName, branchRow, txn, version, limit, pred, rawCursor)
+}
+
+func (h *Handlers) scanNDJSONAllFilesPage(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, branchName string, branchRow *models.RuntimeBranch, txn *models.RuntimeTransaction, version int32, limit int, pred *scanPredicate, rawCursor string) (datasetScanAllFilesResponse, bool) {
 	predFlag, predSum := scanPredicateDigest(pred)
 	fromPath := ""
 	startOffset := int64(0)
@@ -309,15 +346,15 @@ func (h *Handlers) scanAllFiles(w http.ResponseWriter, r *http.Request, datasetI
 		cursor, cursorErr := decodeScanCursorV2(rawCursor)
 		if cursorErr != nil {
 			writeDatasetRowsError(w, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_invalid: %v", cursorErr))
-			return
+			return datasetScanAllFilesResponse{}, false
 		}
 		if mismatch := scanCursorBindingMismatch(cursor, datasetID, branchRow.ID, version, txn.ID, predFlag, predSum); mismatch != "" {
 			writeDatasetRowsError(w, datasetRowsErr(http.StatusBadRequest, "%s", mismatch))
-			return
+			return datasetScanAllFilesResponse{}, false
 		}
 		if cursor.mode != scanCursorV2ModeAllFiles {
 			writeDatasetRowsError(w, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_mismatch: cursor belongs to another scan mode"))
-			return
+			return datasetScanAllFilesResponse{}, false
 		}
 		fromPath = cursor.file
 		startOffset = cursor.offset
@@ -326,7 +363,7 @@ func (h *Handlers) scanAllFiles(w http.ResponseWriter, r *http.Request, datasetI
 	opener, backingOK := h.scanBackingOpener()
 	if !backingOK {
 		writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_rows_backing_driver_unsupported: rows:scan requires the local backing filesystem"))
-		return
+		return datasetScanAllFilesResponse{}, false
 	}
 
 	// One keyset batch per page. The +1 window holds every file the page
@@ -336,7 +373,7 @@ func (h *Handlers) scanAllFiles(w http.ResponseWriter, r *http.Request, datasetI
 	batch, err := h.Repo.ListTransactionStagedFilesFrom(r.Context(), txn.ID, fromPath, scanMaxFilesPerPage+1)
 	if err != nil {
 		writeDatasetRowsError(w, datasetRowsErr(http.StatusInternalServerError, "failed to load staged files"))
-		return
+		return datasetScanAllFilesResponse{}, false
 	}
 	// Validate EVERY batch row's logical path — including the lookahead row
 	// this page may hand a cursor to — BEFORE any key is derived or any
@@ -349,18 +386,18 @@ func (h *Handlers) scanAllFiles(w http.ResponseWriter, r *http.Request, datasetI
 		if !validScanStagedPath(file.LogicalPath) {
 			writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity,
 				"dataset_scan_file_path_invalid: %q is not a canonical logical path readable by rows:scan", file.LogicalPath))
-			return
+			return datasetScanAllFilesResponse{}, false
 		}
 	}
 	if fromPath != "" {
 		if len(batch) == 0 || batch[0].LogicalPath != fromPath {
 			writeDatasetRowsError(w, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_invalid: cursor file is not registered in the dataset version"))
-			return
+			return datasetScanAllFilesResponse{}, false
 		}
 		size := batch[0].SizeBytes
 		if startOffset > size || (startOffset == size && startOffset > 0) {
 			writeDatasetRowsError(w, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_invalid: offset %d is not a readable position in a %d byte file", startOffset, size))
-			return
+			return datasetScanAllFilesResponse{}, false
 		}
 	}
 
@@ -386,13 +423,13 @@ func (h *Handlers) scanAllFiles(w http.ResponseWriter, r *http.Request, datasetI
 			offset = startOffset
 		}
 		if !h.validateScanStagedFileAll(w, r.Context(), datasetID, txn, file.LogicalPath, &file) {
-			return
+			return datasetScanAllFilesResponse{}, false
 		}
 		seg, scanErr := scanNDJSONSegment(opener, file.PhysicalPath, file.SizeBytes, offset,
 			limit-len(resp.Rows), datasetScanMaxPageBytes-resp.PageBytes, pred)
 		if scanErr != nil {
 			writeDatasetRowsError(w, scanErr)
-			return
+			return datasetScanAllFilesResponse{}, false
 		}
 		resp.FilesAccessed++
 		resp.Rows = append(resp.Rows, seg.rows...)
@@ -422,8 +459,7 @@ func (h *Handlers) scanAllFiles(w http.ResponseWriter, r *http.Request, datasetI
 		resp.NextCursor = &next
 	}
 	resp.RowCount = len(resp.Rows)
-	h.emitScanModeAudit(r, datasetID, branchName, version, "*", "all_files", limit, resp.RowCount, resp.NextCursor != nil)
-	writeScanJSON(w, http.StatusOK, resp)
+	return resp, true
 }
 
 // validScanStagedPath accepts logical paths that are canonical object keys
