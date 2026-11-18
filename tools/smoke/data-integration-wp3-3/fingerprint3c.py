@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Working-tree fingerprint: HEAD + per-path blob hashes of every changed
-or untracked file. Used at BUILD START (default) and at SUITE END (--mode
-end) — the review requires both to agree, otherwise the round is invalidated
-(parallel sessions moved the tree mid-run)."""
+"""Hash HEAD, every changed path, and every harness source at start and end."""
 
 import hashlib
 import json
@@ -11,32 +8,34 @@ import subprocess
 import sys
 
 
+HARNESS_DIR = "tools/smoke/data-integration-wp3-3"
+
+
 def main():
     repo, ev = sys.argv[1], sys.argv[2]
     mode = "start"
     if sys.argv[3:4] == ["--mode"]:
         mode = sys.argv[4] if len(sys.argv) > 4 else "start"
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
-                          capture_output=True, text=True).stdout.strip()
-    branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo,
-                            capture_output=True, text=True).stdout.strip()
-    # --untracked-files=all: a whole untracked directory would otherwise
-    # collapse into ONE entry whose hash is null (the "path" is a dir).
-    # --no-renames: keeps every entry a single path, so the NUL parse below
-    # never has to deal with rename's two-path records.
-    porc = subprocess.run(
-        ["git", "status", "--porcelain", "-z", "--untracked-files=all", "--no-renames"],
-        cwd=repo, capture_output=True, text=True).stdout
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=repo, text=True)
+
+    head = git("rev-parse", "HEAD").strip()
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").strip()
+    # Clean, tracked harness sources must be hashed even when Git status is empty.
+    statuses = {path: "" for path in git("ls-files", "--cached", "-z", "--", HARNESS_DIR).split("\0") if path}
+    porcelain = git("status", "--porcelain", "-z", "--untracked-files=all", "--no-renames")
+    for token in porcelain.split("\0"):
+        if token:
+            statuses[token[3:]] = token[:2].strip()
+
     entries = []
-    for token in porc.split("\0"):
-        if not token:
-            continue
-        status, path = token[:2], token[3:]
+    for path, status in sorted(statuses.items()):
         full = os.path.join(repo, path)
         digest = None
         if os.path.isfile(full):
-            digest = hashlib.sha256(open(full, "rb").read()).hexdigest()
-        entries.append({"status": status.strip(), "path": path, "sha256": digest})
+            with open(full, "rb") as source:
+                digest = hashlib.sha256(source.read()).hexdigest()
+        entries.append({"status": status, "path": path, "sha256": digest})
     nulls = [e["path"] for e in entries if e["sha256"] is None]
     if nulls:
         raise SystemExit(f"fingerprint[{mode}]: null hashes for {nulls[:5]} "
@@ -44,7 +43,7 @@ def main():
     # Self-check (review): every source file of THIS harness directory (the
     # suite's own deliverables, excluding the ignored results/ archive) must
     # appear in the manifest with an individual hash.
-    here = os.path.join(repo, "tools/smoke/data-integration-wp3-3")
+    here = os.path.join(repo, HARNESS_DIR)
     manifest_paths = {e["path"] for e in entries}
     on_disk = set()
     for root, dirs, files in os.walk(here):
