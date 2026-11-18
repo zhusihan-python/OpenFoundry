@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 ## [Unreleased]
 
 ### Added
-- _(add entries here)_
+- Manual batched dataset builds can explicitly publish an `orders.v1` Parquet
+  file using the staged output transaction.
 
 ### Changed
 - _(add entries here)_

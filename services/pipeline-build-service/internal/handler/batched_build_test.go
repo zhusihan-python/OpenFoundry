@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
@@ -80,7 +81,7 @@ type fakeDatasetService struct {
 	receipts           map[string]fakeCommitReceipt
 	commits            []string // committed request bodies in order
 	commitTxns         []uuid.UUID
-	failCommitOnceWith *int // status to answer once, then behave
+	failCommitOnceWith *int // override the first success response after the commit
 	commitCalls        int
 
 	// Abort side.
@@ -178,22 +179,44 @@ func (f *fakeDatasetService) handleStage(w http.ResponseWriter, r *http.Request)
 	hash := sha256.New()
 	var size, records int64
 	truncated := false
-	reader := bufio.NewReader(r.Body)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if errors.Is(err, io.EOF) {
-			if len(line) > 0 {
-				truncated = true // no trailing newline: partial record
+	var parquetBody []byte
+	if q.Get("format") == "parquet" && r.Header.Get("Content-Type") == "application/vnd.apache.parquet" {
+		body, err := io.ReadAll(r.Body)
+		if err == nil {
+			reader, readErr := file.NewParquetReader(bytes.NewReader(body))
+			err = readErr
+			if err == nil {
+				records = reader.NumRows()
+				_ = reader.Close()
 			}
-			break
 		}
-		if err != nil {
-			truncated = true
-			break
+		truncated = err != nil
+		if !truncated {
+			parquetBody = body
+			size = int64(len(body))
+			hash.Write(body)
 		}
-		hash.Write(line)
-		size += int64(len(line))
-		records++
+	} else if !q.Has("format") && r.Header.Get("Content-Type") == "application/x-ndjson" {
+		reader := bufio.NewReader(r.Body)
+		for {
+			line, err := reader.ReadBytes('\n')
+			if errors.Is(err, io.EOF) {
+				if len(line) > 0 {
+					truncated = true // no trailing newline: partial record
+				}
+				break
+			}
+			if err != nil {
+				truncated = true
+				break
+			}
+			hash.Write(line)
+			size += int64(len(line))
+			records++
+		}
+	} else {
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+		return
 	}
 	f.mu.Lock()
 	f.stageCalls++
@@ -227,6 +250,7 @@ func (f *fakeDatasetService) handleStage(w http.ResponseWriter, r *http.Request)
 		descriptor = existing // byte-identical retransmission reuses the seal
 	} else {
 		f.stageDescriptors[reservation] = descriptor
+		f.stageBodies[reservation] = parquetBody
 	}
 	receipt := map[string]any{
 		"staged_object_id": "22222222-2222-2222-2222-222222222222",
@@ -240,6 +264,9 @@ func (f *fakeDatasetService) handleStage(w http.ResponseWriter, r *http.Request)
 		"sha256":           descriptor.sha,
 		"record_count":     descriptor.records,
 		"expires_at":       time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}
+	if q.Has("format") {
+		receipt["format"] = q.Get("format")
 	}
 	if f.stageReceiptMutator != nil {
 		f.stageReceiptMutator(receipt)
@@ -268,13 +295,6 @@ func (f *fakeDatasetService) handleCommit(w http.ResponseWriter, r *http.Request
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	if f.failCommitOnceWith != nil {
-		status := *f.failCommitOnceWith
-		f.failCommitOnceWith = nil
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(`{"error":"OUTCOME_UNKNOWN"}`))
 		return
 	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256(body))
@@ -332,6 +352,13 @@ func (f *fakeDatasetService) handleCommit(w http.ResponseWriter, r *http.Request
 		},
 	})
 	f.receipts[req.IdempotencyKey] = fakeCommitReceipt{fingerprint: fingerprint, response: response}
+	if f.failCommitOnceWith != nil {
+		status := *f.failCommitOnceWith
+		f.failCommitOnceWith = nil
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"error":"OUTCOME_UNKNOWN"}`))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_, _ = w.Write(response)

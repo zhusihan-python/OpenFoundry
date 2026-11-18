@@ -125,7 +125,9 @@ type batchedPayloadInput struct {
 }
 
 type batchedPayloadOutput struct {
-	LogicalPath string `json:"logical_path"`
+	LogicalPath   string `json:"logical_path"`
+	Format        string `json:"format,omitempty"`
+	SchemaVersion string `json:"schema_version,omitempty"`
 }
 
 // detectBatchedFamily reports whether any loaded spec declares the
@@ -260,11 +262,26 @@ func parseBatchedSpec(specs []models.JobSpec, body models.CreateBuildRequest, ar
 		return nil, bad("input.predicate must not be blank")
 	}
 	logicalPath := strings.TrimSpace(payload.Output.LogicalPath)
-	if logicalPath == "" {
-		logicalPath = batchedDefaultLogicalPath
-	}
-	if !strings.HasSuffix(logicalPath, ".ndjson") {
-		return nil, bad("output.logical_path %q must end with .ndjson", logicalPath)
+	switch payload.Output.Format {
+	case "":
+		if payload.Output.SchemaVersion != "" {
+			return nil, bad("output.schema_version requires output.format parquet")
+		}
+		if logicalPath == "" {
+			logicalPath = batchedDefaultLogicalPath
+		}
+		if !strings.HasSuffix(logicalPath, ".ndjson") {
+			return nil, bad("output.logical_path %q must end with .ndjson", logicalPath)
+		}
+	case batchedParquetFormat:
+		if payload.Output.SchemaVersion != ordersSchemaVersion {
+			return nil, bad("output.format parquet requires output.schema_version %q", ordersSchemaVersion)
+		}
+		if !batchedParquetPath(logicalPath) {
+			return nil, bad("output.logical_path %q must name a file with the .parquet extension", logicalPath)
+		}
+	default:
+		return nil, bad("unsupported output.format %q", payload.Output.Format)
 	}
 	if !validBatchedObjectPath(logicalPath) {
 		return nil, bad("output.logical_path %q is not a canonical logical path", logicalPath)
@@ -649,6 +666,10 @@ func executeBatchedRun(w http.ResponseWriter, r *http.Request, store batchedBuil
 			SHA256:         receipt.SHA256,
 		}},
 	}
+	if batchedParquetPath(cfg.LogicalPath) {
+		intent.Files[0].ContentType = batchedParquetContentType
+		intent.Files[0].Metadata = map[string]string{"schema_version": ordersSchemaVersion}
+	}
 	commitBody, err := json.Marshal(intent)
 	if err != nil {
 		handleBatchedStageFailure(w, ctx, store, cfg, owner, fmt.Errorf("batched_commit_marshal: %w", err))
@@ -818,11 +839,13 @@ type batchedCommitRequest struct {
 }
 
 type batchedCommitFile struct {
-	LogicalPath    string `json:"logical_path"`
-	Operation      string `json:"operation"`
-	StagedObjectID string `json:"staged_object_id"`
-	SizeBytes      int64  `json:"size_bytes"`
-	SHA256         string `json:"sha256"`
+	LogicalPath    string            `json:"logical_path"`
+	Operation      string            `json:"operation"`
+	StagedObjectID string            `json:"staged_object_id"`
+	SizeBytes      int64             `json:"size_bytes"`
+	SHA256         string            `json:"sha256"`
+	ContentType    string            `json:"content_type,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
 }
 
 // batchedStableKey is THE one stable idempotency key of a batched build,
@@ -843,26 +866,39 @@ type batchedDigest struct {
 // running SHA-256/counters; no page array is ever retained and no
 // data_rows are produced.
 func stageBatchedInput(ctx context.Context, client batchedDatasetClient, cfg *models.BatchedBuildConfig) (batchedStageResponse, batchedDigest, error) {
-	hash := sha256.New()
-	var size, records int64
-	maxRecord := client.cfg.StageMaxRecordBytes
-	receipt, err := client.StageStream(ctx, batchedStageRequest{
+	req := batchedStageRequest{
 		DatasetRID:     cfg.OutputDatasetRID,
 		Branch:         cfg.OutputBranch,
 		ReservationRID: cfg.ReservationRID,
 		BuildID:        cfg.BuildID,
 		LogicalPath:    cfg.LogicalPath,
 		IdempotencyKey: batchedStableKey(cfg.BuildID),
-	}, func(feedCtx context.Context, w *bufio.Writer) error {
+	}
+	if batchedParquetPath(cfg.LogicalPath) {
+		req.Format = batchedParquetFormat
+	}
+	input := batchedScanInput{
+		DatasetRID: cfg.InputDatasetRID,
+		Branch:     cfg.InputBranch,
+		Version:    cfg.InputVersion,
+		Path:       cfg.InputPath,
+		Predicate:  cfg.Predicate,
+	}
+	hash := sha256.New()
+	var size, records int64
+	maxRecord := client.cfg.StageMaxRecordBytes
+	receipt, err := client.StageStream(ctx, req, func(feedCtx context.Context, w *bufio.Writer) error {
 		// feedCtx is the stage attempt context: an early HTTP answer (or
 		// timeout) tears the upload down and cancels the scan mid-page.
-		_, scanErr := client.ScanStream(feedCtx, batchedScanInput{
-			DatasetRID: cfg.InputDatasetRID,
-			Branch:     cfg.InputBranch,
-			Version:    cfg.InputVersion,
-			Path:       cfg.InputPath,
-			Predicate:  cfg.Predicate,
-		}, func(record []byte) error {
+		if req.Format == batchedParquetFormat {
+			var err error
+			size, records, err = streamOrdersParquet(feedCtx, w, hash, maxRecord, func(emit func([]byte) error) error {
+				_, err := client.ScanStream(feedCtx, input, emit)
+				return err
+			})
+			return err
+		}
+		_, scanErr := client.ScanStream(feedCtx, input, func(record []byte) error {
 			rec := record
 			if bytes.ContainsAny(rec, "\n\r") {
 				// Raw control characters cannot occur in valid JSON, but

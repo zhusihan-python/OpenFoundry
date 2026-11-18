@@ -1,10 +1,6 @@
-// WP3.3 increment 3A — the streaming outputs:stage endpoint.
-//
-// One raw NDJSON request body is streamed, validated record by record
-// through the exact rows:scan record reader (same datasetFileRowsMaxLineBytes
-// cap, newline included, same JSON-object rule), incrementally hashed and
-// counted while a fresh attempt spools into the private staging directory;
-// only a confirmed close (fsync + close checked) seals it. The
+// The streaming outputs:stage endpoint spools validated NDJSON or Parquet
+// into the private staging directory and seals the exact request bytes. A
+// confirmed fsync and close are required before sealing. The
 // single-artifact model is enforced through the repository lease (one
 // in-flight upload and one live sealed object per reservation): a
 // re-transmission against a live sealed object is hashed against
@@ -189,12 +185,10 @@ func resolveDirSymlinks(dir string) (string, error) {
 	return filepath.Join(resolvedParent, filepath.Base(dir)), nil
 }
 
-// StageDatasetOutput streams one raw NDJSON body into the private staging
-// area and seals it as the reservation's staged object.
-//
-// Route: POST /v1/datasets/{rid}/outputs:stage
-// (?branch&reservation_id&build_id&logical_path&idempotency_key, all
-// required). Authorization follows the outputs:commit family order:
+// StageDatasetOutput streams one raw body into the private staging area and
+// seals it as the reservation's staged object. The optional format=parquet
+// query parameter opts into Parquet with its exact media type and extension.
+// Authorization follows the outputs:commit family order:
 // 401, then the dataset.write scope check, then tenant resolution (404
 // without leaking cross-tenant existence).
 func (h *Handlers) StageDatasetOutput(w http.ResponseWriter, r *http.Request) {
@@ -231,10 +225,21 @@ func (h *Handlers) StageDatasetOutput(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "invalid idempotency_key")
 		return
 	}
-	// The logical path must be consumable by rows:scan: reuse its exact
-	// staged-path validator on top of the ndjson suffix and the reserved
-	// server subtree rule.
-	if !validScanStagedPath(logical) || !strings.HasSuffix(logical, ".ndjson") {
+	isParquet := q.Has("format")
+	if isParquet {
+		if len(q["format"]) != 1 || q.Get("format") != stagedParquetFormat {
+			writeJSONErr(w, http.StatusBadRequest, "format must be parquet")
+			return
+		}
+		if !validStagedParquetPath(q.Get("logical_path")) || len(q["logical_path"]) != 1 {
+			writeJSONErr(w, http.StatusBadRequest, "logical_path must be a canonical object key ending in .parquet")
+			return
+		}
+		if values := r.Header.Values("Content-Type"); len(values) != 1 || values[0] != stagedParquetContentType {
+			writeJSONErr(w, http.StatusBadRequest, "format=parquet requires Content-Type "+stagedParquetContentType)
+			return
+		}
+	} else if !validScanStagedPath(logical) || !strings.HasSuffix(logical, ".ndjson") {
 		writeJSONErr(w, http.StatusBadRequest, "logical_path must be a rows:scan-consumable object key ending in .ndjson")
 		return
 	}
@@ -285,8 +290,13 @@ func (h *Handlers) StageDatasetOutput(w http.ResponseWriter, r *http.Request) {
 		// legitimately hold files in the same directory.
 		_ = os.Remove(filepath.Join(resvDir, supersededAttemptID.String()+".tmp"))
 		_ = os.Remove(filepath.Join(resvDir, supersededAttemptID.String()+".ndjson"))
+		_ = os.Remove(filepath.Join(resvDir, supersededAttemptID.String()+stagedParquetExtension))
 	}
 
+	stream := h.streamStageBody
+	if isParquet {
+		stream = h.streamStageParquetBody
+	}
 	if sealedExisting {
 		// The repository already matched the full binding and TTL under
 		// the locks (before any body byte is read). The sealed file
@@ -302,7 +312,7 @@ func (h *Handlers) StageDatasetOutput(w http.ResponseWriter, r *http.Request) {
 		// the body against io.Discard (no lease, no temp file), then
 		// either reuse the sealed descriptor byte-identically or fail
 		// with an explicit conflict. The sealed file is never touched.
-		digest, size, _, err := h.streamStageBody(w, r, io.Discard)
+		digest, size, _, err := stream(w, r, io.Discard)
 		if err != nil {
 			return // streamStageBody already wrote the HTTP error
 		}
@@ -320,25 +330,43 @@ func (h *Handlers) StageDatasetOutput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tmpPath := filepath.Join(resvDir, attemptID.String()+".tmp")
-	sealedPath := filepath.Join(resvDir, attemptID.String()+".ndjson")
-	sealedRel := path.Join("datasets", dataset.ID.String(), "reservations", reservationID.String(), attemptID.String()+".ndjson")
+	sealedRel := stagedSealedRelativePath(dataset.ID, reservationID, attemptID, logical)
+	sealedPath := filepath.Join(paths.stageRootAbs, filepath.FromSlash(sealedRel))
 
 	// The temp spool always goes away on exit (a successful close renamed
 	// it first); the sealed file's lifetime is decided by the outcome.
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	mode := os.O_WRONLY
+	if isParquet {
+		mode = os.O_RDWR // inspect the footer through this same spool descriptor
+	}
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|mode, 0o600)
 	if err != nil {
 		h.releaseStagedLeaseBounded(attemptID)
 		writeJSONErr(w, http.StatusInternalServerError, "failed to open staging spool")
 		return
 	}
-	digest, size, records, err := h.streamStageBody(w, r, f)
+	digest, size, records, err := stream(w, r, f)
 	if err != nil {
 		_ = f.Close()
 		h.releaseStagedLeaseBounded(attemptID)
 		_ = os.Remove(sealedPath)
 		return // streamStageBody already wrote the HTTP error
+	}
+	if isParquet {
+		records, err = inspectStagedParquet(r.Context(), f, size, h.stagedOutputMaxRecords())
+		if err != nil {
+			_ = f.Close()
+			h.releaseStagedLeaseBounded(attemptID)
+			if errors.Is(err, errStagedRecordCountLimit) {
+				writeStageError(w, err, http.StatusRequestEntityTooLarge, "STAGED_RECORD_COUNT_EXCEEDED")
+			} else {
+				slog.WarnContext(r.Context(), "staged Parquet rejected", slog.String("error", err.Error()))
+				writeStageError(w, errStagedParquetInvalid, http.StatusBadRequest, "STAGED_PARQUET_INVALID")
+			}
+			return
+		}
 	}
 	// Confirmed durability before the seal: fsync data, then close, both
 	// checked — only then does the rename make the file the sealed path.
@@ -406,7 +434,7 @@ func (h *Handlers) StageDatasetOutput(w http.ResponseWriter, r *http.Request) {
 // os.Link does not dereference oldname) and match the sealed size
 // exactly. Returns its absolute path.
 func verifySealedArtifact(stageRoot string, obj *repo.StagedOutputObject) (string, error) {
-	expected := path.Join("datasets", obj.DatasetID.String(), "reservations", obj.ReservationID.String(), obj.ID.String()+".ndjson")
+	expected := stagedSealedRelativePath(obj.DatasetID, obj.ReservationID, obj.ID, obj.LogicalPath)
 	if obj.SealedPath != expected {
 		return "", errStagedSealedFileMissing
 	}
@@ -427,12 +455,27 @@ func verifySealedArtifact(stageRoot string, obj *repo.StagedOutputObject) (strin
 	return abs, nil
 }
 
+// The canonical logical suffix is bound at stage and commit, so the private
+// artifact format can be recovered after a restart using the existing row.
+func stagedSealedRelativePath(datasetID, reservationID, attemptID uuid.UUID, logical string) string {
+	extension := ".ndjson"
+	if strings.HasSuffix(logical, stagedParquetExtension) {
+		extension = stagedParquetExtension
+	}
+	return path.Join("datasets", datasetID.String(), "reservations", reservationID.String(), attemptID.String()+extension)
+}
+
 func stagedResponseFromObject(obj *repo.StagedOutputObject, datasetID uuid.UUID, branch string) models.StageDatasetOutputResponse {
 	expiresAt := time.Time{}
 	if obj.ExpiresAt != nil {
 		expiresAt = *obj.ExpiresAt
 	}
+	format := ""
+	if strings.HasSuffix(obj.LogicalPath, stagedParquetExtension) {
+		format = stagedParquetFormat
+	}
 	return models.StageDatasetOutputResponse{
+		Format:         format,
 		StagedObjectID: obj.ID.String(),
 		DatasetRID:     "ri.foundry.main.dataset." + datasetID.String(),
 		Branch:         branch,

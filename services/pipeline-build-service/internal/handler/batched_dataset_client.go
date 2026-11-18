@@ -516,6 +516,7 @@ type batchedStageRequest struct {
 	BuildID        uuid.UUID
 	LogicalPath    string
 	IdempotencyKey string
+	Format         string
 }
 
 // batchedStageResponse mirrors the 3A stage receipt (dataset_rid form —
@@ -532,6 +533,7 @@ type batchedStageResponse struct {
 	SHA256         string    `json:"sha256"`
 	RecordCount    int64     `json:"record_count"`
 	ExpiresAt      time.Time `json:"expires_at"`
+	Format         string    `json:"format,omitempty"`
 }
 
 // StageStream performs one streaming stage upload. Ownership is strictly
@@ -566,6 +568,11 @@ func (c batchedDatasetClient) StageStream(ctx context.Context, req batchedStageR
 	query.Set("build_id", req.BuildID.String())
 	query.Set("logical_path", req.LogicalPath)
 	query.Set("idempotency_key", req.IdempotencyKey)
+	contentType := "application/x-ndjson"
+	if req.Format == batchedParquetFormat {
+		query.Set("format", req.Format)
+		contentType = batchedParquetContentType
+	}
 	stageURL := c.baseURL() + "/v1/datasets/" + url.PathEscape(req.DatasetRID) + "/outputs:stage?" + query.Encode()
 
 	stageCtx, cancel := context.WithTimeout(ctx, c.cfg.StageTimeout)
@@ -577,7 +584,7 @@ func (c batchedDatasetClient) StageStream(ctx context.Context, req batchedStageR
 	producerCtx, stopProducer := context.WithCancelCause(stageCtx)
 	defer stopProducer(errBatchedStageTeardown)
 	pipeReader, pipeWriter := io.Pipe()
-	httpReq, err := c.newRequest(stageCtx, http.MethodPost, stageURL, pipeReader, "application/x-ndjson")
+	httpReq, err := c.newRequest(stageCtx, http.MethodPost, stageURL, pipeReader, contentType)
 	if err != nil {
 		_ = pipeReader.Close()
 		_ = pipeWriter.Close()
@@ -666,6 +673,9 @@ func (c batchedDatasetClient) StageStream(ctx context.Context, req batchedStageR
 	var receipt batchedStageResponse
 	if err := json.Unmarshal(body, &receipt); err != nil || receipt.StagedObjectID == "" {
 		return batchedStageResponse{}, errors.New("batched_stage_bad_response: stage receipt missing staged_object_id")
+	}
+	if receipt.Format != req.Format {
+		return batchedStageResponse{}, fmt.Errorf("batched_stage_receipt_mismatch: receipt format %q != requested format %q", receipt.Format, req.Format)
 	}
 	return receipt, nil
 }

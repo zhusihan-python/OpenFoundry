@@ -1191,6 +1191,7 @@ type OutputCommitReceipt struct {
 // storage path. A byte-identical re-transmission against an already sealed
 // object returns the stored descriptor with HTTP 200 instead of 201.
 type StageDatasetOutputResponse struct {
+	Format         string    `json:"format,omitempty"`
 	StagedObjectID string    `json:"staged_object_id"`
 	DatasetRID     string    `json:"dataset_rid"`
 	Branch         string    `json:"branch"`
