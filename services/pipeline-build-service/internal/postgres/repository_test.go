@@ -136,6 +136,16 @@ func TestRepositoryPipelineRunsAbortAndLogs(t *testing.T) {
 }
 
 func TestRepositoryLoadPlanPopulatesNodeMetadata(t *testing.T) {
+	t.Run("legacy", func(t *testing.T) {
+		testRepositoryLoadPlanPopulatesNodeMetadata(t, "out.alpha", `{"transform_type":"python","source":"select 1"}`, "", "")
+	})
+	t.Run("typed output from frozen job spec", func(t *testing.T) {
+		testRepositoryLoadPlanPopulatesNodeMetadata(t, uuid.NewString(), `{"transform_type":"python","output_schema_version":"orders.v1","logical_path":"orders/typed.parquet","file_format":"PARQUET"}`, "orders.v1", "orders/typed.parquet")
+	})
+}
+
+func testRepositoryLoadPlanPopulatesNodeMetadata(t *testing.T, outputRID, payload, profile, path string) {
+	t.Helper()
 	mock, repo := newMockRepo(t)
 	ctx := context.Background()
 	buildID := uuid.New()
@@ -159,12 +169,12 @@ func TestRepositoryLoadPlanPopulatesNodeMetadata(t *testing.T) {
 	mock.ExpectQuery("FROM jobs j\nJOIN job_specs js ON js.rid").
 		WithArgs(buildID).
 		WillReturnRows(pgxmock.NewRows([]string{"rid", "logic_kind", "logic_payload", "inputs", "output_dataset_rids"}).
-			AddRow("ri.foundry.main.job_spec.alpha", "TRANSFORM", []byte(`{"transform_type":"python","source":"select 1"}`), []byte(`[{"dataset_rid":"in.alpha"}]`), []string{"out.alpha"}))
+			AddRow("ri.foundry.main.job_spec.alpha", "TRANSFORM", []byte(payload), []byte(`[{"dataset_rid":"in.alpha"}]`), []string{outputRID}))
 
 	mock.ExpectQuery("FROM job_outputs WHERE job_id").
 		WithArgs(jobID).
 		WillReturnRows(pgxmock.NewRows([]string{"output_dataset_rid", "transaction_rid"}).
-			AddRow("out.alpha", "ri.foundry.main.transaction.tx-1"))
+			AddRow(outputRID, "ri.foundry.main.transaction.tx-1"))
 
 	plan, err := repo.LoadPlan(ctx, buildID)
 	require.NoError(t, err)
@@ -176,12 +186,15 @@ func TestRepositoryLoadPlanPopulatesNodeMetadata(t *testing.T) {
 	require.Equal(t, jobID, node.JobID)
 	require.Equal(t, "TRANSFORM", node.Metadata["logic_kind"])
 	require.Equal(t, "python", node.Metadata["transform_type"])
-	require.Equal(t, "out.alpha", node.Metadata["output_dataset_id"])
+	require.Equal(t, outputRID, node.Metadata["output_dataset_id"])
 	require.Equal(t, []string{"in.alpha"}, node.Metadata["input_dataset_ids"])
 	require.Equal(t, true, node.Metadata["force_build"])
-	require.Equal(t, json.RawMessage(`{"transform_type":"python","source":"select 1"}`), node.Metadata["logic_payload"])
+	require.Equal(t, json.RawMessage(payload), node.Metadata["logic_payload"])
 	require.Len(t, node.Outputs, 1)
-	require.Equal(t, "out.alpha", node.Outputs[0].DatasetRID)
+	require.Equal(t, outputRID, node.Outputs[0].DatasetRID)
+	require.Equal(t, "ri.foundry.main.transaction.tx-1", node.Outputs[0].TransactionRID)
+	require.Equal(t, profile, node.Outputs[0].OutputSchemaVersion)
+	require.Equal(t, path, node.Outputs[0].LogicalPath)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

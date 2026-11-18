@@ -288,6 +288,9 @@ func decodeParquetOrder(record []byte) (parquetOrder, error) {
 	if !ordersTimestampPattern.MatchString(rawTime) || err != nil || orderedAt.Nanosecond()%1000 != 0 {
 		return parquetOrder{}, errors.New("ordered_at must be a valid microsecond-aligned RFC3339 timestamp")
 	}
+	if year := orderedAt.UTC().Year(); year < 0 || year > 9999 {
+		return parquetOrder{}, errors.New("ordered_at UTC year is outside the supported JSON date range")
+	}
 	zone, ok := fields["source_time_zone"].(string)
 	if !ok {
 		return parquetOrder{}, errors.New("source_time_zone must be a string")

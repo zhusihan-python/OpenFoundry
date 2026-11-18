@@ -752,6 +752,9 @@ func (r *Repository) LoadPlan(ctx context.Context, buildID uuid.UUID) (executor.
 				metadata["logic_kind"] = spec.LogicKind
 			}
 			if len(spec.LogicPayload) > 0 {
+				if err := handler.BindDatasetOutputSchema(spec.LogicPayload, outputs); err != nil {
+					return executor.Plan{}, fmt.Errorf("job spec %s: %w", job.JobSpecRID, err)
+				}
 				metadata["logic_payload"] = spec.LogicPayload
 			}
 			if spec.TransformType != "" {
@@ -1406,15 +1409,11 @@ func (r *Repository) PublishJobSpec(ctx context.Context, kind string, req handle
 		// returning early would leave pipeline_job_specs bound to the
 		// intervening definition while the API answered with this rid.
 		//
-		// WP3.4 pinned specs are the exception: build planning reads the
-		// branch mapping (inputs + job_spec_json) while execute-time
-		// LoadPlan restores the canonical job_specs.logic_payload by rid,
-		// so a hash collision that reuses an OLD rid for a NEW pin would
-		// make the two sides see different bindings. When either side
-		// declares a dataset_snapshot, reuse demands STRICT equality of
-		// logic_payload and inputs; a conflict is rejected, not re-bound.
+		// For pinned inputs or typed outputs, ensure the branch mapping and
+		// the canonical JobSpec restored by LoadPlan agree on the frozen
+		// definition, even when a caller supplied a colliding hash.
 		if jobSpecPinnedReuseConflict(storedPayload, storedInputs, payload, inputsRaw) {
-			return handler.PublishedJobSpec{}, fmt.Errorf("job_spec_content_conflict: an existing spec with content hash %s (rid %s) carries a different dataset_snapshot definition (logic_payload or inputs differ); publish the new definition with its own content hash instead of reusing this one", contentHash, existing.RID)
+			return handler.PublishedJobSpec{}, fmt.Errorf("job_spec_content_conflict: existing spec with content hash %s (rid %s) has a different frozen dataset_snapshot or output_schema_version definition; publish with its own content hash", contentHash, existing.RID)
 		}
 		if keyOutput == "" {
 			return existing, nil
@@ -1593,7 +1592,8 @@ func deriveJobSpecHash(kind string, req handler.CreateJobSpecRequest) string {
 // anything else would bind build planning (branch mapping) and LoadPlan
 // (canonical row) to different pinned definitions under one rid.
 func jobSpecPinnedReuseConflict(storedPayload, storedInputs, newPayload, newInputs []byte) bool {
-	if !handler.PayloadDeclaresDatasetSnapshot(storedPayload) && !handler.PayloadDeclaresDatasetSnapshot(newPayload) {
+	if !handler.PayloadDeclaresDatasetSnapshot(storedPayload) && !handler.PayloadDeclaresDatasetSnapshot(newPayload) &&
+		!handler.PayloadDeclaresDatasetOutputSchema(storedPayload) && !handler.PayloadDeclaresDatasetOutputSchema(newPayload) {
 		return false
 	}
 	return !jsonEqualBytes(storedPayload, newPayload) || !jsonEqualBytes(storedInputs, newInputs)

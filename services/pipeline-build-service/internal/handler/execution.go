@@ -440,6 +440,9 @@ func planFromPipeline(pipeline *models.Pipeline, runID uuid.UUID, req models.Tri
 			}
 		}
 		outputs, outputRID := outputTransactionsForPipelineNode(pipeline.ID, runID, node, nodes)
+		if err := BindDatasetOutputSchema(node.Config, outputs); err != nil {
+			return executor.Plan{}, fmt.Errorf("pipeline node %q: %w", node.ID, err)
+		}
 		metadata := map[string]any{
 			"logic_kind":        runners.LogicKindTransform,
 			"transform_type":    node.TransformType,

@@ -174,10 +174,9 @@ type parquetOrderJSON struct {
 }
 
 func (row parquetOrderRow) wire() (parquetOrderJSON, error) {
-	date := time.Unix(int64(row.date)*86_400, 0).UTC()
-	orderedAt := time.UnixMicro(row.orderedAt).UTC()
-	if date.Year() < 0 || date.Year() > 9999 || orderedAt.Year() < 0 || orderedAt.Year() > 9999 {
-		return parquetOrderJSON{}, errors.New("invalid Parquet date or timestamp year for JSON")
+	date, orderedAt, err := row.dates()
+	if err != nil {
+		return parquetOrderJSON{}, err
 	}
 	amount, sign := row.amount, ""
 	if amount < 0 {
@@ -188,4 +187,13 @@ func (row parquetOrderRow) wire() (parquetOrderJSON, error) {
 		OrderDate: date.Format(time.DateOnly), OrderedAt: orderedAt.Format("2006-01-02T15:04:05.000000Z"),
 		SourceTimeZone: row.zone, Note: row.note,
 	}, nil
+}
+
+func (row parquetOrderRow) dates() (time.Time, time.Time, error) {
+	date := time.Unix(int64(row.date)*86_400, 0).UTC()
+	orderedAt := time.UnixMicro(row.orderedAt).UTC()
+	if date.Year() < 0 || date.Year() > 9999 || orderedAt.Year() < 0 || orderedAt.Year() > 9999 {
+		return time.Time{}, time.Time{}, errors.New("invalid Parquet date or timestamp year for JSON")
+	}
+	return date, orderedAt, nil
 }

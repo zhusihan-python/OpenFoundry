@@ -43,11 +43,15 @@ type outputObjectWrite struct {
 // oversized body first. The cap leaves room for base64 inflation (4/3) plus
 // JSON structure and preview rows on top of the content limit.
 func (h *Handlers) maxOutputCommitBodyBytes() int64 {
-	limit := h.MaxOutputCommitContentBytes
-	if limit <= 0 {
-		limit = DefaultMaxOutputCommitContentBytes
-	}
+	limit := h.outputCommitContentLimit()
 	return limit + limit/3 + 1<<20
+}
+
+func (h *Handlers) outputCommitContentLimit() int64 {
+	if limit := h.MaxOutputCommitContentBytes; limit > 0 {
+		return limit
+	}
+	return DefaultMaxOutputCommitContentBytes
 }
 
 // outputCommitBackingFor resolves the backing store for a commit body. When no
@@ -63,11 +67,7 @@ func (h *Handlers) outputCommitBackingFor(bodyHasContent bool) (outputCommitBack
 	if _, ok := h.BackingFS.(localObjectStore); !ok {
 		return outputCommitBacking{}, errOutputCommitBackingUnavailable
 	}
-	limit := h.MaxOutputCommitContentBytes
-	if limit <= 0 {
-		limit = DefaultMaxOutputCommitContentBytes
-	}
-	return outputCommitBacking{fsid: h.BackingFS.FSID(), baseDir: h.BackingFS.BaseDirectory(), limit: limit}, nil
+	return outputCommitBacking{fsid: h.BackingFS.FSID(), baseDir: h.BackingFS.BaseDirectory(), limit: h.outputCommitContentLimit()}, nil
 }
 
 // outputCommitObjectKey derives the server-owned physical key for a committed
@@ -111,7 +111,9 @@ func physicalURIForOutputObject(fsid string, key string) string {
 
 func writeOutputCommitFileError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, errOutputCommitContentTooLarge):
+	case errors.Is(err, errInlineParquetInterrupted):
+		writeJSONErr(w, http.StatusGatewayTimeout, err.Error())
+	case errors.Is(err, errOutputCommitContentTooLarge), errors.Is(err, errInlineParquetWorkLimit):
 		writeJSONErr(w, http.StatusRequestEntityTooLarge, err.Error())
 	case errors.Is(err, errOutputCommitBackingUnavailable):
 		writeDependencyUnavailable(w, "local_backing_filesystem_unavailable", err.Error())

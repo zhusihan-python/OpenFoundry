@@ -1,0 +1,94 @@
+# Overlay for a fresh WP3.3 smoke stack only.
+services:
+  postgres:
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10"]
+
+  kafka:
+    image: apache/kafka:3.7.1
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
+      CLUSTER_ID: ofwp32-kafka-cluster-1
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+
+  connect:
+    image: quay.io/debezium/connect:2.7.2.Final
+    depends_on:
+      kafka: { condition: service_healthy }
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: wp314-default-connect
+      CONFIG_STORAGE_TOPIC: wp314_default_connect_configs
+      OFFSET_STORAGE_TOPIC: wp314_default_connect_offsets
+      STATUS_STORAGE_TOPIC: wp314_default_connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      ENABLE_DEBEZIUM_SCRIPTING: "false"
+      KAFKA_HEAP_OPTS: -Xmx640m -Xms320m
+
+  registry:
+    image: apicurio/apicurio-registry-mem:2.6.13.Final
+
+  schemas:
+    image: curlimages/curl:8.10.1
+    entrypoint: ["/bin/sh", "/register.sh"]
+    volumes:
+      - ${WP314_REPO}/libs/schedule-events/schema:/etc/schemas:ro
+      - ${WP314_REPO}/tools/smoke/data-integration-wp3-2/k8s/50-register.sh:/register.sh:ro
+    environment:
+      APICURIO_BASE_URL: http://registry:8080
+      GROUP_ID: default
+      TRIGGER_SHA256: cd18c6212d2d9d35b0c092669daee58049c36e15d8a3174ca173e95e63eea92f
+      OUTCOME_SHA256: aef7a88509a097fe41c8ec50d484ca75d75910c2bc1881c3104138a56fc06a12
+
+  faultproxy:
+    image: python:3.12-alpine
+    volumes:
+      - ${WP314_REPO}/tools/smoke/data-integration-wp3-2/fault_proxy.py:/fault_proxy.py:ro
+      - ${WP33C_EVIDENCE}/fault-proxy:/evidence
+    command: ["python3", "-I", "/fault_proxy.py", "--upstream", "http://dvs:50078", "--evidence-dir", "/evidence", "--timeout", "120"]
+    ports:
+      - "127.0.0.1:17179:8080"
+
+  pbs:
+    environment:
+      DATASET_SERVICE_URL: http://faultproxy:8080
+      SCHEDULER_CONSUMER_ENABLED: "true"
+      SCHEDULER_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEDULER_KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      SCHEDULER_GROUP_ID: wp314-default-runtime
+      SCHEDULER_CREDENTIAL_ENCRYPTION_KEY: ${WP314_CIPHER_KEY:?}
+      SCHEDULER_LEASE_TTL: "15"
+      SCHEDULER_HEARTBEAT_INTERVAL: "5"
+    depends_on:
+      kafka: { condition: service_healthy }
+      faultproxy: { condition: service_started }
+
+  tick:
+    image: alpine:3.22
+    entrypoint: ["/tick"]
+    volumes:
+      - ${WP314_BIN}/schedules-tick:/tick:ro
+    environment:
+      DATABASE_URL: postgres://openfoundry:${OF33C_PG_PASSWORD:?}@postgres:5432/wp33c_pbs
+      SCHEDULES_DISPATCH_MODE: pipeline_outbox_v1
+      SCHEDULES_REGISTRY_URL: http://registry:8080
+      SCHEDULES_REGISTRY_GROUP: default
+      SCHEDULES_CDC_SLOT: ofwp32_outbox_pipeline

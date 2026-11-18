@@ -106,7 +106,7 @@ func (h *Handlers) CommitDatasetOutput(w http.ResponseWriter, r *http.Request) {
 		// must fail closed here, never fall through to the legacy
 		// pipeline (whose staged-file CHECK would only fail later, after
 		// opening a transaction).
-		if stagedCommitRequested(body) {
+		if body.OutputSchemaVersion == nil && stagedCommitRequested(body) {
 			writeJSONErr(w, http.StatusBadRequest, "staged commit requires idempotency_key")
 			return
 		}
@@ -147,6 +147,10 @@ func (h *Handlers) CommitDatasetOutput(w http.ResponseWriter, r *http.Request) {
 // byte-for-byte in behavior — a request without idempotency_key must be
 // indistinguishable from before P2.6.
 func (h *Handlers) commitDatasetOutputLegacy(w http.ResponseWriter, r *http.Request, body models.CommitDatasetOutputRequest, claims *authmw.Claims) {
+	if err := h.prepareTypedInlineOutput(r.Context(), &body); err != nil {
+		writeOutputCommitFileError(w, err)
+		return
+	}
 	dataset, err := h.resolveOrCreateOutputDataset(r, &body, claims)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
@@ -344,7 +348,8 @@ func (h *Handlers) commitDatasetOutputKeyed(w http.ResponseWriter, r *http.Reque
 	// Staged commits carry their own deterministic shape contract; it is a
 	// pure function of the bytes, so a byte-identical replay can never
 	// fail it after the fingerprint short-circuit.
-	if stagedCommitRequested(body) {
+	staged := body.OutputSchemaVersion == nil && stagedCommitRequested(body)
+	if staged {
 		if err := validateStagedCommitRequest(body); err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -367,7 +372,7 @@ func (h *Handlers) commitDatasetOutputKeyed(w http.ResponseWriter, r *http.Reque
 	scope := tenantScopeFromClaims(claims)
 	fingerprint := requestFingerprint(raw)
 	var build func(context.Context, repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error)
-	if stagedCommitRequested(body) {
+	if staged {
 		build = h.stagedKeyedOutputCommitBuild(r, body, branchName, datasetID, scope, claims)
 	} else {
 		build = h.keyedOutputCommitBuild(r, body, branchName, datasetID, scope, claims)
@@ -439,6 +444,9 @@ func (h *Handlers) keyedOutputCommitBuild(r *http.Request, body models.CommitDat
 		}
 		if branch == nil {
 			return zero, errKeyedBranchMissing
+		}
+		if err := h.prepareTypedInlineOutput(ctx, &body); err != nil {
+			return zero, keyedFileError{err}
 		}
 		txn, err := tx.StartTransaction(ctx, dataset.ID, branch.ID, branch.Name, txType, summary, provenance, claims.Sub)
 		if err != nil {

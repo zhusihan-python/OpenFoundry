@@ -68,12 +68,17 @@ func bindScanMetadata(path string, pinned *batchedScanMetadata, page batchedScan
 }
 
 func validOrdersScanSchema(schema *datasetRowsSchema) bool {
-	return schema != nil && schema.FileFormat == "PARQUET" && slices.Equal(schema.Fields, []datasetRowsField{
+	want := ordersDatasetSchema()
+	return schema != nil && schema.FileFormat == want.FileFormat && slices.Equal(schema.Fields, want.Fields)
+}
+
+func ordersDatasetSchema() datasetRowsSchema {
+	return datasetRowsSchema{FileFormat: "PARQUET", Fields: []datasetRowsField{
 		{Name: "order_id", Type: "LONG"},
 		{Name: "amount", Type: "DECIMAL", Precision: ordersAmountPrecision, Scale: ordersAmountScale},
 		{Name: "order_date", Type: "DATE"},
 		{Name: "ordered_at", Type: "TIMESTAMP"},
 		{Name: "source_time_zone", Type: "STRING"},
 		{Name: "note", Type: "STRING", Nullable: true},
-	})
+	}}
 }

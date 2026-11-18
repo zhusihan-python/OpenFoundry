@@ -1124,6 +1124,10 @@ type CommitDatasetOutputRequest struct {
 	PreviewRows     [][]JSONValue           `json:"preview_rows,omitempty"`
 	LineageLinks    []PutDatasetLineageLink `json:"lineage_links,omitempty"`
 	Metadata        JSONValue               `json:"metadata,omitempty"`
+	// OutputSchemaVersion opts one inline ADD into validated typed
+	// publication. Decode the value on a receipt miss so receipts for
+	// older clients that sent an unknown field still replay exactly.
+	OutputSchemaVersion *JSONValue `json:"output_schema_version,omitempty"`
 	// ReservationID and BuildID declare the WP3.3 staged-commit binding:
 	// together with the STAGED_ADD file entry they must match the sealed
 	// staged object's descriptor. Empty keeps the historical request shape.

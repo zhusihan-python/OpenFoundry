@@ -140,11 +140,8 @@ func (c *ScheduledOutputCommitter) Commit(ctx context.Context, tx executor.Outpu
 		// unrecoverable by key. Refuse.
 		return errors.New("scheduled commit requires OutputNodeID on the output transaction")
 	}
-	if err := c.ensureHandoff(ctx, tx.DatasetRID); err != nil {
-		return err
-	}
 	key := scheduleevents.DeriveOutputPublishKey(c.EventID, nodeID, tx.DatasetRID)
-	inner, err := datasetOutputCommitBody(tx, result)
+	inner, err := datasetOutputCommitBodyWithContext(ctx, tx, result)
 	if err != nil {
 		return err
 	}
@@ -166,6 +163,9 @@ func (c *ScheduledOutputCommitter) Commit(ctx context.Context, tx executor.Outpu
 	}
 	resultJSON, err := json.Marshal(executor.NodeResult{OutputContentHash: result.OutputContentHash, Metadata: metadata})
 	if err != nil {
+		return err
+	}
+	if err := c.ensureHandoff(ctx, tx.DatasetRID); err != nil {
 		return err
 	}
 	if err := c.Store.RecordPendingPublishWithResult(ctx, c.EventID, c.Owner, c.Fence, key, nodeID, tx.DatasetRID, body, resultJSON); err != nil {
