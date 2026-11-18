@@ -323,6 +323,11 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 	if batchedCfg != nil {
 		frozen := batchedCfg
 		args.SpecFreezer = func(fresh []models.JobSpec) error { return batchedSpecsEquivalent(frozen, fresh) }
+	} else if args.TriggerKind == "MANUAL" || args.TriggerKind == "FORCE" {
+		switch ports.Versioning.(type) {
+		case DatasetHTTPVersioning, *DatasetHTTPVersioning:
+			args.ReservationPurpose = manualOutputPurpose
+		}
 	}
 	buildID, err := uuid.NewV7()
 	if err != nil {

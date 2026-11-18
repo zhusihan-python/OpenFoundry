@@ -46,6 +46,29 @@ func TestExecutePipelineLinearDAGViaHTTP(t *testing.T) {
 	require.NotContains(t, rr.Body.String(), "not_implemented")
 }
 
+func TestInlineExecuteCannotWritePersistedAuditOrUseItsCancellationSlot(t *testing.T) {
+	buildID, jobID := uuid.New(), uuid.New()
+	existingCtx, cancelExisting := context.WithCancel(context.Background())
+	defer cancelExisting()
+	unregister := registerExecutionCancel(buildID, cancelExisting)
+	defer unregister()
+	audit := &recordingAuditSink{}
+	committer := &recordingCommitter{}
+	restore := SetExecutionPorts(ExecutionPorts{NodeRunner: &recordingNodeRunner{}, Committer: committer, Audit: audit})
+	defer restore()
+
+	body := fmt.Sprintf(`{"build_id":%q,"nodes":[{"id":"inline","job_id":%q,"outputs":[{"DatasetRID":"out","TransactionRID":"txn","Inline":false}]}]}`, buildID, jobID)
+	rr := httptest.NewRecorder()
+	ExecutePipeline(rr, httptest.NewRequest(http.MethodPost, "/api/v1/execute", strings.NewReader(body)))
+
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	require.Empty(t, audit.events)
+	require.Equal(t, []string{"out"}, committer.datasets)
+	require.Equal(t, []bool{true}, committer.inline)
+	require.True(t, cancelExecution(buildID))
+	require.ErrorIs(t, existingCtx.Err(), context.Canceled)
+}
+
 func TestExecutePipelineFailureRollsBackAndAbortsDependent(t *testing.T) {
 	tx := &recordingTransactions{}
 	runner := &recordingNodeRunner{fail: map[string]error{"extract": errors.New("boom")}}
@@ -388,6 +411,7 @@ func (r *recordingNodeRunner) Run(ctx context.Context, node executor.NodeContext
 type recordingCommitter struct {
 	mu          sync.Mutex
 	datasets    []string
+	inline      []bool
 	failDataset string
 	results     []executor.NodeResult
 }
@@ -396,6 +420,7 @@ func (c *recordingCommitter) Commit(_ context.Context, tx executor.OutputTransac
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.datasets = append(c.datasets, tx.DatasetRID)
+	c.inline = append(c.inline, tx.Inline)
 	c.results = append(c.results, result)
 	if tx.DatasetRID == c.failDataset {
 		return errors.New("commit failed")

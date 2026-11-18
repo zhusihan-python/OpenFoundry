@@ -66,6 +66,9 @@ func AbortBuild(w http.ResponseWriter, r *http.Request) {
 	if abortBatchedBuildIfConfigured(w, r, id) {
 		return
 	}
+	if abortManualBuildIfConfigured(w, r, id) {
+		return
+	}
 	ports, abortRepo, ok := requireAbortPorts(w)
 	if !ok {
 		return
