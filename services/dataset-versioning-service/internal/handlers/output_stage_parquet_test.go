@@ -172,7 +172,7 @@ func TestStagedParquetRejectsBadFormatAndBody(t *testing.T) {
 		m.RowGroups[0].Columns[0].MetaData.DataPageOffset++
 	})
 	badRows := rewriteParquetFooter(t, valid, footerOffset, func(m *metadata.FileMetaData) {
-		m.FileMetaData.NumRows++
+		m.NumRows++
 	})
 	badSchema := rewriteParquetFooter(t, valid, footerOffset, func(m *metadata.FileMetaData) {
 		m.FileMetaData.Schema[1].Name = "forged"

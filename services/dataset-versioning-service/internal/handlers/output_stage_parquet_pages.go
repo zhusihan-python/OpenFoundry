@@ -42,18 +42,18 @@ func (v *stagedParquetPageValidator) validateColumn(ctx context.Context, src io.
 		if encodedLen <= 0 || encodedLen > stagedParquetMaxChunkBytes || encodedLen > end-offset-headerLen ||
 			decodedLen <= 0 || decodedLen > uncompressedBytes-actualBytes-headerLen ||
 			page.numValues <= 0 || int64(page.numValues) > rows-actualRows {
-			return errors.New("Parquet page sizes or record count exceed the column bounds")
+			return errors.New("invalid Parquet page sizes or record count")
 		}
 		v.encoded = slices.Grow(v.encoded[:0], int(encodedLen))[:encodedLen]
 		if _, err := src.ReadAt(v.encoded, offset+headerLen); err != nil {
 			return err
 		}
 		if page.crcSet && crc32.ChecksumIEEE(v.encoded) != uint32(page.crc) {
-			return errors.New("Parquet page checksum mismatch")
+			return errors.New("incorrect Parquet page checksum")
 		}
 		n, err := snappy.DecodedLen(v.encoded)
 		if err != nil || int64(n) != decodedLen {
-			return errors.New("Parquet Snappy length does not match the page")
+			return errors.New("incorrect Parquet Snappy block length")
 		}
 		v.decoded = slices.Grow(v.decoded[:0], n)[:n]
 		if _, err := snappy.Decode(v.decoded, v.encoded); err != nil {
@@ -64,7 +64,7 @@ func (v *stagedParquetPageValidator) validateColumn(ctx context.Context, src io.
 		actualRows += int64(page.numValues)
 	}
 	if actualRows != rows || actualBytes != uncompressedBytes {
-		return errors.New("Parquet pages do not match the column")
+		return errors.New("inconsistent Parquet column and pages")
 	}
 	return nil
 }

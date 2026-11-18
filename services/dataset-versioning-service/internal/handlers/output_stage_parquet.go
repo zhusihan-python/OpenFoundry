@@ -96,7 +96,7 @@ func inspectStagedParquet(ctx context.Context, src io.ReaderAt, size, maxRecords
 	footerLen := int64(binary.LittleEndian.Uint32(trailer[:4]))
 	footerOffset := size - stagedParquetTrailerBytes - footerLen
 	if footerLen == 0 || footerLen > stagedParquetMaxFooterBytes || footerOffset < headerBytes {
-		return 0, errors.New("Parquet footer length is outside the permitted range")
+		return 0, errors.New("invalid Parquet footer length")
 	}
 	data := make([]byte, footerLen)
 	if _, err := src.ReadAt(data, footerOffset); err != nil {
@@ -124,7 +124,7 @@ func inspectStagedParquet(ctx context.Context, src io.ReaderAt, size, maxRecords
 		return 0, fmt.Errorf("%w: %d", errStagedRecordCountLimit, maxRecords)
 	}
 	if !validStagedOrdersSchema(&arrowMeta) {
-		return 0, errors.New("Parquet schema does not match " + stagedParquetSchemaVersion)
+		return 0, errors.New("expected Parquet schema " + stagedParquetSchemaVersion)
 	}
 
 	var records int64
@@ -162,7 +162,7 @@ func inspectStagedParquet(ctx context.Context, src io.ReaderAt, size, maxRecords
 			}
 			if col.DataPageOffset != nextOffset || col.TotalCompressedSize <= 0 ||
 				col.TotalCompressedSize > footerOffset-nextOffset {
-				return 0, errors.New("Parquet column ranges do not match the file")
+				return 0, errors.New("invalid Parquet column ranges")
 			}
 			end := nextOffset + col.TotalCompressedSize
 			if err := pages.validateColumn(ctx, src, nextOffset, end, col.TotalUncompressedSize, group.NumRows); err != nil {
@@ -172,12 +172,12 @@ func inspectStagedParquet(ctx context.Context, src io.ReaderAt, size, maxRecords
 			uncompressed += col.TotalUncompressedSize
 		}
 		if group.TotalByteSize != uncompressed || (group.IsSetTotalCompressedSize() && group.GetTotalCompressedSize() != nextOffset-groupStart) {
-			return 0, errors.New("Parquet column sizes do not match the row group")
+			return 0, errors.New("inconsistent Parquet column and row group sizes")
 		}
 		records += group.NumRows
 	}
 	if records != footer.NumRows || nextOffset != footerOffset {
-		return 0, errors.New("Parquet row groups do not match the file")
+		return 0, errors.New("inconsistent Parquet row groups and file size")
 	}
 	return records, nil
 }
