@@ -42,6 +42,11 @@ type DatasetRowsRequest struct {
 	// file and truncate rows at the limit. Formal execution keeps it false
 	// so ambiguity and over-limit files fail explicitly.
 	AllowTruncation bool
+	// Snapshot, when non-nil, pins the read to an explicit dataset
+	// snapshot {branch, version, transaction_id} through the DVS
+	// rows:scan route (caller bearer only, expected transaction bound to
+	// the first and every page). It overrides Branch.
+	Snapshot *datasetInputSnapshot
 }
 
 type DatasetRowsResult struct {
@@ -60,14 +65,25 @@ type DatasetRowsResult struct {
 // presigned URLs, and it refuses to follow redirects — including with an
 // injected *http.Client. Manual preview/run requests forward the caller's
 // bearer token from the request context; the static service token is only
-// used when no caller identity is present (e.g. scheduled runs).
+// used when no caller identity is present (e.g. scheduled runs) — and
+// NEVER for dataset_snapshot reads, which are caller-only.
 type DatasetServiceRowReader struct {
 	BaseURL     string
 	BearerToken string
 	Client      *http.Client
+	// SnapshotMaxTotalBytes optionally overrides the hard aggregate byte
+	// bound of a dataset_snapshot materialization (tests; zero keeps the
+	// production default).
+	SnapshotMaxTotalBytes int64
 }
 
 func (r DatasetServiceRowReader) ReadDatasetRows(ctx context.Context, req DatasetRowsRequest) (DatasetRowsResult, error) {
+	if req.Snapshot != nil {
+		// Pinned reads take the rows:scan route with the caller's bearer
+		// only — the service token fallback below deliberately does NOT
+		// apply to snapshot reads.
+		return r.readDatasetSnapshotRows(ctx, req)
+	}
 	base := strings.TrimRight(strings.TrimSpace(r.BaseURL), "/")
 	if base == "" {
 		return DatasetRowsResult{}, fmt.Errorf("dataset_input_source_not_configured: set DATASET_SERVICE_URL to read dataset_input nodes")
@@ -204,37 +220,68 @@ type datasetInputReference struct {
 	Path       string
 	Branch     string
 	Version    string
+	Snapshot   *datasetInputSnapshot
 }
 
 // datasetInputReferenceFrom extracts the dataset reference for an
 // input-shaped node: config.dataset_rid, then config.dataset_id, then the
 // first of config.input_dataset_ids, then the node-level input_dataset_ids
 // metadata the executor attaches for persisted pipelines.
-func datasetInputReferenceFrom(node executor.NodeContext, cfg tableRuntimeConfig) (datasetInputReference, bool) {
+//
+// When the node declares a dataset_snapshot, the reference resolution must
+// be UNAMBIGUOUS: EVERY non-empty candidate across the config and the
+// node metadata (dataset_rid, dataset_id, all input_dataset_ids entries)
+// must agree after canonicalisation, a present dataset_branch must equal
+// the snapshot branch, and the snapshot itself must be complete and
+// well-formed. Anything else is an error — a pinned read never falls back
+// to a guessed dataset or to the branch's latest state.
+func datasetInputReferenceFrom(node executor.NodeContext, cfg tableRuntimeConfig) (datasetInputReference, bool, error) {
+	snapshot, err := parseDatasetInputSnapshot(cfg.DatasetSnapshot)
+	if err != nil {
+		return datasetInputReference{}, false, err
+	}
 	ref := datasetInputReference{
-		Path:    strings.TrimSpace(cfg.DatasetPath),
-		Branch:  strings.TrimSpace(cfg.DatasetBranch),
-		Version: strings.TrimSpace(cfg.DatasetVersion),
+		Path:     strings.TrimSpace(cfg.DatasetPath),
+		Branch:   strings.TrimSpace(cfg.DatasetBranch),
+		Version:  strings.TrimSpace(cfg.DatasetVersion),
+		Snapshot: snapshot,
 	}
-	if rid := strings.TrimSpace(cfg.DatasetRID); rid != "" {
-		ref.DatasetRID = rid
-		return ref, true
+	if snapshot != nil && ref.Branch != "" && ref.Branch != snapshot.Branch {
+		return datasetInputReference{}, false, fmt.Errorf("dataset_snapshot_conflict: node %q pins dataset_branch %q but dataset_snapshot.branch is %q", node.Node.ID, ref.Branch, snapshot.Branch)
 	}
-	if id := strings.TrimSpace(cfg.DatasetID); id != "" {
-		ref.DatasetRID = id
-		return ref, true
-	}
-	for _, id := range cfg.InputDatasetIDs {
-		if trimmed := strings.TrimSpace(id); trimmed != "" {
-			ref.DatasetRID = trimmed
-			return ref, true
+	cfgCandidates := append([]string{strings.TrimSpace(cfg.DatasetRID), strings.TrimSpace(cfg.DatasetID)}, cfg.InputDatasetIDs...)
+	metaCandidates := metadataStringSlice(node.Node.Metadata, "input_dataset_ids")
+	present := make([]string, 0, len(cfgCandidates)+len(metaCandidates))
+	for _, candidate := range append(cfgCandidates, metaCandidates...) {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			present = append(present, trimmed)
 		}
 	}
-	for _, id := range metadataStringSlice(node.Node.Metadata, "input_dataset_ids") {
-		if trimmed := strings.TrimSpace(id); trimmed != "" {
-			ref.DatasetRID = trimmed
-			return ref, true
+	if len(present) == 0 {
+		if snapshot != nil {
+			return datasetInputReference{}, false, fmt.Errorf("dataset_snapshot_invalid: node %q declares dataset_snapshot without any dataset reference (dataset_rid/dataset_id/input_dataset_ids)", node.Node.ID)
+		}
+		return datasetInputReference{}, false, nil
+	}
+	// Unpinned nodes keep the historical first-non-empty precedence.
+	ref.DatasetRID = present[0]
+	if snapshot != nil {
+		// Pinned nodes validate the FULL candidate set: any disagreement
+		// is an ambiguous binding the pin must not silently resolve.
+		canonical := ""
+		for _, candidate := range present {
+			id, err := canonicalDatasetRIDForComparison(candidate)
+			if err != nil {
+				return datasetInputReference{}, false, err
+			}
+			if canonical == "" {
+				canonical = id
+				continue
+			}
+			if canonical != id {
+				return datasetInputReference{}, false, fmt.Errorf("dataset_snapshot_ambiguous_reference: node %q carries conflicting dataset references %q and %q; a pinned read requires an unambiguous dataset", node.Node.ID, canonical, id)
+			}
 		}
 	}
-	return datasetInputReference{}, false
+	return ref, true, nil
 }

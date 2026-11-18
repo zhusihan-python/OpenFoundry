@@ -45,11 +45,16 @@ type tableRuntimeConfig struct {
 		SourceColumn string `json:"source_column"`
 		TargetColumn string `json:"target_column"`
 	} `json:"column_mappings,omitempty"`
-	DatasetID           string                    `json:"dataset_id,omitempty"`
-	DatasetRID          string                    `json:"dataset_rid,omitempty"`
-	DatasetPath         string                    `json:"dataset_path,omitempty"`
-	DatasetBranch       string                    `json:"dataset_branch,omitempty"`
-	DatasetVersion      string                    `json:"dataset_version,omitempty"`
+	DatasetID      string `json:"dataset_id,omitempty"`
+	DatasetRID     string `json:"dataset_rid,omitempty"`
+	DatasetPath    string `json:"dataset_path,omitempty"`
+	DatasetBranch  string `json:"dataset_branch,omitempty"`
+	DatasetVersion string `json:"dataset_version,omitempty"`
+	// DatasetSnapshot is the raw WP3.4 pin object: when present the node
+	// reads an explicit {branch, version, transaction_id} snapshot instead
+	// of the branch's current files. Raw on purpose — parse errors must
+	// surface as dataset_snapshot_invalid, not a generic config parse.
+	DatasetSnapshot     json.RawMessage           `json:"dataset_snapshot,omitempty"`
 	InputDatasetIDs     []string                  `json:"input_dataset_ids,omitempty"`
 	SQL                 string                    `json:"sql,omitempty"`
 	SampleSize          int                       `json:"sample_size,omitempty"`
@@ -219,6 +224,17 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 	}
 
 	kind := normaliseTableTransform(transformType)
+	// A declared dataset_snapshot must actually reach the pinned read:
+	// transforms that never read a dataset (or literal inline rows) would
+	// silently shadow the pin — reject instead of running something else.
+	if len(cfg.DatasetSnapshot) > 0 {
+		if kind != "input" && (kind != "passthrough" || len(node.Node.DependsOn) != 0) {
+			return executor.NodeResult{}, fmt.Errorf("dataset_snapshot_shadowed: node %q has transform %q, which never reads a dataset; dataset_snapshot is only valid on dataset_input nodes", node.Node.ID, transformType)
+		}
+		if cfg.inlineRows() != nil {
+			return executor.NodeResult{}, fmt.Errorf("dataset_snapshot_shadowed: node %q declares both inline rows and dataset_snapshot; a pinned read must not be shadowed by literal rows", node.Node.ID)
+		}
+	}
 	var rows []pipelineexpression.Row
 	var datasetMeta map[string]any
 	switch kind {
@@ -296,17 +312,26 @@ func parseTableRuntimeConfig(payload json.RawMessage) (tableRuntimeConfig, error
 	if err := json.Unmarshal(payload, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse lightweight table config: %w", err)
 	}
-	if !cfg.empty() {
-		return cfg, nil
-	}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &envelope); err != nil {
 		return cfg, nil
 	}
-	if nested := envelope["config"]; len(nested) > 0 {
-		return parseTableRuntimeConfig(nested)
+	nested := envelope["config"]
+	if len(nested) == 0 {
+		return cfg, nil
 	}
-	return cfg, nil
+	outerConfig := !cfg.empty()
+	outerDataset := cfg.DatasetRID != "" || cfg.DatasetID != "" || cfg.DatasetPath != "" ||
+		cfg.DatasetBranch != "" || cfg.DatasetVersion != "" || len(cfg.InputDatasetIDs) > 0
+	// Keep the legacy precedence for unpinned configs. With a pin, do not
+	// discard a dataset reference or legacy version at either level.
+	if (outerConfig || outerDataset) && PayloadDeclaresDatasetSnapshot(payload) {
+		return cfg, errors.New("dataset_snapshot_shadowed: payload mixes top-level config fields with a nested config object while declaring dataset_snapshot; declare the pin in exactly one config object")
+	}
+	if outerConfig {
+		return cfg, nil
+	}
+	return parseTableRuntimeConfig(nested)
 }
 
 func (cfg tableRuntimeConfig) empty() bool {
@@ -321,6 +346,7 @@ func (cfg tableRuntimeConfig) empty() bool {
 		len(cfg.DropColumns) == 0 &&
 		len(cfg.Renames) == 0 &&
 		len(cfg.ColumnMappings) == 0 &&
+		len(cfg.DatasetSnapshot) == 0 &&
 		cfg.SQL == "" &&
 		cfg.FunctionID == "" &&
 		cfg.FunctionName == "" &&
@@ -369,7 +395,10 @@ func (cfg tableRuntimeConfig) inlineRows() []pipelineexpression.Row {
 // (no truncation, no implicit file choice); preview runs
 // (datasetRowsPreview) may truncate.
 func (rt *lightweightTableRuntime) datasetInputRows(ctx context.Context, node executor.NodeContext, cfg tableRuntimeConfig) ([]pipelineexpression.Row, map[string]any, error) {
-	ref, ok := datasetInputReferenceFrom(node, cfg)
+	ref, ok, err := datasetInputReferenceFrom(node, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
 	if !ok {
 		return syntheticRows(node.Node.ID, cfg.SampleSize), nil, nil
 	}
@@ -385,6 +414,7 @@ func (rt *lightweightTableRuntime) datasetInputRows(ctx context.Context, node ex
 		Branch:          ref.Branch,
 		Limit:           clampDatasetInputRows(cfg.SampleSize),
 		AllowTruncation: rt.datasetRowsPreview,
+		Snapshot:        ref.Snapshot,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("dataset_input_load_failed: node %q failed to load dataset %s: %w", node.Node.ID, ref.DatasetRID, err)
@@ -399,7 +429,13 @@ func (rt *lightweightTableRuntime) datasetInputRows(ctx context.Context, node ex
 		"dataset_file_format":    result.Format,
 		"dataset_rows_truncated": result.Truncated,
 	}
-	if ref.Branch != "" {
+	if ref.Snapshot != nil {
+		// The pin is echoed from the request side: ScanStream proved the
+		// served pages bind to exactly this transaction/branch/version.
+		meta["dataset_branch"] = ref.Snapshot.Branch
+		meta["dataset_version"] = ref.Snapshot.Version
+		meta["dataset_transaction_id"] = "ri.foundry.main.transaction." + ref.Snapshot.TransactionID.String()
+	} else if ref.Branch != "" {
 		meta["dataset_branch"] = ref.Branch
 	}
 	return rows, meta, nil

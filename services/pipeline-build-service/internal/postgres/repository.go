@@ -2,6 +2,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1394,7 +1395,8 @@ func (r *Repository) PublishJobSpec(ctx context.Context, kind string, req handle
 	jobSpecJSON, _ := json.Marshal(map[string]any{"logic_kind": kind, "logic_payload": json.RawMessage(payload), "output_dataset_rids": outputs})
 	publisher, _ := uuid.Parse(createdBy)
 	var existing handler.PublishedJobSpec
-	dedupErr := r.db.QueryRow(ctx, `SELECT rid, logic_kind, content_hash FROM job_specs WHERE `+dedupWhere+` ORDER BY created_at DESC LIMIT 1`, dedupArgs...).Scan(&existing.RID, &existing.LogicKind, &existing.ContentHash)
+	var storedPayload, storedInputs []byte
+	dedupErr := r.db.QueryRow(ctx, `SELECT rid, logic_kind, content_hash, logic_payload, inputs FROM job_specs WHERE `+dedupWhere+` ORDER BY created_at DESC LIMIT 1`, dedupArgs...).Scan(&existing.RID, &existing.LogicKind, &existing.ContentHash, &storedPayload, &storedInputs)
 	if dedupErr != nil && !errors.Is(dedupErr, pgx.ErrNoRows) {
 		return handler.PublishedJobSpec{}, dedupErr
 	}
@@ -1403,6 +1405,17 @@ func (r *Repository) PublishJobSpec(ctx context.Context, kind string, req handle
 		// historical job_specs row BUT rebind the branch mapping to it —
 		// returning early would leave pipeline_job_specs bound to the
 		// intervening definition while the API answered with this rid.
+		//
+		// WP3.4 pinned specs are the exception: build planning reads the
+		// branch mapping (inputs + job_spec_json) while execute-time
+		// LoadPlan restores the canonical job_specs.logic_payload by rid,
+		// so a hash collision that reuses an OLD rid for a NEW pin would
+		// make the two sides see different bindings. When either side
+		// declares a dataset_snapshot, reuse demands STRICT equality of
+		// logic_payload and inputs; a conflict is rejected, not re-bound.
+		if jobSpecPinnedReuseConflict(storedPayload, storedInputs, payload, inputsRaw) {
+			return handler.PublishedJobSpec{}, fmt.Errorf("job_spec_content_conflict: an existing spec with content hash %s (rid %s) carries a different dataset_snapshot definition (logic_payload or inputs differ); publish the new definition with its own content hash instead of reusing this one", contentHash, existing.RID)
+		}
 		if keyOutput == "" {
 			return existing, nil
 		}
@@ -1569,6 +1582,52 @@ func deriveJobSpecHash(kind string, req handler.CreateJobSpecRequest) string {
 		h.Write([]byte(output))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// jobSpecPinnedReuseConflict reports whether reusing an existing canonical
+// job_specs row for this publish would change a dataset_snapshot pin.
+// Unpinned publishes keep the historical hash-dedup behavior untouched;
+// when EITHER side declares a pin (detected along the config chain with
+// the runtime's exact key semantics via the shared handler probe), reuse
+// requires the logic_payload AND the declared inputs to be equal —
+// anything else would bind build planning (branch mapping) and LoadPlan
+// (canonical row) to different pinned definitions under one rid.
+func jobSpecPinnedReuseConflict(storedPayload, storedInputs, newPayload, newInputs []byte) bool {
+	if !handler.PayloadDeclaresDatasetSnapshot(storedPayload) && !handler.PayloadDeclaresDatasetSnapshot(newPayload) {
+		return false
+	}
+	return !jsonEqualBytes(storedPayload, newPayload) || !jsonEqualBytes(storedInputs, newInputs)
+}
+
+// jsonEqualBytes compares two JSON documents by canonical re-encoding, so
+// semantically identical payloads with different key order or whitespace
+// still dedupe while any value difference (a pin change) does not.
+// UseNumber keeps numeric literals as text — a float64 round-trip would
+// erase exactly the big-integer differences a pin must catch.
+func jsonEqualBytes(a, b []byte) bool {
+	if string(a) == string(b) {
+		return true
+	}
+	decode := func(p []byte) (any, bool) {
+		dec := json.NewDecoder(bytes.NewReader(p))
+		dec.UseNumber()
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			return nil, false
+		}
+		if dec.More() {
+			return nil, false // trailing content: not one document
+		}
+		return v, true
+	}
+	va, okA := decode(a)
+	vb, okB := decode(b)
+	if !okA || !okB {
+		return false
+	}
+	na, _ := json.Marshal(va)
+	nb, _ := json.Marshal(vb)
+	return string(na) == string(nb)
 }
 
 // SaveSparkSubmission upserts the Rust-compatible SparkApplication submission row.

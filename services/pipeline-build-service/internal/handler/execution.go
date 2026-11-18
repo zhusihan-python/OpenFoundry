@@ -827,6 +827,19 @@ func (r runtimeNodeRunner) Run(ctx context.Context, node executor.NodeContext) (
 	}
 	transformType := metadataString(node.Node.Metadata, "transform_type")
 	payload := metadataRaw(node.Node.Metadata, "logic_payload")
+	// WP3.4 pin contract, enforced at the dispatch entry: a dataset_snapshot
+	// is only honored on input-shaped nodes through the lightweight table
+	// runtime (dataset_input, or a dependency-free passthrough). Every
+	// earlier dispatch arm — python sidecar, LLM, distributed Spark/Flink,
+	// or the JobRunner fallback — would bypass the pinned dataset read and
+	// silently ignore the pin, so they are rejected here, not shadowed.
+	if PayloadDeclaresDatasetSnapshot(payload) {
+		distributedEngine := distributedEngineForNode(transformType, payload, node.Node.Metadata)
+		distributed := shouldUseDistributedRuntime(transformType, metadataString(node.Node.Metadata, "pipeline_type"), distributedEngine, payload, node.Node.Metadata)
+		if transformType == "python" || isLLMTransform(transformType) || distributed || r.Table == nil || !r.Table.Supports(transformType) {
+			return executor.NodeResult{}, fmt.Errorf("dataset_snapshot_shadowed: node %q declares dataset_snapshot but dispatches to %s, which bypasses the lightweight table runtime; dataset_snapshot is only valid on dataset_input nodes", node.Node.ID, dispatchArmName(transformType, distributed))
+		}
+	}
 	if transformType == "python" {
 		if r.Python == nil {
 			return executor.NodeResult{}, errors.New("python_sidecar_not_configured: set PYTHON_SIDECAR_BINARY to execute Python transforms")
@@ -862,6 +875,20 @@ func (r runtimeNodeRunner) Run(ctx context.Context, node executor.NodeContext) (
 		return executor.NodeResult{}, errors.New(outcome.Reason)
 	}
 	return executor.NodeResult{OutputContentHash: outcome.OutputContentHash}, nil
+}
+
+// dispatchArmName names the dispatch destination for the pin-guard error.
+func dispatchArmName(transformType string, distributed bool) string {
+	switch {
+	case strings.ToLower(strings.TrimSpace(transformType)) == "python":
+		return "the python sidecar"
+	case isLLMTransform(transformType):
+		return "the LLM runtime"
+	case distributed:
+		return "the distributed Spark/Flink runtime"
+	default:
+		return "a non-lightweight job runner (" + strings.ToLower(transformType) + ")"
+	}
 }
 
 func (r runtimeNodeRunner) runPython(ctx context.Context, node executor.NodeContext, payload json.RawMessage) (executor.NodeResult, error) {

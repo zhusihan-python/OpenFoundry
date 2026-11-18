@@ -1,0 +1,89 @@
+# Rendered by tools/smoke/data-integration-wp3-4/run34.sh setup into
+# <envdir>/compose.yaml. Placeholders: __OF_ROOT__ (repo root),
+# __RUN_BIN__ (built linux binaries dir), __OF34_PROJECT__ (unique compose
+# project name). Secrets come from the generated .env next to this file
+# (umask 077, never committed, never printed).
+#
+# WP3.4 pinned-input acceptance stack — same topology as the WP3.3 3C
+# suite (direct PBS→DVS, one PG16, two databases) on its OWN ports:
+# host 127.0.0.1 dvs 17278, pbs 17281. Postgres is not published.
+name: __OF34_PROJECT__
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: __OF34_PROJECT__-postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: openfoundry
+      POSTGRES_PASSWORD: ${OF34_PG_PASSWORD:?}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - __OF_ROOT__/tools/smoke/data-integration-wp3-4/init-wp34.sql:/docker-entrypoint-initdb.d/01-init-wp34.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "openfoundry", "-d", "postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 35
+
+  dvs:
+    image: alpine:3.22
+    container_name: __OF34_PROJECT__-dvs
+    entrypoint: ["/service"]
+    volumes:
+      - __RUN_BIN__/dataset-versioning-service:/service:ro
+      - dvs-data:/var/of
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50078
+      DATABASE_URL: postgres://openfoundry:${OF34_PG_PASSWORD:?}@postgres:5432/wp34_dvs
+      JWT_SECRET: ${OF34_JWT_SECRET:?}
+      DATASET_FILES_BASE_URL: http://127.0.0.1:17278
+      DATASET_FILES_ROOT_DIR: /var/of/backing
+      DATASET_STAGED_OUTPUTS_DIR: /var/of/staging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:50078/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    ports:
+      - "127.0.0.1:17278:50078"
+
+  pbs:
+    image: alpine:3.22
+    container_name: __OF34_PROJECT__-pbs
+    entrypoint: ["/service"]
+    volumes:
+      - __RUN_BIN__/pipeline-build-service:/service:ro
+      - __OF_ROOT__/services/pipeline-build-service/config.yaml:/etc/openfoundry/config.yaml:ro
+      - pbs-data:/var/lib/openfoundry/pipeline-build
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50081
+      DATABASE_URL: postgres://openfoundry:${OF34_PG_PASSWORD:?}@postgres:5432/wp34_pbs
+      JWT_SECRET: ${OF34_JWT_SECRET:?}
+      # Direct DVS; DATASET_SERVICE_BEARER deliberately NOT set: pinned
+      # snapshot reads forward the caller JWT only.
+      DATASET_SERVICE_URL: http://dvs:50078
+      STORAGE_BACKEND: local
+      DATA_DIR: /var/lib/openfoundry/pipeline-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dvs:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:50081/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    ports:
+      - "127.0.0.1:17281:50081"
+
+volumes:
+  postgres-data:
+  dvs-data:
+  pbs-data:

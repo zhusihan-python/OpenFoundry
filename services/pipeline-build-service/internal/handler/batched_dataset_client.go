@@ -192,6 +192,11 @@ type batchedScanInput struct {
 	Version    int32
 	Path       string // "" = all_files
 	Predicate  string // "" = none
+	// ExpectedTransactionID, when set, pins the scan BEFORE the first
+	// page: page one must report exactly this transaction (as must every
+	// later page). WP3.4 snapshot reads use it so the served version can
+	// never be cut by a different transaction than the pinned one.
+	ExpectedTransactionID *uuid.UUID
 }
 
 // batchedScanStats reports what a completed scan consumed.
@@ -244,6 +249,13 @@ func (c batchedDatasetClient) ScanStream(ctx context.Context, in batchedScanInpu
 		return stats, fmt.Errorf("batched_scan_input_invalid: %w", err)
 	}
 	var pinnedTxn uuid.UUID
+	if in.ExpectedTransactionID != nil {
+		// An explicitly expected transaction pins the scan from page one:
+		// validateScanBinding then compares EVERY page (the first
+		// included) against it instead of adopting whatever the service
+		// reports first.
+		pinnedTxn = *in.ExpectedTransactionID
+	}
 	cursor := ""
 	for page := 0; ; page++ {
 		if page >= c.cfg.ScanMaxPages {

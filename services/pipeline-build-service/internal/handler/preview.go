@@ -155,6 +155,24 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 		if !runtime.Supports(transform) && !isLLMTransform(transform) {
 			return pipelineNodePreviewResponse{}, previewExecutionError{status: http.StatusBadRequest, err: pipelineNodePreviewError{Kind: "unsupported_transform", NodeID: node.ID, Transform: transform, Message: fmt.Sprintf("local preview does not support transform %q", transform)}}
 		}
+		// Persisted input nodes carry their dataset binding as node-level
+		// InputDatasetIDs (the same metadata the executor attaches for
+		// builds). Mirror it ONLY when the node pins a dataset snapshot:
+		// the pin's resolution relies on the metadata candidate, while
+		// unpinned previews must keep their exact legacy behavior
+		// (synthetic rows for reference-less nodes included).
+		metadata := map[string]any{
+			"logic_kind":     "transform",
+			"transform_type": transform,
+			"logic_payload":  previewConfigWithSampleSize(node.Config, sampleSize),
+			"label":          node.Label,
+			"sample_size":    sampleSize,
+		}
+		if PayloadDeclaresDatasetSnapshot(node.Config) {
+			if ids := uuidStrings(node.InputDatasetIDs); len(ids) > 0 {
+				metadata["input_dataset_ids"] = ids
+			}
+		}
 		_, err := runner.Run(ctx, executor.NodeContext{
 			BuildID:     pipelineID,
 			BuildBranch: "preview",
@@ -163,13 +181,7 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 				ID:        node.ID,
 				JobID:     uuid.NewSHA1(uuid.NameSpaceOID, []byte(pipelineID.String()+":preview:"+node.ID)),
 				DependsOn: node.DependsOn,
-				Metadata: map[string]any{
-					"logic_kind":     "transform",
-					"transform_type": transform,
-					"logic_payload":  previewConfigWithSampleSize(node.Config, sampleSize),
-					"label":          node.Label,
-					"sample_size":    sampleSize,
-				},
+				Metadata:  metadata,
 			},
 		})
 		if err != nil {
