@@ -214,6 +214,7 @@ type datasetScanAllFilesResponse struct {
 	Format        string                `json:"format"`
 	SchemaVersion string                `json:"schema_version,omitempty"`
 	Schema        *models.DatasetSchema `json:"schema,omitempty"`
+	Columns       []pinnedPreviewColumn `json:"columns,omitempty"`
 	Mode          string                `json:"mode"`
 	Rows          []json.RawMessage     `json:"rows"`
 	NextCursor    *string               `json:"next_cursor"`
@@ -323,10 +324,16 @@ func (h *Handlers) scanAllFiles(w http.ResponseWriter, r *http.Request, datasetI
 // scanAllFilesPage reads an already resolved, authorized SNAPSHOT. It writes
 // only errors so versioned preview can reuse the exact same read boundaries.
 func (h *Handlers) scanAllFilesPage(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, branchName string, branchRow *models.RuntimeBranch, txn *models.RuntimeTransaction, version int32, limit int, pred *scanPredicate, rawCursor string) (datasetScanAllFilesResponse, bool) {
-	parquet, other, _, err := h.Repo.TransactionStagedFileFormats(r.Context(), txn.ID)
+	parquet, other, allDelimited, err := h.Repo.TransactionStagedFileFormats(r.Context(), txn.ID)
 	if err != nil {
 		writeDatasetRowsError(w, datasetRowsErr(http.StatusInternalServerError, "failed to load staged file formats"))
 		return datasetScanAllFilesResponse{}, false
+	}
+	if allDelimited {
+		return h.scanCSVPage(w, r, csvScanRequest{
+			datasetID: datasetID, branch: branchName, target: scanTarget{branch: branchRow, txn: txn},
+			version: version, limit: limit, pred: pred, rawCursor: rawCursor,
+		})
 	}
 	if parquet && other {
 		writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_scan_mixed_formats: rows:scan all_files requires one file format"))
@@ -497,6 +504,10 @@ func (h *Handlers) validateScanStagedObject(w http.ResponseWriter, ctx context.C
 // format, operation and server-owned object key. Any unsupported file fails
 // the whole scan — nothing is skipped.
 func (h *Handlers) validateScanStagedFileAll(w http.ResponseWriter, ctx context.Context, datasetID uuid.UUID, txn *models.RuntimeTransaction, logical string, staged *models.StageTransactionFile) bool {
+	if isDelimitedFile(logical) {
+		writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_scan_mixed_formats: CSV scan requires a CSV or TSV snapshot"))
+		return false
+	}
 	if datasetRowsFormat(logical) != "ndjson" {
 		writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_file_format_unsupported: rows:scan supports ndjson/jsonl files, got %s", logical))
 		return false

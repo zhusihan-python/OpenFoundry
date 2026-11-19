@@ -2,7 +2,9 @@ package handler
 
 import (
 	"fmt"
+	"path"
 	"slices"
+	"strings"
 )
 
 type datasetRowsSchema struct {
@@ -37,7 +39,7 @@ type batchedScanMetadata struct {
 
 // bindScanMetadata uses the first successful page to bind the format and
 // typed schema. Later pages must match, including empty continuation pages.
-func bindScanMetadata(path string, pinned *batchedScanMetadata, page batchedScanMetadata) error {
+func bindScanMetadata(requestedPath string, pinned *batchedScanMetadata, page batchedScanMetadata) error {
 	if page.Format == "" {
 		// A legacy scan response may omit the NDJSON format field.
 		page.Format = "ndjson"
@@ -46,13 +48,19 @@ func bindScanMetadata(path string, pinned *batchedScanMetadata, page batchedScan
 		return fmt.Errorf("batched_scan_schema_mismatch: page format/schema (%q/%q) != pinned format/schema (%q/%q)",
 			page.Format, page.SchemaVersion, pinned.Format, pinned.SchemaVersion)
 	}
-	if path != "" && (page.Format == batchedParquetFormat) != batchedParquetPath(path) {
-		return fmt.Errorf("batched_scan_format_invalid: page format %q does not match requested path %q", page.Format, path)
+	if requestedPath != "" && (page.Format == batchedParquetFormat) != batchedParquetPath(requestedPath) {
+		return fmt.Errorf("batched_scan_format_invalid: page format %q does not match requested path %q", page.Format, requestedPath)
 	}
 	switch page.Format {
-	case "ndjson":
+	case "ndjson", "csv":
+		if page.Format == "csv" && requestedPath != "" {
+			ext := strings.ToLower(path.Ext(requestedPath))
+			if ext != ".csv" && ext != ".tsv" {
+				return fmt.Errorf("batched_scan_format_invalid: CSV page does not match requested path %q", requestedPath)
+			}
+		}
 		if page.SchemaVersion != "" || page.Schema != nil {
-			return fmt.Errorf("batched_scan_schema_invalid: unexpected typed schema for NDJSON")
+			return fmt.Errorf("batched_scan_schema_invalid: unexpected typed schema for %s", page.Format)
 		}
 	case batchedParquetFormat:
 		if page.SchemaVersion != ordersSchemaVersion || !validOrdersScanSchema(page.Schema) {

@@ -68,9 +68,6 @@ func (h *Handlers) previewPinnedDataset(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	if h.previewPinnedCSV(w, r, datasetID, branch, target, int32(version), limit, query.Get("cursor")) {
-		return
-	}
 	page, ok := h.scanAllFilesPage(w, r, datasetID, branch, target.branch, target.txn, int32(version), limit, nil, query.Get("cursor"))
 	if !ok {
 		return
@@ -89,6 +86,9 @@ func (h *Handlers) previewPinnedDataset(w http.ResponseWriter, r *http.Request, 
 }
 
 func pinnedPreviewRows(page datasetScanAllFilesResponse) ([]pinnedPreviewColumn, []json.RawMessage, error) {
+	if page.Format == "csv" {
+		return page.Columns, page.Rows, nil
+	}
 	if page.Format == "parquet" {
 		if page.Schema == nil || page.SchemaVersion != stagedParquetSchemaVersion {
 			return nil, nil, errors.New("unsupported Parquet preview schema")

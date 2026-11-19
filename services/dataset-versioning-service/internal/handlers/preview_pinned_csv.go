@@ -20,34 +20,15 @@ import (
 
 const csvPreviewCursorMagic = "c1"
 
-// previewPinnedCSV handles delimited snapshots. Each page opens one
-// committed file and replays at most that bounded file to a logical
-// record index. The index has the same meaning before and after decoding.
-func (h *Handlers) previewPinnedCSV(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, branch string, target *scanTarget, version int32, limit int, rawCursor string) bool {
-	files, err := h.Repo.ListTransactionStagedFilesFrom(r.Context(), target.txn.ID, "", 2)
-	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "failed to load staged files")
-		return true
-	}
-	if len(files) == 0 || !isDelimitedFile(files[0].LogicalPath) {
-		return false
-	}
-	_, _, allDelimited, err := h.Repo.TransactionStagedFileFormats(r.Context(), target.txn.ID)
-	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "failed to load staged file formats")
-		return true
-	}
-	if !allDelimited {
-		writeJSONErr(w, http.StatusUnprocessableEntity, "dataset_scan_mixed_formats: CSV preview requires a CSV or TSV snapshot")
-		return true
-	}
-	page, err := h.readCSVPreviewPage(w, r, datasetID, branch, target, version, limit, rawCursor, files)
-	if err != nil {
-		writeDatasetRowsError(w, err)
-	} else if page != nil {
-		writeJSON(w, http.StatusOK, page)
-	}
-	return true
+type csvScanRequest struct {
+	datasetID uuid.UUID
+	branch    string
+	target    scanTarget
+	version   int32
+	limit     int
+	path      string
+	pred      *scanPredicate
+	rawCursor string
 }
 
 func isDelimitedFile(path string) bool {
@@ -55,40 +36,68 @@ func isDelimitedFile(path string) bool {
 	return format == "csv" || format == "tsv"
 }
 
-func (h *Handlers) readCSVPreviewPage(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, branch string, target *scanTarget, version int32, limit int, rawCursor string, files []models.StageTransactionFile) (*pinnedPreviewResponse, error) {
-	cursor := scanCursorV2{datasetID: datasetID, branchID: target.branch.ID, txnID: target.txn.ID, version: uint32(version), mode: scanCursorV2ModeAllFiles}
-	if rawCursor != "" {
-		next, err := decodeScanCursorToken(rawCursor, csvPreviewCursorMagic)
+func (h *Handlers) scanCSVPage(w http.ResponseWriter, r *http.Request, req csvScanRequest) (datasetScanAllFilesResponse, bool) {
+	page, err := h.readCSVSnapshotPage(w, r, req)
+	if err != nil {
+		writeDatasetRowsError(w, err)
+	}
+	if page == nil {
+		return datasetScanAllFilesResponse{}, false
+	}
+	return *page, true
+}
+
+func (h *Handlers) readCSVSnapshotPage(w http.ResponseWriter, r *http.Request, req csvScanRequest) (*datasetScanAllFilesResponse, error) {
+	txn := req.target.txn
+	flag, digest := scanPredicateDigest(req.pred)
+	cursor := scanCursorV2{
+		datasetID: req.datasetID, branchID: req.target.branch.ID, txnID: txn.ID, version: uint32(req.version),
+		mode: scanCursorV2ModeAllFiles, predFlag: flag, predSum: digest,
+	}
+	mode := "all_files"
+	if req.path != "" {
+		cursor.mode, cursor.path, mode = scanCursorV2ModePath, req.path, "path"
+	}
+	if req.rawCursor != "" {
+		next, err := decodeScanCursorToken(req.rawCursor, csvPreviewCursorMagic)
 		if err != nil {
 			return nil, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_invalid: %v", err)
 		}
-		if mismatch := scanCursorBindingMismatch(next, datasetID, target.branch.ID, version, target.txn.ID, 0, [32]byte{}); mismatch != "" {
+		if mismatch := scanCursorBindingMismatch(next, req.datasetID, req.target.branch.ID, req.version, txn.ID, flag, digest); mismatch != "" {
 			return nil, datasetRowsErr(http.StatusBadRequest, "%s", mismatch)
 		}
-		if next.mode != cursor.mode || next.file == "" {
-			return nil, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_invalid: invalid CSV position")
+		if next.mode != cursor.mode || next.path != req.path || (next.mode == scanCursorV2ModeAllFiles && next.file == "") {
+			return nil, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_mismatch: cursor belongs to another CSV file or scan mode")
 		}
 		cursor = next
-		files, err = h.Repo.ListTransactionStagedFilesFrom(r.Context(), target.txn.ID, cursor.file, 2)
-		if err != nil {
-			return nil, datasetRowsErr(http.StatusInternalServerError, "failed to load staged files")
-		}
-		if len(files) == 0 || files[0].LogicalPath != cursor.file {
+	}
+
+	from, count := cursor.file, 2
+	if req.path != "" {
+		from, count = req.path, 1
+	}
+	files, err := h.Repo.ListTransactionStagedFilesFrom(r.Context(), txn.ID, from, count)
+	if err != nil {
+		return nil, datasetRowsErr(http.StatusInternalServerError, "failed to load staged files")
+	}
+	if len(files) == 0 || (from != "" && files[0].LogicalPath != from) {
+		if req.rawCursor != "" {
 			return nil, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_invalid: CSV file is not registered in this version")
 		}
+		return nil, datasetRowsErr(http.StatusNotFound, "dataset_file_not_found: CSV file is not registered in this version")
 	}
 	file := files[0]
 	if !validScanStagedPath(file.LogicalPath) || !isDelimitedFile(file.LogicalPath) || file.Operation != models.FileOperationAdd {
-		return nil, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_file_unsupported: preview requires registered CSV or TSV ADD files")
+		return nil, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_file_unsupported: scan requires registered CSV or TSV ADD files")
 	}
 	opener, ok := h.scanBackingOpener()
 	if !ok {
-		return nil, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_rows_backing_driver_unsupported: CSV preview requires local backing")
+		return nil, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_rows_backing_driver_unsupported: CSV scan requires local backing")
 	}
-	if !h.validateScanStagedObject(w, r.Context(), datasetID, target.txn, file.LogicalPath, &file) {
+	if !h.validateScanStagedObject(w, r.Context(), req.datasetID, txn, file.LogicalPath, &file) {
 		return nil, nil // the shared validator wrote the HTTP error
 	}
-	options, err := csvPreviewOptions(target.txn.Metadata)
+	options, err := csvPreviewOptions(txn.Metadata)
 	if err != nil {
 		return nil, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_options_invalid: %v", err)
 	}
@@ -96,18 +105,19 @@ func (h *Handlers) readCSVPreviewPage(w http.ResponseWriter, r *http.Request, da
 	if err != nil {
 		return nil, err
 	}
-	columns, rows, more, err := parseCSVPreviewPage(data, datasetRowsFormat(file.LogicalPath), options, cursor.offset, limit)
+	decoded, err := parseCSVPage(data, datasetRowsFormat(file.LogicalPath), options, cursor.offset, req.limit, req.pred)
 	if err != nil {
 		return nil, err
 	}
-	page := &pinnedPreviewResponse{
-		DatasetID: datasetID.String(), Branch: branch, Version: version, TransactionID: target.txn.ID.String(),
-		Format: "csv", Columns: columns, Rows: rows, RowCount: len(rows), Limit: limit,
+	page := &datasetScanAllFilesResponse{
+		DatasetID: req.datasetID.String(), Branch: req.branch, Version: req.version, TransactionID: txn.ID.String(),
+		Format: "csv", Mode: mode, Columns: decoded.columns, Rows: decoded.rows, RowCount: len(decoded.rows),
+		PageBytes: int64(decoded.bytes), FilesAccessed: 1,
 	}
 	switch {
-	case more:
+	case decoded.next >= 0:
 		cursor.file = file.LogicalPath
-		cursor.offset += int64(len(rows))
+		cursor.offset = decoded.next
 	case len(files) == 2:
 		cursor.file = files[1].LogicalPath
 		cursor.offset = 0
@@ -215,10 +225,19 @@ func decodeCSVPreviewBytes(data []byte, options models.CsvOptions) ([]byte, erro
 	return []byte(decoded.String()), nil
 }
 
-func parseCSVPreviewPage(raw []byte, format string, options models.CsvOptions, offset int64, limit int) ([]pinnedPreviewColumn, []json.RawMessage, bool, error) {
+type csvDecodedPage struct {
+	columns []pinnedPreviewColumn
+	rows    []json.RawMessage
+	bytes   int
+	next    int64 // -1 means the file was exhausted
+}
+
+// Each page opens one bounded file. The logical record index is stable
+// across UTF encodings, quoted newlines and optional predicates.
+func parseCSVPage(raw []byte, format string, options models.CsvOptions, offset int64, limit int, pred *scanPredicate) (csvDecodedPage, error) {
 	data, err := decodeCSVPreviewBytes(raw, options)
 	if err != nil {
-		return nil, nil, false, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_decode_failed: %v", err)
+		return csvDecodedPage{}, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_decode_failed: %v", err)
 	}
 	reader := csv.NewReader(bytes.NewReader(data))
 	reader.FieldsPerRecord = -1 // preamble records can have a different width
@@ -229,15 +248,14 @@ func parseCSVPreviewPage(raw []byte, format string, options models.CsvOptions, o
 	}
 	columns, first, err := csvPreviewHeader(reader, *options.HeaderRow)
 	if err != nil {
-		return nil, nil, false, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_parse_failed: %v", err)
+		return csvDecodedPage{}, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_parse_failed: %v", err)
 	}
 	reader.FieldsPerRecord = len(columns)
-	rows := make([]json.RawMessage, 0, limit)
 	headerBytes, err := json.Marshal(columns)
 	if err != nil || len(headerBytes) > datasetScanMaxPageBytes {
-		return nil, nil, false, datasetRowsErr(http.StatusRequestEntityTooLarge, "dataset_csv_header_too_large: columns exceed the preview page byte budget")
+		return csvDecodedPage{}, datasetRowsErr(http.StatusRequestEntityTooLarge, "dataset_csv_header_too_large: columns exceed the scan page byte budget")
 	}
-	pageBytes := len(headerBytes)
+	page := csvDecodedPage{columns: columns, rows: make([]json.RawMessage, 0, limit), bytes: len(headerBytes), next: -1}
 	for index := int64(0); ; index++ {
 		record := first
 		first = nil
@@ -245,19 +263,16 @@ func parseCSVPreviewPage(raw []byte, format string, options models.CsvOptions, o
 			record, err = reader.Read()
 			if errors.Is(err, io.EOF) {
 				if offset > 0 && index <= offset {
-					return nil, nil, false, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_invalid: CSV position is beyond its data records")
+					return csvDecodedPage{}, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_invalid: CSV position is beyond its data records")
 				}
-				return columns, rows, false, nil
+				return page, nil
 			}
 			if err != nil {
-				return nil, nil, false, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_parse_failed: %v", err)
+				return csvDecodedPage{}, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_parse_failed: %v", err)
 			}
 		}
 		if index < offset {
 			continue
-		}
-		if len(rows) == limit {
-			return columns, rows, true, nil
 		}
 		values := make(map[string]models.JSONValue, len(columns))
 		for i, cell := range record {
@@ -265,16 +280,20 @@ func parseCSVPreviewPage(raw []byte, format string, options models.CsvOptions, o
 		}
 		encoded, err := json.Marshal(values)
 		if err != nil {
-			return nil, nil, false, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_parse_failed: %v", err)
+			return csvDecodedPage{}, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_parse_failed: %v", err)
 		}
-		if pageBytes+len(encoded)+1 > datasetScanMaxPageBytes {
-			if len(rows) == 0 {
-				return nil, nil, false, datasetRowsErr(http.StatusRequestEntityTooLarge, "dataset_csv_row_too_large: columns and row exceed the preview page byte budget")
+		if pred != nil && !pred.matchesRecord(encoded) {
+			continue
+		}
+		if len(page.rows) == limit || page.bytes+len(encoded)+1 > datasetScanMaxPageBytes {
+			if len(page.rows) == 0 {
+				return csvDecodedPage{}, datasetRowsErr(http.StatusRequestEntityTooLarge, "dataset_csv_row_too_large: columns and row exceed the scan page byte budget")
 			}
-			return columns, rows, true, nil
+			page.next = index
+			return page, nil
 		}
-		pageBytes += len(encoded) + 1
-		rows = append(rows, encoded)
+		page.bytes += len(encoded) + 1
+		page.rows = append(page.rows, encoded)
 	}
 }
 

@@ -260,6 +260,17 @@ func (h *Handlers) ScanDatasetFileRows(w http.ResponseWriter, r *http.Request) {
 		h.scanAllFiles(w, r, datasetID, branch, target.branch, target.txn, version, limit, pred, rawCursor)
 		return
 	}
+	if isDelimitedFile(logical) {
+		page, ok := h.scanCSVPage(w, r, csvScanRequest{
+			datasetID: datasetID, branch: branch, target: *target, path: logical,
+			version: version, limit: limit, pred: pred, rawCursor: rawCursor,
+		})
+		if ok {
+			h.emitScanModeAudit(r, datasetID, branch, version, logical, page.Mode, limit, page.RowCount, page.NextCursor != nil)
+			writeScanJSON(w, http.StatusOK, page)
+		}
+		return
+	}
 	if strings.HasSuffix(logical, stagedParquetExtension) {
 		h.scanParquetPath(w, r, datasetID, branch, target.branch, target.txn, version, logical, limit, pred, rawCursor)
 		return

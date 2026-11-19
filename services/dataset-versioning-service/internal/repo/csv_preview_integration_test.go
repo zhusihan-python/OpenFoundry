@@ -105,6 +105,31 @@ func TestHistoricalCSVPreviewUsesPublishedOptions(t *testing.T) {
 	require.Equal(t, http.StatusOK, fromTime.Code, fromTime.Body.String())
 	require.JSONEq(t, rec.Body.String(), fromTime.Body.String())
 
+	scan := func(version string, options url.Values) *httptest.ResponseRecorder {
+		options.Set("branch", "main")
+		options.Set("version", version)
+		options.Set("limit", "1")
+		return s.do(t, http.MethodGet, dataset+"/files/rows:scan?"+options.Encode(), "", nil, s.tokenA)
+	}
+	scanned := read(scan(old, url.Values{"all_files": {"true"}}), oldTxn, names, `[{"name":"café\n🌱","quantity":3}]`)
+	require.Equal(t, first.NextCursor, scanned.NextCursor)
+	path := read(scan(old, url.Values{"path": {"part-a.csv"}}), oldTxn, names, `[{"name":"café\n🌱","quantity":3}]`)
+	require.NotNil(t, path.NextCursor)
+	pathTail := read(scan(old, url.Values{"path": {"part-a.csv"}, "cursor": {*path.NextCursor}}), oldTxn, names, `[{"name":"pear","quantity":4}]`)
+	require.Nil(t, pathTail.NextCursor)
+	require.Equal(t, http.StatusBadRequest, scan(old, url.Values{"path": {"part-b.csv"}, "cursor": {*path.NextCursor}}).Code)
+	require.Equal(t, http.StatusBadRequest, scan(old, url.Values{"all_files": {"true"}, "cursor": {*path.NextCursor}}).Code)
+	require.Equal(t, http.StatusBadRequest, scan(newer, url.Values{"all_files": {"true"}, "cursor": {*first.NextCursor}}).Code)
+
+	filtered, filteredTxn := publish(nil, file("filter.csv", []byte("name,quantity\nfig,2\npeach,3\npear,2\nplum,3\n")))
+	three := `{"column":"quantity","op":"eq","value":3}`
+	two := `{"column":"quantity","op":"eq","value":2}`
+	match := read(scan(filtered, url.Values{"path": {"filter.csv"}, "predicate": {three}}), filteredTxn, names, `[{"name":"peach","quantity":3}]`)
+	require.NotNil(t, match.NextCursor)
+	require.Equal(t, http.StatusBadRequest, scan(filtered, url.Values{"path": {"filter.csv"}, "predicate": {two}, "cursor": {*match.NextCursor}}).Code)
+	matchTail := read(scan(filtered, url.Values{"path": {"filter.csv"}, "predicate": {three}, "cursor": {*match.NextCursor}}), filteredTxn, names, `[{"name":"plum","quantity":3}]`)
+	require.Nil(t, matchTail.NextCursor)
+
 	legacy, legacyTxn := publish(nil, file("legacy.csv", []byte("\xef\xbb\xbfname,quantity\nfig,2\n")))
 	read(preview(legacy, ""), legacyTxn, names, `[{"name":"fig","quantity":2}]`)
 	empty, emptyTxn := publish(nil, file("empty.csv", nil))
