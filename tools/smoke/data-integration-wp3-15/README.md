@@ -18,3 +18,27 @@ DuckDB 1.4.4 checks all six values of each downloaded order, including amounts, 
 The runtime checks that valid credentials from a second organization can access their own dataset and are denied access to the tested published artifacts. The result describes this local workload and its configuration. Ordinary canonical manual publication follows the separate F15 review and real-backend acceptance.
 
 DuckDB reader options were checked on the pinned runtime and against the project documentation. [NDJSON reader](https://duckdb.org/docs/lts/data/json/loading_json) · [Parquet reader](https://duckdb.org/docs/lts/data/parquet/overview)
+
+## WP3.7 capacity baseline and repeat comparisons
+
+Keep the original evidence layout, including the three build evidence files
+one directory above `wp315/`. A completed run can be summarized or compared
+with a prior completed run using the same DuckDB Python. Run this from a
+checkout that has both source commits.
+
+```bash
+"$WP315_DUCKDB_PYTHON" -I tools/smoke/data-integration-wp3-15/compare.py \
+  /path/to/candidate/wp315 --baseline /path/to/baseline/wp315 > comparison.json
+```
+
+Omit `--baseline` to summarize one run. The report verifies the archived
+hashes and reruns the benchmark evidence checks, then recomputes the sample
+range and median from raw measurements. It reports write and query seconds,
+artifact bytes, and each service's peak RSS in KiB. Both summaries retain
+the source revision, binary hashes, input digests, and recorded environment.
+
+The report emits candidate median percentage changes when the workload files,
+input shards, measurement settings, and recorded runtime environment match.
+If those differ, it lists the differing profile fields alongside the two sets
+of measurements. The timing samples describe local observations with warm
+filesystem caches as described above. They do not set a regression threshold.
