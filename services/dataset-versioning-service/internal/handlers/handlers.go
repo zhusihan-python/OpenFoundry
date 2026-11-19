@@ -38,6 +38,7 @@ type Store interface {
 	DeleteDataset(ctx context.Context, id uuid.UUID) (bool, error)
 	ListVersions(ctx context.Context, datasetID uuid.UUID) ([]models.DatasetVersion, error)
 	GetVersion(ctx context.Context, datasetID uuid.UUID, version int32) (*models.DatasetVersion, error)
+	GetPublishedVersionAt(ctx context.Context, datasetID uuid.UUID, branch string, at time.Time) (int32, error)
 	CreateVersion(ctx context.Context, datasetID uuid.UUID, body *models.CreateDatasetVersionRequest) (*models.DatasetVersion, error)
 	EnsureDefaultBranch(ctx context.Context, dataset *models.Dataset) error
 	ListBranches(ctx context.Context, datasetID uuid.UUID) ([]models.DatasetBranch, error)

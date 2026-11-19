@@ -73,7 +73,7 @@ endpoint for the version.
 | `charset` | `UTF-8` (default), `UTF-16LE`, or `UTF-16BE`. |
 | `bom` | `strip` (default), `require`, or `forbid`. |
 
-Version-pinned preview reads the options from the selected
+Version- and timestamp-pinned preview read the options from the selected
 transaction. CSV and TSV snapshots without saved options use a first-record
 header, UTF-8 and optional matching BOM. A header record is counted by CSV
 records, including quoted multiline fields as one record. A headerless file
@@ -115,6 +115,27 @@ values and infer `ARRAY`. Empty objects keep their values and infer
 and schema budgets follow the rules above. Out-of-range numbers keep their
 JSON values and infer `STRING`. Expansion rejects empty or
 duplicate keys in expanded objects and limits object nesting to 32 levels.
+
+## Preview a snapshot at a timestamp
+
+Use the dataset preview API with a branch and an RFC 3339 timestamp.
+
+```http
+GET /v1/datasets/{rid}/preview?branch=main&ts=2026-11-19T08:20:00Z&limit=100
+```
+
+The service selects the latest committed dataset version on that active branch
+at or before the timestamp, then reads its pinned transaction. When commits
+share a timestamp, the higher version wins. The response includes the resolved
+`version` and `transaction_id`. Use the same timestamp or the returned version
+with `next_cursor` for the next page. The cursor remains bound to the resolved
+version and its transaction.
+
+The timestamp and `version` selectors are mutually exclusive. A timestamp
+before the first published version returns HTTP 404. Open and aborted
+transactions do not participate. An unreadable selected version returns an
+error from the pinned reader. Preview supports the same formats and limits
+as other version-pinned reads.
 
 ## Authorization
 

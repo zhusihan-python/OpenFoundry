@@ -8,8 +8,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/openfoundry/openfoundry-go/services/dataset-versioning-service/internal/models"
+	"github.com/openfoundry/openfoundry-go/services/dataset-versioning-service/internal/repo"
 )
 
 type pinnedPreviewColumn struct {
@@ -40,7 +44,7 @@ func (h *Handlers) previewPinnedDataset(w http.ResponseWriter, r *http.Request, 
 	}
 	for key, values := range query {
 		switch key {
-		case "branch", "version", "limit", "cursor":
+		case "branch", "version", "ts", "limit", "cursor":
 			if len(values) == 1 && strings.TrimSpace(values[0]) != "" {
 				continue
 			}
@@ -48,11 +52,6 @@ func (h *Handlers) previewPinnedDataset(w http.ResponseWriter, r *http.Request, 
 		default:
 			writeJSONErr(w, http.StatusBadRequest, "unsupported option for versioned preview: "+key)
 		}
-		return
-	}
-	version, err := strconv.ParseInt(strings.TrimSpace(query.Get("version")), 10, 32)
-	if err != nil || version < 1 {
-		writeJSONErr(w, http.StatusBadRequest, "version must be a positive integer for versioned preview")
 		return
 	}
 	branch := strings.TrimSpace(query.Get("branch"))
@@ -64,11 +63,15 @@ func (h *Handlers) previewPinnedDataset(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	target, ok := h.resolveScanTarget(w, r, datasetID, branch, int32(version))
+	version, ok := h.pinnedPreviewVersion(w, r, datasetID, branch, query)
 	if !ok {
 		return
 	}
-	page, ok := h.scanAllFilesPage(w, r, datasetID, branch, target.branch, target.txn, int32(version), limit, nil, query.Get("cursor"))
+	target, ok := h.resolveScanTarget(w, r, datasetID, branch, version)
+	if !ok {
+		return
+	}
+	page, ok := h.scanAllFilesPage(w, r, datasetID, branch, target.branch, target.txn, version, limit, nil, query.Get("cursor"))
 	if !ok {
 		return
 	}
@@ -83,6 +86,36 @@ func (h *Handlers) previewPinnedDataset(w http.ResponseWriter, r *http.Request, 
 		Schema: page.Schema, Columns: columns, Rows: rows, RowCount: page.RowCount, Limit: limit,
 		NextCursor: page.NextCursor,
 	})
+}
+
+func (h *Handlers) pinnedPreviewVersion(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, branch string, query url.Values) (int32, bool) {
+	if !query.Has("ts") {
+		version, err := strconv.ParseInt(strings.TrimSpace(query.Get("version")), 10, 32)
+		if err != nil || version < 1 {
+			writeJSONErr(w, http.StatusBadRequest, "version must be a positive integer for versioned preview")
+			return 0, false
+		}
+		return int32(version), true
+	}
+	if query.Has("version") {
+		writeJSONErr(w, http.StatusBadRequest, "version and ts are mutually exclusive")
+		return 0, false
+	}
+	at, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("ts")))
+	if err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "ts must be an RFC3339 timestamp")
+		return 0, false
+	}
+	version, err := h.Repo.GetPublishedVersionAt(r.Context(), datasetID, branch, at)
+	switch {
+	case errors.Is(err, repo.ErrNotFound):
+		writeJSONErr(w, http.StatusNotFound, "no committed dataset version at requested timestamp")
+	case err != nil:
+		writeJSONErr(w, http.StatusInternalServerError, "failed to resolve dataset version at timestamp")
+	default:
+		return version, true
+	}
+	return 0, false
 }
 
 func pinnedPreviewRows(page datasetScanAllFilesResponse) ([]pinnedPreviewColumn, []json.RawMessage, error) {

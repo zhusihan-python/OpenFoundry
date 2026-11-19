@@ -488,6 +488,9 @@ func (f *fakeStore) GetVersion(_ context.Context, datasetID uuid.UUID, version i
 	}
 	return nil, nil
 }
+func (f *fakeStore) GetPublishedVersionAt(_ context.Context, _ uuid.UUID, _ string, _ time.Time) (int32, error) {
+	return 0, repo.ErrNotFound
+}
 func (f *fakeStore) CreateVersion(_ context.Context, datasetID uuid.UUID, body *models.CreateDatasetVersionRequest) (*models.DatasetVersion, error) {
 	if f.versionConflict {
 		return nil, repo.ErrConflict
