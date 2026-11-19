@@ -32,6 +32,15 @@ func (h *Handlers) previewPinnedCSV(w http.ResponseWriter, r *http.Request, data
 	if len(files) == 0 || !isDelimitedFile(files[0].LogicalPath) {
 		return false
 	}
+	_, _, allDelimited, err := h.Repo.TransactionStagedFileFormats(r.Context(), target.txn.ID)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, "failed to load staged file formats")
+		return true
+	}
+	if !allDelimited {
+		writeJSONErr(w, http.StatusUnprocessableEntity, "dataset_scan_mixed_formats: CSV preview requires a CSV or TSV snapshot")
+		return true
+	}
 	page, err := h.readCSVPreviewPage(w, r, datasetID, branch, target, version, limit, rawCursor, files)
 	if err != nil {
 		writeDatasetRowsError(w, err)

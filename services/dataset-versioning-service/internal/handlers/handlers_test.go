@@ -866,15 +866,19 @@ func (f *fakeStore) GetTransactionStagedFile(_ context.Context, txnID uuid.UUID,
 	return nil, nil
 }
 
-func (f *fakeStore) TransactionStagedFileFormats(_ context.Context, txnID uuid.UUID) (hasParquet, hasOther bool, err error) {
-	for _, file := range f.stagedFiles[txnID] {
+func (f *fakeStore) TransactionStagedFileFormats(_ context.Context, txnID uuid.UUID) (hasParquet, hasOther, allDelimited bool, err error) {
+	files := f.stagedFiles[txnID]
+	allDelimited = len(files) > 0
+	for _, file := range files {
+		logical := strings.ToLower(file.LogicalPath)
+		allDelimited = allDelimited && (strings.HasSuffix(logical, ".csv") || strings.HasSuffix(logical, ".tsv"))
 		if strings.HasSuffix(file.LogicalPath, ".parquet") {
 			hasParquet = true
 		} else {
 			hasOther = true
 		}
 	}
-	return hasParquet, hasOther, nil
+	return hasParquet, hasOther, allDelimited, nil
 }
 
 // ListTransactionStagedFilesFrom mirrors the repo keyset query: staged

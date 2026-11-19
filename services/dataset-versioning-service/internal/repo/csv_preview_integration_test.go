@@ -124,6 +124,11 @@ func TestHistoricalCSVPreviewUsesPublishedOptions(t *testing.T) {
 		require.Equal(t, http.StatusUnprocessableEntity, errorPage.Code, errorPage.Body.String())
 		require.Contains(t, errorPage.Body.String(), "dataset_csv_decode_failed")
 	}
+	mixed, _ := publish(nil, file("a.csv", []byte("name,quantity\nfig,2\n")),
+		file("b.csv", []byte("name,quantity\npear,3\n")), file("c.ndjson", []byte(`{"name":"tea"}`+"\n")))
+	mixedPage := preview(mixed, "")
+	require.Equal(t, http.StatusUnprocessableEntity, mixedPage.Code, mixedPage.Body.String())
+	require.Contains(t, mixedPage.Body.String(), "dataset_scan_mixed_formats")
 	// Advancing the head through invalid data did not change the old snapshot.
 	read(preview(old, ""), oldTxn, names, `[{"name":"café\n🌱","quantity":3}]`)
 }

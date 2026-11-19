@@ -323,7 +323,7 @@ func (h *Handlers) scanAllFiles(w http.ResponseWriter, r *http.Request, datasetI
 // scanAllFilesPage reads an already resolved, authorized SNAPSHOT. It writes
 // only errors so versioned preview can reuse the exact same read boundaries.
 func (h *Handlers) scanAllFilesPage(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, branchName string, branchRow *models.RuntimeBranch, txn *models.RuntimeTransaction, version int32, limit int, pred *scanPredicate, rawCursor string) (datasetScanAllFilesResponse, bool) {
-	parquet, other, err := h.Repo.TransactionStagedFileFormats(r.Context(), txn.ID)
+	parquet, other, _, err := h.Repo.TransactionStagedFileFormats(r.Context(), txn.ID)
 	if err != nil {
 		writeDatasetRowsError(w, datasetRowsErr(http.StatusInternalServerError, "failed to load staged file formats"))
 		return datasetScanAllFilesResponse{}, false
