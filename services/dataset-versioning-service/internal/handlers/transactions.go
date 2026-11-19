@@ -94,7 +94,8 @@ func (h *Handlers) finishTransaction(w http.ResponseWriter, r *http.Request, act
 	if !ok {
 		return
 	}
-	if _, ok := h.requireDatasetWrite(w, r, datasetID); !ok {
+	claims, ok := h.requireDatasetWrite(w, r, datasetID)
+	if !ok {
 		return
 	}
 	txnID, err := uuid.Parse(transactionIDParam(r))
@@ -110,6 +111,16 @@ func (h *Handlers) finishTransaction(w http.ResponseWriter, r *http.Request, act
 	if before == nil || before.BranchName != branchNameParam(r) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "transaction not found", "txn": txnID})
 		return
+	}
+	if _, manual := manualOutputReservationBuild(before.Providence); manual {
+		if before.StartedBy == nil || *before.StartedBy != claims.Sub {
+			writeJSONErr(w, http.StatusForbidden, "manual output reservation belongs to its creator")
+			return
+		}
+		if action == "commit" {
+			writeJSONErr(w, http.StatusConflict, "manual output reservation requires a keyed dataset output commit")
+			return
+		}
 	}
 	if action == "commit" {
 		err = h.Repo.CommitTransaction(r.Context(), datasetID, txnID)

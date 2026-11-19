@@ -116,6 +116,8 @@ func routeDatasetRID(datasetRID string) string {
 }
 
 type datasetOutputCommitRequest struct {
+	IdempotencyKey      string                     `json:"idempotency_key,omitempty"`
+	ManualReservation   *manualDatasetReservation  `json:"manual_reservation,omitempty"`
 	CreateIfMissing     bool                       `json:"create_if_missing"`
 	DatasetName         string                     `json:"dataset_name,omitempty"`
 	Format              *string                    `json:"format,omitempty"`

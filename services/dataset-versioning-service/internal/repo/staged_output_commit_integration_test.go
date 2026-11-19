@@ -630,7 +630,7 @@ func TestStagedCommitReplayAndHandlerRebuild(t *testing.T) {
 	reservation2 := s.reserve2(t, build2)
 	key2 := "of-wp33-a7b:" + reservation2.String()
 	_, staged2 := s.stage(t, reservation2, build2, key2, `{"r":2}`+"\n")
-	fresh := newStagedStackOver(t, s)
+	fresh := newStagedStackOver(t, s, nil)
 	get := fresh.do(t, http.MethodGet, "/v1/datasets/"+s.rid+"/outputs/commits/"+key, "", nil, fresh.token)
 	require.Equal(t, http.StatusOK, get.Code, get.Body.String())
 	assert.Equal(t, first.Body.String(), get.Body.String(), "receipt survives the rebuild")
@@ -647,10 +647,13 @@ func (s *stagedStack) reserve2(t *testing.T, build uuid.UUID) uuid.UUID {
 	return s.reserve(t, build, "UPDATE", "wp33-staged-output")
 }
 
-func newStagedStackOver(t *testing.T, prev *stagedStack) *stagedStack {
+func newStagedStackOver(t *testing.T, prev *stagedStack, mutate func(h *handlers.Handlers)) *stagedStack {
 	t.Helper()
 	r := &repo.Repo{Pool: prev.pool}
 	h := &handlers.Handlers{Repo: r, BackingFS: prev.backing, StagedOutputRoot: prev.stageRoot}
+	if mutate != nil {
+		mutate(h)
+	}
 	jwt := authmw.NewJWTConfig("wp33-staged-router-secret")
 	cfg := &config.Config{}
 	cfg.Service.Name = "dataset-versioning-service"
@@ -660,7 +663,7 @@ func newStagedStackOver(t *testing.T, prev *stagedStack) *stagedStack {
 	srv := server.New(cfg, jwt, h, observability.NewMetrics())
 	owner := uuid.New()
 	org := uuid.New()
-	fresh := &stagedStack{srv: srv, pool: prev.pool, backing: prev.backing, stageRoot: prev.stageRoot, jwt: jwt,
+	fresh := &stagedStack{srv: srv, pool: prev.pool, backing: prev.backing, stageRoot: h.StagedOutputRoot, jwt: jwt,
 		token: stagedToken(t, jwt, owner, &org, []string{"dataset.write"})}
 	// Same dataset as before — resolve by RID; tokens minted with the
 	// stack's own secret (same secret string) are accepted.
@@ -714,16 +717,12 @@ func TestStagedNamespaceIsolationAndConfigBoundaries(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
 	assert.Contains(t, rec.Body.String(), "overlaps")
 
-	// Without a staging root the staged feature is disabled (503) while
-	// other routes stay up.
-	noRoot := newStagedStack(t, func(h *handlers.Handlers) { h.StagedOutputRoot = "" })
+	// Rebuild over the original dataset and seal, with staging disabled.
+	// Both requests must resolve the dataset before rejecting staging.
+	noRoot := newStagedStackOver(t, s, func(h *handlers.Handlers) { h.StagedOutputRoot = "" })
 	rec = noRoot.do(t, http.MethodPost, noRoot.stageURL(reservation, build, key), "application/x-ndjson", strings.NewReader(`{"a":1}`+"\n"), noRoot.token)
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
-	// The commit targets the ORIGINAL dataset (shared pool, same JWT
-	// secret): it resolves, then the unconfigured staging root fails the
-	// STAGED_ADD commit closed.
-	rec = noRoot.do(t, http.MethodPost, "/v1/datasets/"+s.rid+"/outputs:commit", "application/json",
-		strings.NewReader(stagedCommitJSON(key, staged.StagedObjectID, staged.SizeBytes, staged.SHA256, reservation, build, nil)), s.token)
+	rec = noRoot.commit(t, stagedCommitJSON(key, staged.StagedObjectID, staged.SizeBytes, staged.SHA256, reservation, build, nil))
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code, "unconfigured staging must fail the STAGED_ADD commit closed: "+rec.Body.String())
 	rec = noRoot.do(t, http.MethodGet, "/healthz", "", nil, "")
 	assert.Equal(t, http.StatusOK, rec.Code)

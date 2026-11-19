@@ -46,6 +46,7 @@ func (s NodeState) terminal() bool {
 
 // OutputTransaction is the open write transaction for one output dataset.
 type OutputTransaction struct {
+	Inline                 bool `json:"-"`
 	DatasetRID             string
 	TransactionRID         string
 	DatasetName            string

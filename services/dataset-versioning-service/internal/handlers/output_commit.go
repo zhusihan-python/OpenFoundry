@@ -110,6 +110,10 @@ func (h *Handlers) CommitDatasetOutput(w http.ResponseWriter, r *http.Request) {
 			writeJSONErr(w, http.StatusBadRequest, "staged commit requires idempotency_key")
 			return
 		}
+		if body.ManualReservation != nil {
+			writeJSONErr(w, http.StatusBadRequest, "manual reservation requires idempotency_key")
+			return
+		}
 		h.commitDatasetOutputLegacy(w, r, body, claims)
 		return
 	}
@@ -333,6 +337,10 @@ func (h *Handlers) commitDatasetOutputKeyed(w http.ResponseWriter, r *http.Reque
 		writeJSONErr(w, http.StatusBadRequest, "invalid idempotency_key")
 		return
 	}
+	if err := validateManualOutputRequest(body, claims.Sub); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// Deterministic, body-intrinsic validations run before any transaction:
 	// they are pure functions of the bytes, so a byte-identical replay can
 	// never fail them after the fingerprint check short-circuits.
@@ -448,6 +456,11 @@ func (h *Handlers) keyedOutputCommitBuild(r *http.Request, body models.CommitDat
 		if err := h.prepareTypedInlineOutput(ctx, &body); err != nil {
 			return zero, keyedFileError{err}
 		}
+		if body.ManualReservation != nil {
+			if err := exchangeManualOutputReservation(ctx, tx, dataset, branch, body.ManualReservation, claims.Sub); err != nil {
+				return zero, err
+			}
+		}
 		txn, err := tx.StartTransaction(ctx, dataset.ID, branch.ID, branch.Name, txType, summary, provenance, claims.Sub)
 		if err != nil {
 			return zero, err
@@ -492,6 +505,11 @@ func (h *Handlers) keyedOutputCommitBuild(r *http.Request, body models.CommitDat
 		snapshot, err := tx.CommitTransactionWithPublish(ctx, dataset.ID, txn.ID, indexEntries, body.LineageLinks)
 		if err != nil {
 			return zero, err
+		}
+		if body.ManualReservation != nil {
+			// PBS recovery needs an identity acknowledgement, which stays
+			// small even when the committed preview contains large cells.
+			return manualOutputReceipt(dataset.ID, branch.Name, snapshot.Transaction), nil
 		}
 		return models.CommitDatasetOutputResponse{
 			DatasetID:    dataset.ID,
@@ -554,6 +572,11 @@ func (h *Handlers) GetDatasetOutputCommit(w http.ResponseWriter, r *http.Request
 		writeJSONErr(w, http.StatusBadRequest, "invalid idempotency_key")
 		return
 	}
+	if strings.HasPrefix(key, manualOutputKeyPrefix) &&
+		(!canWriteDataset(claims) || !strings.HasPrefix(key, manualOutputKeyPrefix+claims.Sub.String()+":")) {
+		writeJSONErr(w, http.StatusNotFound, "output commit receipt not found")
+		return
+	}
 	datasetID, err := outputDatasetIDFromRID(datasetIDParam(r))
 	if err != nil {
 		writeJSONErr(w, http.StatusNotFound, "dataset not found")
@@ -587,6 +610,8 @@ func writeKeyedCommitError(w http.ResponseWriter, err error) {
 		writeJSONErr(w, http.StatusNotFound, errKeyedBranchMissing.Error())
 	case errors.Is(err, errKeyedLineageTarget):
 		writeJSONErr(w, http.StatusNotFound, errKeyedLineageTarget.Error())
+	case errors.Is(err, errManualOutputReservation):
+		writeJSONErr(w, http.StatusConflict, errManualOutputReservation.Error())
 	case errors.As(err, &fileErr):
 		writeOutputCommitFileError(w, fileErr.err)
 	case errors.As(err, &objectErr):

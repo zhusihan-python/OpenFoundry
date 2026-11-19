@@ -1133,6 +1133,14 @@ type CommitDatasetOutputRequest struct {
 	// staged object's descriptor. Empty keeps the historical request shape.
 	ReservationID string `json:"reservation_id,omitempty"`
 	BuildID       string `json:"build_id,omitempty"`
+	// ManualReservation exchanges a build-bound OPEN UPDATE reservation
+	// for the inline SNAPSHOT inside the keyed commit transaction.
+	ManualReservation *ManualOutputReservation `json:"manual_reservation,omitempty"`
+}
+
+type ManualOutputReservation struct {
+	BuildID       uuid.UUID `json:"build_id"`
+	ReservationID uuid.UUID `json:"reservation_id"`
 }
 
 type CommitOutputFile struct {

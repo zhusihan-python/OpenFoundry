@@ -1212,12 +1212,18 @@ var _ = sortedStrings
 
 // Abort implements executor.TransactionManager for already-opened output rows.
 func (r *Repository) Abort(ctx context.Context, tx executor.OutputTransaction) error {
+	if tx.Inline {
+		return nil
+	}
 	_, err := r.db.Exec(ctx, `UPDATE job_outputs SET aborted=TRUE WHERE output_dataset_rid=$1 AND transaction_rid=$2`, tx.DatasetRID, tx.TransactionRID)
 	return err
 }
 
 // Commit implements executor.OutputCommitter for already-opened output rows.
 func (r *Repository) Commit(ctx context.Context, tx executor.OutputTransaction, _ executor.NodeResult) error {
+	if tx.Inline {
+		return nil
+	}
 	_, err := r.db.Exec(ctx, `UPDATE job_outputs SET committed=TRUE WHERE output_dataset_rid=$1 AND transaction_rid=$2`, tx.DatasetRID, tx.TransactionRID)
 	return err
 }
