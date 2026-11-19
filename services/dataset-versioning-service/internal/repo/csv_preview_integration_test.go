@@ -76,7 +76,9 @@ func TestHistoricalCSVPreviewUsesPublishedOptions(t *testing.T) {
 	encode := func(text string, order binary.ByteOrder, signature []byte) []byte {
 		data := bytes.Clone(signature)
 		for _, unit := range utf16.Encode([]rune(text)) {
-			data = order.AppendUint16(data, unit)
+			var encoded [2]byte
+			order.PutUint16(encoded[:], unit)
+			data = append(data, encoded[:]...)
 		}
 		return data
 	}

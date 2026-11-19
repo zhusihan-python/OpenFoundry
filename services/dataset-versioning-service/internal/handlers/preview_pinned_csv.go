@@ -224,14 +224,18 @@ func parseCSVPreviewPage(raw []byte, format string, options models.CsvOptions, o
 	}
 	reader.FieldsPerRecord = len(columns)
 	rows := make([]json.RawMessage, 0, limit)
-	var pageBytes int
+	headerBytes, err := json.Marshal(columns)
+	if err != nil || len(headerBytes) > datasetScanMaxPageBytes {
+		return nil, nil, false, datasetRowsErr(http.StatusRequestEntityTooLarge, "dataset_csv_header_too_large: columns exceed the preview page byte budget")
+	}
+	pageBytes := len(headerBytes)
 	for index := int64(0); ; index++ {
 		record := first
 		first = nil
 		if record == nil {
 			record, err = reader.Read()
 			if errors.Is(err, io.EOF) {
-				if index < offset || offset > 0 && index == offset {
+				if offset > 0 && index <= offset {
 					return nil, nil, false, datasetRowsErr(http.StatusBadRequest, "dataset_scan_cursor_invalid: CSV position is beyond its data records")
 				}
 				return columns, rows, false, nil
@@ -254,13 +258,13 @@ func parseCSVPreviewPage(raw []byte, format string, options models.CsvOptions, o
 		if err != nil {
 			return nil, nil, false, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_csv_parse_failed: %v", err)
 		}
-		if len(encoded) > datasetScanMaxPageBytes {
-			return nil, nil, false, datasetRowsErr(http.StatusRequestEntityTooLarge, "dataset_csv_row_too_large: row exceeds the preview page byte budget")
-		}
-		if pageBytes+len(encoded) > datasetScanMaxPageBytes {
+		if pageBytes+len(encoded)+1 > datasetScanMaxPageBytes {
+			if len(rows) == 0 {
+				return nil, nil, false, datasetRowsErr(http.StatusRequestEntityTooLarge, "dataset_csv_row_too_large: columns and row exceed the preview page byte budget")
+			}
 			return columns, rows, true, nil
 		}
-		pageBytes += len(encoded)
+		pageBytes += len(encoded) + 1
 		rows = append(rows, encoded)
 	}
 }
