@@ -154,6 +154,9 @@ func main() {
 		// presigned or foreign redirect.
 		datasetRowReader := handler.DatasetServiceRowReader{BaseURL: cfg.DatasetServiceURL, BearerToken: cfg.DatasetServiceBearer}
 		execPorts = handler.ExecutionPorts{Plans: repo, Runs: repo, Python: pythonRuntime, LLM: llmRunner, AIP: aipGenerator, Distributed: distributedRunner, Transactions: handler.ConfigGatedTransactionManager{Metadata: repo, CatalogConfigured: cfg.FoundryIcebergCatalogURL != ""}, Committer: handler.ConfigGatedOutputCommitter{Metadata: outputCommitter, CatalogConfigured: cfg.FoundryIcebergCatalogURL != ""}, Audit: repo, DatasetRows: datasetRowReader, Parallelism: cfg.DistributedPipelineWorkers}
+		if cfg.DatasetServiceURL != "" {
+			execPorts.ManualDataset = &handler.DatasetHTTPVersioning{BaseURL: metadataCommitter.BaseURL, Client: metadataCommitter.Client}
+		}
 		handler.SetExecutionPorts(execPorts)
 		handler.SetBuildQueryRepository(repo)
 		handler.SetPipelineAuthoringRepository(repo)

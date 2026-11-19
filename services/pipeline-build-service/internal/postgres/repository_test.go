@@ -26,6 +26,14 @@ func newMockRepo(t *testing.T) (pgxmock.PgxPoolIface, *Repository) {
 	return mock, NewRepository(mock)
 }
 
+func TestInlineOutputSkipsPersistedFlags(t *testing.T) {
+	mock, repo := newMockRepo(t)
+	output := executor.OutputTransaction{Inline: true, DatasetRID: "dataset", TransactionRID: "transaction"}
+	require.NoError(t, repo.Commit(context.Background(), output, executor.NodeResult{}))
+	require.NoError(t, repo.Abort(context.Background(), output))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestRepositoryOpenListGetBuild(t *testing.T) {
 	mock, repo := newMockRepo(t)
 	ctx := context.Background()

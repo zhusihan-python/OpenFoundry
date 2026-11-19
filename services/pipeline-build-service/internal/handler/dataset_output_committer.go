@@ -116,19 +116,21 @@ func routeDatasetRID(datasetRID string) string {
 }
 
 type datasetOutputCommitRequest struct {
-	CreateIfMissing bool                       `json:"create_if_missing"`
-	DatasetName     string                     `json:"dataset_name,omitempty"`
-	Format          *string                    `json:"format,omitempty"`
-	Branch          string                     `json:"branch,omitempty"`
-	TransactionType string                     `json:"transaction_type,omitempty"`
-	Summary         string                     `json:"summary,omitempty"`
-	Provenance      json.RawMessage            `json:"provenance,omitempty"`
-	Schema          *datasetOutputSchema       `json:"schema,omitempty"`
-	Files           []datasetOutputFile        `json:"files,omitempty"`
-	PreviewColumns  []string                   `json:"preview_columns,omitempty"`
-	PreviewRows     [][]json.RawMessage        `json:"preview_rows,omitempty"`
-	LineageLinks    []datasetOutputLineageLink `json:"lineage_links,omitempty"`
-	Metadata        json.RawMessage            `json:"metadata,omitempty"`
+	IdempotencyKey    string                     `json:"idempotency_key,omitempty"`
+	ManualReservation *manualDatasetReservation  `json:"manual_reservation,omitempty"`
+	CreateIfMissing   bool                       `json:"create_if_missing"`
+	DatasetName       string                     `json:"dataset_name,omitempty"`
+	Format            *string                    `json:"format,omitempty"`
+	Branch            string                     `json:"branch,omitempty"`
+	TransactionType   string                     `json:"transaction_type,omitempty"`
+	Summary           string                     `json:"summary,omitempty"`
+	Provenance        json.RawMessage            `json:"provenance,omitempty"`
+	Schema            *datasetOutputSchema       `json:"schema,omitempty"`
+	Files             []datasetOutputFile        `json:"files,omitempty"`
+	PreviewColumns    []string                   `json:"preview_columns,omitempty"`
+	PreviewRows       [][]json.RawMessage        `json:"preview_rows,omitempty"`
+	LineageLinks      []datasetOutputLineageLink `json:"lineage_links,omitempty"`
+	Metadata          json.RawMessage            `json:"metadata,omitempty"`
 }
 
 type datasetOutputSchema struct {

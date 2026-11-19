@@ -69,6 +69,9 @@ type ExecutionPorts struct {
 	// both preview and lightweight (FASTER) execution.
 	DatasetRows PipelineDatasetRowSource
 	Parallelism int
+	// ManualDataset handles only persisted ordinary Builds with an HTTP
+	// dataset-versioning adapter and resolver-owned output reservations.
+	ManualDataset *DatasetHTTPVersioning
 }
 
 // ConfigGatedOutputCommitter routes Foundry Iceberg outputs to the ADR-0041
@@ -233,6 +236,10 @@ func ExecutePipeline(w http.ResponseWriter, r *http.Request) {
 	if runBatchedBuildIfConfigured(w, r, ports, body) {
 		return
 	}
+	if body.BuildID != nil && len(body.Nodes) == 0 && ports.ManualDataset != nil {
+		runManualBuild(w, r, ports, *body.BuildID)
+		return
+	}
 	plan, err := planFromExecuteRequest(r.Context(), body, ports)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, err.Error())
@@ -243,8 +250,15 @@ func ExecutePipeline(w http.ResponseWriter, r *http.Request) {
 		runner = newRuntimeNodeRunner(ports)
 	}
 	execCtx, cancel := context.WithCancel(contextWithCallerBearer(r.Context(), callerBearerFromRequest(r)))
-	unregister := registerExecutionCancel(plan.BuildID, cancel)
-	defer unregister()
+	defer cancel()
+	if len(body.Nodes) == 0 {
+		unregister := registerExecutionCancel(plan.BuildID, cancel)
+		defer unregister()
+	} else {
+		// Inline requests choose their job IDs. They can publish real
+		// dataset outputs but have no authority over persisted PBS rows.
+		ports.Audit = nil
+	}
 	outcome, err := executor.Execute(execCtx, plan, runner, ports.Transactions, ports.Committer, ports.Audit)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, err.Error())
@@ -411,6 +425,9 @@ func executorNodeFromRequest(buildID uuid.UUID, node executeNodeRequest) executo
 	}
 	if node.OutputDatasetID != "" {
 		metadata["output_dataset_id"] = node.OutputDatasetID
+	}
+	for i := range node.Outputs {
+		node.Outputs[i].Inline = true
 	}
 	return executor.Node{ID: node.ID, JobID: jobID, DependsOn: node.DependsOn, Outputs: node.Outputs, Metadata: metadata, ResolvedInputViews: node.ResolvedInputViews}
 }

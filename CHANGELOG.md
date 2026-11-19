@@ -35,7 +35,9 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - _(add entries here)_
 
 ### Fixed
-- _(add entries here)_
+- Manual canonical dataset builds now publish through their own output reservation.
+  After publication, retrying a build can reconcile its recorded output without
+  creating another dataset version.
 
 ### Security
 - _(add entries here)_

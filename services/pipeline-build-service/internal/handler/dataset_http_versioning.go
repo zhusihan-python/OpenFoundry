@@ -254,10 +254,9 @@ func (d DatasetHTTPVersioning) OpenTransaction(ctx context.Context, datasetRID, 
 	return d.openTransaction(ctx, datasetRID, branch, nil)
 }
 
-// OpenTransactionForBuild implements resolver.BuildAwareTransactionOpener:
-// the WP3.3 3B opt-in reservation. Identical wire call, but providence
-// carries the build-bound marker (origin/purpose/build_id) the dataset
-// service's staged-output protocol requires on stage and keyed commit.
+// OpenTransactionForBuild implements resolver.BuildAwareTransactionOpener.
+// Providence carries the build-bound marker (origin/purpose/build_id)
+// that dataset versioning verifies before exchanging the reservation.
 // The returned RID is the canonical transaction RID, exactly like
 // OpenTransaction.
 func (d DatasetHTTPVersioning) OpenTransactionForBuild(ctx context.Context, datasetRID, branch string, buildID uuid.UUID, purpose string) (string, error) {
