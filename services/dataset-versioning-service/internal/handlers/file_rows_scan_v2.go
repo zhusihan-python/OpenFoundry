@@ -215,6 +215,7 @@ type datasetScanAllFilesResponse struct {
 	SchemaVersion string                `json:"schema_version,omitempty"`
 	Schema        *models.DatasetSchema `json:"schema,omitempty"`
 	Columns       []pinnedPreviewColumn `json:"columns,omitempty"`
+	Path          string                `json:"path,omitempty"`
 	Mode          string                `json:"mode"`
 	Rows          []json.RawMessage     `json:"rows"`
 	NextCursor    *string               `json:"next_cursor"`

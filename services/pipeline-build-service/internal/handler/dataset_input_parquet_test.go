@@ -95,6 +95,8 @@ func TestDatasetSnapshotRejectsInvalidParquetFirstPage(t *testing.T) {
 		{name: "duplicate format", metadata: ordersPageMetadata + `,"format":"ndjson"`, want: "duplicate format field"},
 		{name: "missing version", metadata: `,"format":"parquet"`, want: "batched_scan_schema_invalid"},
 		{name: "stale DVS", path: "orders.parquet", want: "batched_scan_format_invalid"},
+		{name: "stale DVS for CSV", path: "orders.csv", want: "batched_scan_format_invalid"},
+		{name: "CSV page for NDJSON path", path: "orders.ndjson", metadata: `,"format":"csv"`, want: "batched_scan_format_invalid"},
 		{name: "numeric ID is string", metadata: ordersPageMetadata, row: strings.Replace(parquetScanOrder, "9223372036854775807", `"9223372036854775807"`, 1), want: "batched_scan_record_invalid"},
 		{name: "late metadata and bad amount", metadata: ordersPageMetadata, row: strings.Replace(parquetScanOrder, `"-12345678901234.5000"`, "-12345678901234.5000", 1), rowsFirst: true, want: "batched_scan_record_invalid"},
 	} {

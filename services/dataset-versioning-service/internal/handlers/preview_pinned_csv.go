@@ -111,7 +111,7 @@ func (h *Handlers) readCSVSnapshotPage(w http.ResponseWriter, r *http.Request, r
 	}
 	page := &datasetScanAllFilesResponse{
 		DatasetID: req.datasetID.String(), Branch: req.branch, Version: req.version, TransactionID: txn.ID.String(),
-		Format: "csv", Mode: mode, Columns: decoded.columns, Rows: decoded.rows, RowCount: len(decoded.rows),
+		Format: "csv", Mode: mode, Path: req.path, Columns: decoded.columns, Rows: decoded.rows, RowCount: len(decoded.rows),
 		PageBytes: int64(decoded.bytes), FilesAccessed: 1,
 	}
 	switch {

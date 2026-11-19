@@ -48,17 +48,15 @@ func bindScanMetadata(requestedPath string, pinned *batchedScanMetadata, page ba
 		return fmt.Errorf("batched_scan_schema_mismatch: page format/schema (%q/%q) != pinned format/schema (%q/%q)",
 			page.Format, page.SchemaVersion, pinned.Format, pinned.SchemaVersion)
 	}
-	if requestedPath != "" && (page.Format == batchedParquetFormat) != batchedParquetPath(requestedPath) {
-		return fmt.Errorf("batched_scan_format_invalid: page format %q does not match requested path %q", page.Format, requestedPath)
+	if requestedPath != "" {
+		ext := strings.ToLower(path.Ext(requestedPath))
+		delimitedPath := ext == ".csv" || ext == ".tsv"
+		if (page.Format == batchedParquetFormat) != batchedParquetPath(requestedPath) || (page.Format == "csv") != delimitedPath {
+			return fmt.Errorf("batched_scan_format_invalid: page format %q does not match requested path %q", page.Format, requestedPath)
+		}
 	}
 	switch page.Format {
 	case "ndjson", "csv":
-		if page.Format == "csv" && requestedPath != "" {
-			ext := strings.ToLower(path.Ext(requestedPath))
-			if ext != ".csv" && ext != ".tsv" {
-				return fmt.Errorf("batched_scan_format_invalid: CSV page does not match requested path %q", requestedPath)
-			}
-		}
 		if page.SchemaVersion != "" || page.Schema != nil {
 			return fmt.Errorf("batched_scan_schema_invalid: unexpected typed schema for %s", page.Format)
 		}
