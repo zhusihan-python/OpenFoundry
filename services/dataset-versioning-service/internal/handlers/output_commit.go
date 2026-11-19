@@ -151,6 +151,10 @@ func (h *Handlers) CommitDatasetOutput(w http.ResponseWriter, r *http.Request) {
 // byte-for-byte in behavior — a request without idempotency_key must be
 // indistinguishable from before P2.6.
 func (h *Handlers) commitDatasetOutputLegacy(w http.ResponseWriter, r *http.Request, body models.CommitDatasetOutputRequest, claims *authmw.Claims) {
+	if err := normalizeOutputCSVOptions(body.Schema); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := h.prepareTypedInlineOutput(r.Context(), &body); err != nil {
 		writeOutputCommitFileError(w, err)
 		return
@@ -419,6 +423,9 @@ func (h *Handlers) keyedOutputCommitBuild(rawRef string, body models.CommitDatas
 	}
 	return func(ctx context.Context, tx repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error) {
 		var zero models.CommitDatasetOutputResponse
+		if err := normalizeOutputCSVOptions(body.Schema); err != nil {
+			return zero, keyedFileError{err}
+		}
 		// Lineage targets must stay inside the caller's tenant — checked on
 		// the transaction's snapshot so a rejected link can never land
 		// after bytes or rows have been written.
