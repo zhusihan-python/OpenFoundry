@@ -187,6 +187,7 @@ func batchedDatasetUUID(datasetRID string) (uuid.UUID, error) {
 
 // batchedScanInput is the frozen input binding for one scan.
 type batchedScanInput struct {
+	csvSchema  *csvSchemaInference
 	DatasetRID string // canonical ri.foundry.main.dataset.<uuid>
 	Branch     string
 	Version    int32
@@ -302,6 +303,9 @@ func (c batchedDatasetClient) ScanStream(ctx context.Context, in batchedScanInpu
 		}
 		stats.Rows += pageStats
 		if pageCursor == nil {
+			if in.csvSchema != nil && stats.Metadata.Format == "csv" {
+				stats.Metadata.Schema = in.csvSchema.schema()
+			}
 			return stats, nil
 		}
 		next := *pageCursor
@@ -351,6 +355,8 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 		seenVersion bool
 		seenSchema  bool
 		parquetErr  error
+		csvErr      error
+		csvColumns  json.RawMessage
 	)
 	preRowCheck = func() error {
 		if envDataset == "" || envBranch == "" || envTxn == "" || envVersion < 0 {
@@ -398,6 +404,9 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 						return 0, nil, parquetErr
 					}
 				}
+				if in.csvSchema != nil && (!seenFormat || metadata.Format == "csv") && csvErr == nil {
+					csvErr = in.csvSchema.addRow(record)
+				}
 				if eerr := emit(record); eerr != nil {
 					return 0, nil, eerr
 				}
@@ -425,6 +434,10 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 			seenFormat = true
 			if derr := dec.Decode(&metadata.Format); derr != nil {
 				return 0, nil, fmt.Errorf("batched_scan_decode: format: %w", derr)
+			}
+		case "columns":
+			if derr := dec.Decode(&csvColumns); derr != nil {
+				return 0, nil, fmt.Errorf("batched_scan_decode: columns: %w", derr)
 			}
 		case "schema_version":
 			if seenVersion {
@@ -499,6 +512,14 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 	}
 	if metadata.Format == batchedParquetFormat && parquetErr != nil {
 		return 0, nil, parquetErr
+	}
+	if metadata.Format == "csv" && in.csvSchema != nil {
+		if csvErr != nil {
+			return 0, nil, csvErr
+		}
+		if err := in.csvSchema.addHeaders(csvColumns); err != nil {
+			return 0, nil, err
+		}
 	}
 	if envRowCount >= 0 && envRowCount != pageRows {
 		return 0, nil, fmt.Errorf("batched_scan_row_count_mismatch: page reports %d rows but %d were streamed", envRowCount, pageRows)

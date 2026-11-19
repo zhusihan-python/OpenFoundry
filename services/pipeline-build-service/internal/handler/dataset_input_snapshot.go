@@ -161,6 +161,7 @@ func (r DatasetServiceRowReader) readDatasetSnapshotRows(ctx context.Context, re
 	var totalBytes int64
 	expectedTxn := req.Snapshot.TransactionID
 	scan, scanErr := client.ScanStream(ctx, batchedScanInput{
+		csvSchema:             &csvSchemaInference{},
 		DatasetRID:            rid,
 		Branch:                req.Snapshot.Branch,
 		Version:               req.Snapshot.Version,
