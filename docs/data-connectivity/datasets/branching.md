@@ -98,6 +98,22 @@ value makes its field nullable. A field with only a header or nulls infers
 nullable `STRING`. Columns are sorted by name. The inference retains statistics
 for at most 256 columns and 64 KiB of column names across all files.
 
+## Read a pipeline artifact manifest
+
+A successful single-output batched build stores its manifest in
+`metadata.artifact_manifest` on the output transaction. Read the dataset's
+version list to find the version's `transaction_id`, then read that
+transaction. The manifest's own `version` identifies the manifest format.
+
+The input entry records the dataset, branch, version and transaction scanned
+by Pipeline Build Service. It includes the selected path when present, and a
+SHA-256 of the configured predicate text when used. The job spec identity and
+content hash come from the build's frozen configuration. Dataset Versioning
+Service verifies the source pin in the caller's tenant and supplies the
+output transaction, path, format, record count, byte size and digest from
+the sealed publication. The manifest is published in the same transaction as
+the output file. A retry of the same commit uses its original receipt.
+
 ## Flatten nested JSON in a pinned pipeline
 
 Set `dataset_snapshot.flatten_json` to `true` in a pinned dataset input node

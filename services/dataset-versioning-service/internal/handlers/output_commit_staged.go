@@ -182,6 +182,12 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.Com
 			return zero, errKeyedBranchMissing
 		}
 
+		if body.ArtifactManifest != nil {
+			if err := validateManifestSource(ctx, tx, scope, body.ArtifactManifest); err != nil {
+				return zero, err
+			}
+		}
+
 		// Reservation: lock the exact row, verify every binding facet —
 		// including that its branch_id is the branch row the dataset
 		// currently knows under this name, so a soft-deleted and recreated
@@ -238,7 +244,7 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.Com
 		// server-stamped fields (staged object identity, digests,
 		// file_count, pipeline_output) are written after the caller's own
 		// keys so they can never be forged through body/file metadata.
-		commitMeta, merr := stagedCommitMetadata(body, obj)
+		commitMeta, merr := stagedCommitMetadata(body, txArtifactManifest(dataset.ID, txn.ID, obj, body.ArtifactManifest), obj)
 		if merr != nil {
 			return zero, keyedFileError{merr}
 		}
@@ -313,12 +319,10 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.Com
 			}
 		}()
 
-		// Rehash the actual linked Parquet bytes before indexing them. A
-		// same-size corruption of a private spool is invisible to stat but
-		// must never publish under the original descriptor's digest.
-		if isParquet {
-			if err := verifyInstalledParquetDigest(dstAbs, obj); err != nil {
-				slog.ErrorContext(ctx, "installed Parquet failed verification", slog.String("staged_object", obj.ID.String()), slog.String("error", err.Error()))
+		// Verify the linked bytes before reporting a manifest digest.
+		if isParquet || body.ArtifactManifest != nil {
+			if err := verifyInstalledStagedDigest(dstAbs, obj); err != nil {
+				slog.ErrorContext(ctx, "installed artifact failed verification", slog.String("staged_object", obj.ID.String()), slog.String("error", err.Error()))
 				return zero, errStagedSealedFileMissing
 			}
 		}
@@ -390,6 +394,7 @@ func stagedFileMetadata(datasetID uuid.UUID, txnID uuid.UUID, obj *repo.StagedOu
 			meta = map[string]any{}
 		}
 	}
+	delete(meta, artifactManifestKey)
 	meta["dataset_id"] = datasetID.String()
 	meta["transaction_id"] = txnID.String()
 	meta["staged_object_id"] = obj.ID.String()
@@ -411,7 +416,7 @@ func stagedFileMetadata(datasetID uuid.UUID, txnID uuid.UUID, obj *repo.StagedOu
 // keys first (null-safe), then the server-stamped pipeline_output /
 // file_count / staged_output block is rewritten so it can never be
 // forged through body metadata.
-func stagedCommitMetadata(body models.CommitDatasetOutputRequest, obj *repo.StagedOutputObject) (models.JSONValue, error) {
+func stagedCommitMetadata(body models.CommitDatasetOutputRequest, manifest *artifactManifest, obj *repo.StagedOutputObject) (models.JSONValue, error) {
 	meta := map[string]any{}
 	if len(body.Metadata) > 0 {
 		if err := json.Unmarshal(body.Metadata, &meta); err != nil {
@@ -420,6 +425,10 @@ func stagedCommitMetadata(body models.CommitDatasetOutputRequest, obj *repo.Stag
 		if meta == nil {
 			meta = map[string]any{}
 		}
+	}
+	delete(meta, artifactManifestKey)
+	if manifest != nil {
+		meta[artifactManifestKey] = manifest
 	}
 	if body.Schema != nil {
 		meta["schema"] = body.Schema
@@ -500,7 +509,7 @@ func installSealedArtifact(paths *stagedOutputPaths, srcAbs string, storageKey s
 	return dstAbs, nil
 }
 
-func verifyInstalledParquetDigest(installed string, obj *repo.StagedOutputObject) error {
+func verifyInstalledStagedDigest(installed string, obj *repo.StagedOutputObject) error {
 	f, err := os.Open(installed)
 	if err != nil {
 		return err

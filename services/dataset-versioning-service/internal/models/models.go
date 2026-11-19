@@ -1106,8 +1106,27 @@ type PutSchemaBody struct {
 	Schema DatasetSchema `json:"schema"`
 }
 
+// PipelineArtifactManifestInput is the provenance reported by a staged
+// publisher. The dataset service validates the input pin and supplies the
+// authoritative output and build fields from the sealed publication.
+type PipelineArtifactManifestInput struct {
+	JobSpecRID         string                 `json:"job_spec_rid"`
+	JobSpecContentHash string                 `json:"job_spec_content_hash,omitempty"`
+	Input              PipelineArtifactSource `json:"input"`
+}
+
+type PipelineArtifactSource struct {
+	DatasetRID      string    `json:"dataset_rid"`
+	Branch          string    `json:"branch"`
+	Version         int32     `json:"version"`
+	TransactionID   uuid.UUID `json:"transaction_id"`
+	Path            string    `json:"path,omitempty"`
+	PredicateSHA256 string    `json:"predicate_sha256,omitempty"`
+}
+
 type CommitDatasetOutputRequest struct {
-	CreateIfMissing bool `json:"create_if_missing"`
+	ArtifactManifest *PipelineArtifactManifestInput `json:"artifact_manifest,omitempty"`
+	CreateIfMissing  bool                           `json:"create_if_missing"`
 	// IdempotencyKey opts the commit into the P2.6 keyed path: the exact
 	// raw body is fingerprinted by the service, and a replay of the same
 	// key with byte-identical body returns the stored immutable response.
