@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 )
 
 // Match the DVS CSV column limit. Streaming inference keeps one entry per
@@ -64,10 +65,19 @@ func (c *datasetSchemaInference) addRow(raw json.RawMessage) error {
 		}
 		kind := inferSchemaValueType(value)
 		if c.format == "json" {
-			if value[0] == '[' {
+			switch {
+			case value[0] == '[':
 				kind = "ARRAY"
-			} else if value[0] == '{' {
+			case value[0] == '{':
 				kind = "STRUCT"
+			case kind == "LONG":
+				if _, err := strconv.ParseInt(string(value), 10, 64); err != nil {
+					kind = "STRING"
+				}
+			case kind == "DOUBLE":
+				if _, err := strconv.ParseFloat(string(value), 64); err != nil {
+					kind = "STRING"
+				}
 			}
 		}
 		switch {

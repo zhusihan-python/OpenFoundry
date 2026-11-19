@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const jsonFlattenMaxDepth = 32
@@ -21,7 +22,7 @@ func scanSchemaInference(flattenJSON bool) *datasetSchemaInference {
 }
 
 func flattenJSONRecord(raw json.RawMessage) (json.RawMessage, error) {
-	if !json.Valid(raw) {
+	if !utf8.Valid(raw) || !json.Valid(raw) {
 		return nil, errors.New("dataset_json_flatten_invalid: input must be a JSON object")
 	}
 	fields := make(map[string]json.RawMessage)

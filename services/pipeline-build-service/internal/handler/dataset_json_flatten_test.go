@@ -46,6 +46,19 @@ func TestFlattenJSONRecordRejectsAmbiguityAndBounds(t *testing.T) {
 	}
 }
 
+func TestJSONInferencePreservesOutOfRangeNumbers(t *testing.T) {
+	raw := json.RawMessage(`{"limits":{"huge":9223372036854775808,"exponent":1e400}}`)
+	row, err := flattenJSONRecord(raw)
+	require.NoError(t, err)
+	require.Equal(t, `{"limits.exponent":1e400,"limits.huge":9223372036854775808}`, string(row))
+	inference := datasetSchemaInference{format: "json"}
+	require.NoError(t, inference.addRow(row))
+	require.Equal(t, []datasetRowsField{
+		{Name: "limits.exponent", Type: "STRING"},
+		{Name: "limits.huge", Type: "STRING"},
+	}, inference.schema().Fields)
+}
+
 func TestDatasetSnapshotFlattenJSONRequiresBoolean(t *testing.T) {
 	base := `{"branch":"main","version":1,"transaction_id":"11111111-1111-1111-1111-111111111111","flatten_json":%s}`
 	pin, err := parseDatasetInputSnapshot(json.RawMessage(fmt.Sprintf(base, "true")))
