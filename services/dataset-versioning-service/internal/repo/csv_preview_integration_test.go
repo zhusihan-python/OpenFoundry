@@ -113,6 +113,7 @@ func TestHistoricalCSVPreviewUsesPublishedOptions(t *testing.T) {
 	}
 	scanned := read(scan(old, url.Values{"all_files": {"true"}}), oldTxn, names, `[{"name":"café\n🌱","quantity":3}]`)
 	require.Equal(t, first.NextCursor, scanned.NextCursor)
+	require.Equal(t, http.StatusNotFound, scan(old, url.Values{"path": {"unregistered.csv"}}).Code)
 	pathResponse := scan(old, url.Values{"path": {"part-a.csv"}})
 	require.Contains(t, pathResponse.Body.String(), `"path":"part-a.csv"`)
 	path := read(pathResponse, oldTxn, names, `[{"name":"café\n🌱","quantity":3}]`)

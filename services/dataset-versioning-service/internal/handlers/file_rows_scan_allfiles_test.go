@@ -30,10 +30,10 @@ func stagedObjectKey(hs *scanHarness, txnID uuid.UUID, logical string) string {
 // content-less specs exercise rows a legacy metadata-only commit could
 // leave behind.
 type stagedSpec struct {
-	path        string
-	content     []byte
-	op          models.FileOperation
-	physical    string // override the derived object key when set
+	path         string
+	content      []byte
+	op           models.FileOperation
+	physical     string // override the derived object key when set
 	sizeOverride *int64
 }
 
@@ -262,8 +262,8 @@ func TestScanAllFilesEmptyAndNoMatchWindows(t *testing.T) {
 	hs := newScanHarness(t)
 	version := hs.commitSnapshotVersionFiles(t,
 		stagedSpec{path: "part-0.ndjson", content: []byte(joinLines([]string{`{"id":1}`, `{"id":2}`, `{"id":3}`}))},
-		stagedSpec{path: "part-1.ndjson", content: []byte{}},                 // empty file
-		stagedSpec{path: "part-2.ndjson", content: []byte("  \n\t\n \n")},   // whitespace-only
+		stagedSpec{path: "part-1.ndjson", content: []byte{}},              // empty file
+		stagedSpec{path: "part-2.ndjson", content: []byte("  \n\t\n \n")}, // whitespace-only
 		stagedSpec{path: "part-3.ndjson", content: []byte(joinLines([]string{`{"id":4}`, `{"id":5}`}))},
 	)
 
@@ -328,11 +328,11 @@ func TestScanAllFilesNoTrailingNewlineAtBoundary(t *testing.T) {
 // (as a legacy metadata-only commit could register), missing bytes and a
 // tampered size each fail the whole scan explicitly — nothing is skipped.
 func TestScanAllFilesRejectsUnsupportedFiles(t *testing.T) {
-	t.Run("csv file", func(t *testing.T) {
+	t.Run("unsupported text file", func(t *testing.T) {
 		hs := newScanHarness(t)
 		version := hs.commitSnapshotVersionFiles(t,
 			stagedSpec{path: "a.ndjson", content: []byte(`{"x":1}` + "\n")},
-			stagedSpec{path: "notes.csv", content: []byte("x\n1\n")},
+			stagedSpec{path: "notes.txt", content: []byte("x\n1\n")},
 		)
 		rec := hs.scanRequest(scanAllFilesQuery(version, "", 0), nil)
 		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)

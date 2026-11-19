@@ -287,7 +287,7 @@ func TestRowsScanRealRouterNegativeControls(t *testing.T) {
 		{"unknown branch", "?branch=nope&version=1&path=part-00000.ndjson", 404, "branch not found"},
 		{"unknown version", scanQuery(99, "part-00000.ndjson", "", 0), 404, "dataset version not found"},
 		{"unregistered path", scanQuery(v1, "part-99999.ndjson", "", 0), 404, "file not registered in dataset version"},
-		{"non ndjson path", scanQuery(v1, "data.csv", "", 0), 422, "dataset_file_format_unsupported"},
+		{"unsupported format path", scanQuery(v1, "data.txt", "", 0), 422, "dataset_file_format_unsupported"},
 		{"corrupt cursor", scanQuery(v1, "part-00000.ndjson", "QUJDRA", 0), 400, "dataset_scan_cursor_invalid"},
 		{"cursor bad escape", "?branch=main&version=" + fmt.Sprint(v1) + "&path=part-00000.ndjson&cursor=%zz", 400, "invalid query encoding"},
 		{"cursor wrong version", scanQuery(v1, "part-00000.ndjson", mintScanCursor(t, s, "part-00000.ndjson", v1+1), 0), 400, "dataset_scan_cursor_mismatch"},
@@ -704,14 +704,14 @@ func TestRowsScanAllFilesV2BetweenPagesAndRejections(t *testing.T) {
 
 	// Binding rejections on the real router.
 	for name, q := range map[string]string{
-		"cursor on new version": allFilesQuery(v2, *first.NextCursor, 0),
+		"cursor on new version":         allFilesQuery(v2, *first.NextCursor, 0),
 		"cursor with changed predicate": allFilesPredicateQuery(v1, `{"column":"sku","op":"eq","value":"v1a-0001"}`, *first.NextCursor, 0),
-		"all_files with path":          "?branch=main&version=1&all_files=true&path=a.ndjson",
-		"all_files false":              "?branch=main&version=1&all_files=false",
-		"empty predicate":              "?branch=main&version=1&all_files=true&predicate=",
-		"predicate bad json":           allFilesPredicateQuery(v1, "{nope", "", 0),
-		"predicate non-scalar":         allFilesPredicateQuery(v1, `{"column":"a","op":"eq","value":{"b":1}}`, "", 0),
-		"s1 cursor on all_files":       allFilesQuery(v1, mintScanCursor(t, s, "a.ndjson", v1), 0),
+		"all_files with path":           "?branch=main&version=1&all_files=true&path=a.ndjson",
+		"all_files false":               "?branch=main&version=1&all_files=false",
+		"empty predicate":               "?branch=main&version=1&all_files=true&predicate=",
+		"predicate bad json":            allFilesPredicateQuery(v1, "{nope", "", 0),
+		"predicate non-scalar":          allFilesPredicateQuery(v1, `{"column":"a","op":"eq","value":{"b":1}}`, "", 0),
+		"s1 cursor on all_files":        allFilesQuery(v1, mintScanCursor(t, s, "a.ndjson", v1), 0),
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := s.do(t, http.MethodGet, "/v1/datasets/"+s.rid+"/files/rows:scan"+q, "", nil, s.tokenA)
