@@ -68,6 +68,9 @@ func (h *Handlers) previewPinnedDataset(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
+	if h.previewPinnedCSV(w, r, datasetID, branch, target, int32(version), limit, query.Get("cursor")) {
+		return
+	}
 	page, ok := h.scanAllFilesPage(w, r, datasetID, branch, target.branch, target.txn, int32(version), limit, nil, query.Get("cursor"))
 	if !ok {
 		return

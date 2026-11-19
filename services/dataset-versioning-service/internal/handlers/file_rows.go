@@ -416,21 +416,9 @@ func parseDelimitedRows(data []byte, tabSeparated bool, limit int) ([]string, []
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("read header: %w", err)
 	}
-	columns := make([]string, 0, len(header))
-	seen := map[string]bool{}
-	for i, raw := range header {
-		name := strings.TrimSpace(raw)
-		if name == "" {
-			name = fmt.Sprintf("column_%d", i+1)
-		}
-		if seen[name] {
-			return nil, nil, false, fmt.Errorf("duplicate column %q", name)
-		}
-		seen[name] = true
-		columns = append(columns, name)
-	}
-	if len(columns) > datasetFileRowsMaxColumns {
-		return nil, nil, false, fmt.Errorf("file has %d columns, max %d", len(columns), datasetFileRowsMaxColumns)
+	columns, err := csvColumnNames(header)
+	if err != nil {
+		return nil, nil, false, err
 	}
 	rows := make([]map[string]models.JSONValue, 0, limit)
 	truncated := false
@@ -453,6 +441,26 @@ func parseDelimitedRows(data []byte, tabSeparated bool, limit int) ([]string, []
 		rows = append(rows, row)
 	}
 	return columns, rows, truncated, nil
+}
+
+func csvColumnNames(header []string) ([]string, error) {
+	columns := make([]string, 0, len(header))
+	seen := map[string]bool{}
+	for i, raw := range header {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			name = fmt.Sprintf("column_%d", i+1)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate column %q", name)
+		}
+		seen[name] = true
+		columns = append(columns, name)
+	}
+	if len(columns) > datasetFileRowsMaxColumns {
+		return nil, fmt.Errorf("file has %d columns, max %d", len(columns), datasetFileRowsMaxColumns)
+	}
+	return columns, nil
 }
 
 func parseNDJSONRows(data []byte, limit int) ([]string, []map[string]models.JSONValue, bool, error) {
