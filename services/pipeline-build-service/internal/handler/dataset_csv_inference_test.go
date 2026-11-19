@@ -10,7 +10,7 @@ import (
 )
 
 func TestCSVSchemaInferenceMergesRowsAndHeaders(t *testing.T) {
-	var infer csvSchemaInference
+	infer := datasetSchemaInference{format: "csv"}
 	require.NoError(t, infer.addHeaders(json.RawMessage(`[{"name":"header_only"}]`)))
 	require.NoError(t, infer.addRow(json.RawMessage(`{"amount":2,"code":123,"quantity":1,"note":null}`)))
 	require.NoError(t, infer.addRow(json.RawMessage(`{"amount":2.5,"code":"001","quantity":4,"note":"x"}`)))
@@ -23,21 +23,21 @@ func TestCSVSchemaInferenceMergesRowsAndHeaders(t *testing.T) {
 		{Name: "quantity", Type: "LONG"},
 	}}, infer.schema())
 
-	var empty csvSchemaInference
+	empty := datasetSchemaInference{format: "csv"}
 	require.NoError(t, empty.addHeaders(json.RawMessage(`[{"name":"name"}]`)))
 	require.Equal(t, []datasetRowsField{{Name: "name", Type: "STRING", Nullable: true}}, empty.schema().Fields)
 }
 
 func TestCSVSchemaInferenceBoundsColumnMetadata(t *testing.T) {
-	var infer csvSchemaInference
-	for i := range csvInferenceMaxColumns {
+	infer := datasetSchemaInference{format: "csv"}
+	for i := range schemaInferenceMaxColumns {
 		_, err := infer.column(fmt.Sprint(i))
 		require.NoError(t, err)
 	}
 	_, err := infer.column("extra")
 	require.ErrorContains(t, err, "dataset_csv_schema_columns_exceeded")
 
-	var wide csvSchemaInference
-	_, err = wide.column(strings.Repeat("x", csvInferenceMaxNameBytes+1))
+	wide := datasetSchemaInference{format: "csv"}
+	_, err = wide.column(strings.Repeat("x", schemaInferenceMaxNameBytes+1))
 	require.ErrorContains(t, err, "dataset_csv_schema_names_exceeded")
 }

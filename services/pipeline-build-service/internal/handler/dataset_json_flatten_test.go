@@ -1,0 +1,58 @@
+package handler
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestFlattenJSONRecordEscapesPathsAndInfersContainers(t *testing.T) {
+	row, err := flattenJSONRecord(json.RawMessage(`{"a":{"b":2,"c":null},"a.b":"literal","a\\b":1,"items":[{"id":7}],"empty":{}}`))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"a.b":2,"a.c":null,"a\\.b":"literal","a\\\\b":1,"items":[{"id":7}],"empty":{}}`, string(row))
+
+	inference := datasetSchemaInference{format: "json"}
+	require.NoError(t, inference.addRow(row))
+	require.NoError(t, inference.addRow(json.RawMessage(`{"a.b":2.5,"empty":{},"items":[]}`)))
+	require.Equal(t, []datasetRowsField{
+		{Name: "a.b", Type: "DOUBLE"},
+		{Name: "a.c", Type: "STRING", Nullable: true},
+		{Name: "a\\.b", Type: "STRING", Nullable: true},
+		{Name: "a\\\\b", Type: "LONG", Nullable: true},
+		{Name: "empty", Type: "STRUCT"},
+		{Name: "items", Type: "ARRAY"},
+	}, inference.schema().Fields)
+}
+
+func TestFlattenJSONRecordRejectsAmbiguityAndBounds(t *testing.T) {
+	tooDeep := strings.Repeat(`{"nested":`, jsonFlattenMaxDepth+1) + "1" + strings.Repeat("}", jsonFlattenMaxDepth+1)
+	wide := make([]string, schemaInferenceMaxColumns+1)
+	for i := range wide {
+		wide[i] = fmt.Sprintf(`"field%d":0`, i)
+	}
+	for name, input := range map[string]string{
+		"dataset_json_flatten_duplicate_key":   `{"obj":{"id":1,"\u0069d":2}}`,
+		"dataset_json_flatten_invalid":         `{"":1}`,
+		"dataset_json_flatten_depth":           tooDeep,
+		"dataset_json_schema_columns_exceeded": "{" + strings.Join(wide, ",") + "}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := flattenJSONRecord(json.RawMessage(input))
+			require.ErrorContains(t, err, name)
+		})
+	}
+}
+
+func TestDatasetSnapshotFlattenJSONRequiresBoolean(t *testing.T) {
+	base := `{"branch":"main","version":1,"transaction_id":"11111111-1111-1111-1111-111111111111","flatten_json":%s}`
+	pin, err := parseDatasetInputSnapshot(json.RawMessage(fmt.Sprintf(base, "true")))
+	require.NoError(t, err)
+	require.True(t, pin.FlattenJSON)
+	for _, invalid := range []string{`"true"`, "null", "1"} {
+		_, err := parseDatasetInputSnapshot(json.RawMessage(fmt.Sprintf(base, invalid)))
+		require.ErrorContains(t, err, "flatten_json must be a boolean")
+	}
+}
