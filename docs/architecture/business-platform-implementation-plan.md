@@ -527,7 +527,7 @@ S2 的 P2.5 完整15项回归已通过；h1–h8中，h5依原契约仅作前序
 ### 批次 D：阶段 1 收尾验收
 
 - **D1 只读画布（DI-10）**：以批次 B2 研发代码发布路径已可用为前提收敛编辑入口；保留节点选择、节点预览、构建详情；不删除研发发布 API，不机械全局 readOnly（PipelineCanvas 的 selectNode 与 readOnly 耦合需先解耦）。
-- **D2 Excel 管道变换（DI-11）**：raw workbook 作为管道输入的解析变换（区别于 P3.1 普通上传），分批范围按批次 A 裁决；不引 Java/Spark 依赖。
+- **D2 Excel 管道变换（DI-11）**：以 raw workbook 为管道输入。T5 选择 A，先做单 XLSX，再交付多 sheet、多输出与错误行隔离，随后扩展格式和抽取。不引 Java/Spark 依赖。[决策及验收顺序](data-integration-wp11-1-excel-parser-t5.md)
 - **D3 结构推断（DI-03 的 P2 细点，不阻塞 B2 P0 收尾）**：排在 C2 的 CSV 持久化配置交付之后——CSV 消费 DI-08 同一份配置（预览与执行一致），JSON 嵌套展开与类型推断，推断结果进 schema 可查；不另建 CSV 参数模型。
 
 ### 批次 E：阶段 2 全链血缘（DI-07）
