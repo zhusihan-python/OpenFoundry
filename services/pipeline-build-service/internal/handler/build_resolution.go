@@ -320,10 +320,44 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 		writeResolutionHTTPError(w, err)
 		return
 	}
+	stagedGroup, err := stagedManualGroupConfig(specs)
+	if err != nil || (stagedGroup != nil && (batchedCfg != nil || (args.TriggerKind != "MANUAL" && args.TriggerKind != "FORCE"))) {
+		if err == nil {
+			err = errors.New("staged output groups require a manual build")
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "staged_group_config_invalid", "detail": err.Error()})
+		return
+	}
+	var frozenStagedGroup json.RawMessage
+	if stagedGroup != nil {
+		switch ports.Versioning.(type) {
+		case DatasetHTTPVersioning, *DatasetHTTPVersioning:
+		default:
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "staged_group_versioning_unavailable"})
+			return
+		}
+		frozenStagedGroup, err = json.Marshal(stagedGroup)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "staged_group_config_invalid"})
+			return
+		}
+		args.ReservationPurpose = batchedReservationPurpose
+		args.SpecFreezer = func(fresh []models.JobSpec) error {
+			group, err := stagedManualGroupConfig(fresh)
+			if err != nil {
+				return err
+			}
+			raw, err := json.Marshal(group)
+			if err != nil || string(raw) != string(frozenStagedGroup) {
+				return errors.New("staged group JobSpecs changed during resolution")
+			}
+			return nil
+		}
+	}
 	if batchedCfg != nil {
 		frozen := batchedCfg
 		args.SpecFreezer = func(fresh []models.JobSpec) error { return batchedSpecsEquivalent(frozen, fresh) }
-	} else if args.TriggerKind == "MANUAL" || args.TriggerKind == "FORCE" {
+	} else if stagedGroup == nil && (args.TriggerKind == "MANUAL" || args.TriggerKind == "FORCE") {
 		switch ports.Versioning.(type) {
 		case DatasetHTTPVersioning, *DatasetHTTPVersioning:
 			args.ReservationPurpose = manualOutputPurpose
@@ -393,6 +427,7 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 		// reservation RID); execute reads exactly this row.
 		resolved.BatchConfig = batchedCfg
 	}
+	resolved.ManualStagedGroup = frozenStagedGroup
 	if err := ports.Builds.PersistResolvedBuild(persistCtx, resolved); err != nil {
 		// Persistence failed after transactions were opened: compensate
 		// (abort this run's transactions, release this build's locks)

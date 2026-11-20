@@ -143,6 +143,11 @@ func (m manualBuildExecution) prepareGroup(ctx context.Context, plan executor.Pl
 		}
 	}
 	sort.Slice(group, func(i, j int) bool { return group[i].remote.dataset < group[j].remote.dataset })
+	if m.staged != nil {
+		if err := m.stageGroup(ctx, group, outcome); err != nil {
+			return nil, err
+		}
+	}
 	return group, nil
 }
 
@@ -154,14 +159,19 @@ func (m manualBuildExecution) publishGroup(ctx, recoveryCtx context.Context, gro
 	// Persist the exact ordered request fingerprint before contacting DVS.
 	// A concurrent abort that changes the build state wins before this
 	// compare-and-set and prevents publication.
-	saved, err := m.store.SetManualGroupPublishFingerprint(recoveryCtx, m.buildID, "", fingerprint)
+	path := "/v1/datasets/outputs:commit-group"
+	var durableBody []byte
+	if m.staged != nil {
+		path, durableBody = stagedManualGroupPath, payload
+	}
+	saved, err := m.store.SetManualGroupPublishFingerprint(recoveryCtx, m.buildID, "", fingerprint, durableBody)
 	if err != nil {
 		return nil, false, err
 	}
 	if !saved {
 		return nil, false, errManualGroupReceiptsPending
 	}
-	status, raw, err := m.dataset.do(ctx, http.MethodPost, "/v1/datasets/outputs:commit-group", payload)
+	status, raw, err := m.dataset.do(ctx, http.MethodPost, path, payload)
 	if err == nil && (status == http.StatusCreated || status == http.StatusOK) {
 		publications, decodeErr := decodeManualGroupReceipts(group, raw, fingerprint)
 		if decodeErr == nil {
@@ -188,7 +198,7 @@ func (m manualBuildExecution) publishGroup(ctx, recoveryCtx context.Context, gro
 	}
 	rejected := len(publications) == 0 && status >= 400 && status < 500 && status != http.StatusRequestTimeout
 	if rejected {
-		cleared, clearErr := m.store.SetManualGroupPublishFingerprint(recoveryCtx, m.buildID, fingerprint, "")
+		cleared, clearErr := m.store.SetManualGroupPublishFingerprint(recoveryCtx, m.buildID, fingerprint, "", nil)
 		if clearErr != nil || !cleared {
 			return nil, false, errors.Join(errManualGroupReceiptsPending, err, clearErr)
 		}

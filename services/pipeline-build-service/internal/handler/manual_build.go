@@ -33,7 +33,8 @@ type manualBuildStore interface {
 	FinishManualBuild(context.Context, uuid.UUID, models.BuildState, executor.Outcome) (bool, error)
 	RecoverManualBuildCompletion(context.Context, uuid.UUID) (bool, error)
 	ManualGroupPublishFingerprint(context.Context, uuid.UUID) (string, error)
-	SetManualGroupPublishFingerprint(context.Context, uuid.UUID, string, string) (bool, error)
+	SetManualGroupPublishFingerprint(context.Context, uuid.UUID, string, string, []byte) (bool, error)
+	ManualStagedGroupConfig(context.Context, uuid.UUID) (json.RawMessage, error)
 }
 
 func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts, buildID uuid.UUID) {
@@ -96,6 +97,27 @@ func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts
 	if len(outputs) > maxManualDatasetGroup {
 		writeManualBuildError(w, http.StatusConflict, "manual_build_output_limit_exceeded", nil)
 		return
+	}
+	rawStaged, err := store.ManualStagedGroupConfig(ctx, buildID)
+	if err != nil {
+		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_staged_group_unavailable", err)
+		return
+	}
+	if len(rawStaged) != 0 {
+		if len(outputs) < 2 {
+			writeManualBuildError(w, http.StatusConflict, "manual_staged_group_outputs_missing", nil)
+			return
+		}
+		var staged manualStagedGroupConfig
+		if err := json.Unmarshal(rawStaged, &staged); err != nil {
+			writeManualBuildError(w, http.StatusInternalServerError, "manual_staged_group_invalid", err)
+			return
+		}
+		if err := staged.verifyPlan(plan); err != nil {
+			writeManualBuildError(w, http.StatusConflict, "manual_staged_group_plan_changed", err)
+			return
+		}
+		run.staged = &staged
 	}
 	started, err := store.MoveManualBuild(ctx, buildID, models.BuildResolution, models.BuildRunning)
 	if err != nil {
@@ -318,6 +340,7 @@ type manualBuildExecution struct {
 	subject      uuid.UUID
 	outputs      map[string]ManualBuildOutput
 	fingerprints *sync.Map
+	staged       *manualStagedGroupConfig
 }
 
 func (m manualBuildExecution) Commit(ctx context.Context, output executor.OutputTransaction, result executor.NodeResult) error {
