@@ -37,7 +37,8 @@ import (
 
 const (
 	// batchedTransformType is the entire closed grammar v1.
-	batchedTransformType = "batched_dataset_copy"
+	batchedTransformType        = "batched_dataset_copy"
+	batchedJSONFlattenTransform = "batched_json_flatten"
 	// batchedReservationPurpose rides the reservation providence.
 	batchedReservationPurpose = "wp33-staged-output"
 	// Logical/output path bounds mirror the dataset scan cursor path cap.
@@ -150,7 +151,7 @@ func detectBatchedFamily(specs []models.JobSpec) bool {
 		if json.Unmarshal(spec.LogicPayload, &probe) != nil {
 			continue
 		}
-		if probe.TransformType == batchedTransformType {
+		if probe.TransformType == batchedTransformType || probe.TransformType == batchedJSONFlattenTransform {
 			return true
 		}
 	}
@@ -224,7 +225,7 @@ func parseBatchedSpec(specs []models.JobSpec, body models.CreateBuildRequest, ar
 	if err := json.Unmarshal(spec.LogicPayload, &payload); err != nil {
 		return nil, bad("logic_payload is not the batched object: %v", err)
 	}
-	if payload.TransformType != batchedTransformType {
+	if payload.TransformType != batchedTransformType && payload.TransformType != batchedJSONFlattenTransform {
 		return nil, bad("unsupported batched transform_type %q", payload.TransformType)
 	}
 	if payload.Input.Version < 1 {
@@ -274,6 +275,9 @@ func parseBatchedSpec(specs []models.JobSpec, body models.CreateBuildRequest, ar
 			return nil, bad("output.logical_path %q must end with .ndjson", logicalPath)
 		}
 	case batchedParquetFormat:
+		if payload.TransformType == batchedJSONFlattenTransform {
+			return nil, bad("batched_json_flatten requires NDJSON output")
+		}
 		if payload.Output.SchemaVersion != ordersSchemaVersion {
 			return nil, bad("output.format parquet requires output.schema_version %q", ordersSchemaVersion)
 		}
@@ -658,6 +662,7 @@ func executeBatchedRun(w http.ResponseWriter, r *http.Request, store batchedBuil
 		TransactionType: "SNAPSHOT",
 		ReservationID:   reservationUUID,
 		BuildID:         cfg.BuildID,
+		Schema:          digest.schema,
 		Files: []batchedCommitFile{{
 			LogicalPath:    cfg.LogicalPath,
 			Operation:      "STAGED_ADD",
@@ -836,6 +841,7 @@ type batchedCommitRequest struct {
 	ReservationID   uuid.UUID           `json:"reservation_id"`
 	BuildID         uuid.UUID           `json:"build_id"`
 	Files           []batchedCommitFile `json:"files"`
+	Schema          *datasetRowsSchema  `json:"schema,omitempty"`
 }
 
 type batchedCommitFile struct {
@@ -859,6 +865,7 @@ type batchedDigest struct {
 	sha     string
 	size    int64
 	records int64
+	schema  *datasetRowsSchema
 }
 
 // stageBatchedInput streams the pinned input scan into ONE stage upload:
@@ -886,6 +893,7 @@ func stageBatchedInput(ctx context.Context, client batchedDatasetClient, cfg *mo
 	}
 	hash := sha256.New()
 	var size, records int64
+	var schema *datasetRowsSchema
 	maxRecord := client.cfg.StageMaxRecordBytes
 	receipt, err := client.StageStream(ctx, req, func(feedCtx context.Context, w *bufio.Writer) error {
 		// feedCtx is the stage attempt context: an early HTTP answer (or
@@ -898,7 +906,9 @@ func stageBatchedInput(ctx context.Context, client batchedDatasetClient, cfg *mo
 			})
 			return err
 		}
-		_, scanErr := client.ScanStream(feedCtx, input, func(record []byte) error {
+		input.flattenJSON = cfg.TransformType == batchedJSONFlattenTransform
+		input.schemaInference = scanSchemaInference(input.flattenJSON)
+		stats, scanErr := client.ScanStream(feedCtx, input, func(record []byte) error {
 			rec := record
 			if bytes.ContainsAny(rec, "\n\r") {
 				// Raw control characters cannot occur in valid JSON, but
@@ -928,12 +938,15 @@ func stageBatchedInput(ctx context.Context, client batchedDatasetClient, cfg *mo
 			records++
 			return nil
 		})
+		if scanErr == nil && (stats.Metadata.Format == "csv" || input.flattenJSON) {
+			schema = stats.Metadata.Schema
+		}
 		return scanErr
 	})
 	if err != nil {
 		return batchedStageResponse{}, batchedDigest{}, err
 	}
-	return receipt, batchedDigest{sha: hex.EncodeToString(hash.Sum(nil)), size: size, records: records}, nil
+	return receipt, batchedDigest{sha: hex.EncodeToString(hash.Sum(nil)), size: size, records: records, schema: schema}, nil
 }
 
 // handleBatchedStageFailure terminates a PRE-INTENT failure: the precise

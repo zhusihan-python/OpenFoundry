@@ -484,28 +484,29 @@ func inferSchemaType(column string, rows []map[string]json.RawMessage) string {
 		if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
 			continue
 		}
-		var value any
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.UseNumber()
-		if err := dec.Decode(&value); err != nil {
-			return "STRING"
-		}
-		switch typed := value.(type) {
-		case bool:
-			return "BOOLEAN"
-		case json.Number:
-			text := typed.String()
-			if strings.ContainsAny(text, ".eE") {
-				return "DOUBLE"
-			}
-			return "LONG"
-		case string:
-			return "STRING"
-		default:
-			return "STRING"
-		}
+		return inferSchemaValueType(raw)
 	}
 	return "STRING"
+}
+
+func inferSchemaValueType(raw []byte) string {
+	var value any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&value); err != nil {
+		return "STRING"
+	}
+	switch typed := value.(type) {
+	case bool:
+		return "BOOLEAN"
+	case json.Number:
+		if strings.ContainsAny(typed.String(), ".eE") {
+			return "DOUBLE"
+		}
+		return "LONG"
+	default:
+		return "STRING"
+	}
 }
 
 func inferNullable(column string, rows []map[string]json.RawMessage) bool {

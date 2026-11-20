@@ -187,11 +187,13 @@ func batchedDatasetUUID(datasetRID string) (uuid.UUID, error) {
 
 // batchedScanInput is the frozen input binding for one scan.
 type batchedScanInput struct {
-	DatasetRID string // canonical ri.foundry.main.dataset.<uuid>
-	Branch     string
-	Version    int32
-	Path       string // "" = all_files
-	Predicate  string // "" = none
+	schemaInference *datasetSchemaInference
+	flattenJSON     bool
+	DatasetRID      string // canonical ri.foundry.main.dataset.<uuid>
+	Branch          string
+	Version         int32
+	Path            string // "" = all_files
+	Predicate       string // "" = none
 	// ExpectedTransactionID, when set, pins the scan BEFORE the first
 	// page: page one must report exactly this transaction (as must every
 	// later page). WP3.4 snapshot reads use it so the served version can
@@ -302,6 +304,9 @@ func (c batchedDatasetClient) ScanStream(ctx context.Context, in batchedScanInpu
 		}
 		stats.Rows += pageStats
 		if pageCursor == nil {
+			if in.schemaInference != nil && (stats.Metadata.Format == "csv" || in.flattenJSON) {
+				stats.Metadata.Schema = in.schemaInference.schema()
+			}
 			return stats, nil
 		}
 		next := *pageCursor
@@ -351,6 +356,8 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 		seenVersion bool
 		seenSchema  bool
 		parquetErr  error
+		schemaErr   error
+		csvColumns  json.RawMessage
 	)
 	preRowCheck = func() error {
 		if envDataset == "" || envBranch == "" || envTxn == "" || envVersion < 0 {
@@ -398,6 +405,19 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 						return 0, nil, parquetErr
 					}
 				}
+				if in.flattenJSON {
+					if seenFormat && metadata.Format != "" && metadata.Format != "ndjson" {
+						return 0, nil, errJSONFlattenInputFormat
+					}
+					flat, err := flattenJSONRecord(record)
+					if err != nil {
+						return 0, nil, err
+					}
+					record = flat
+				}
+				if in.schemaInference != nil && (in.flattenJSON || !seenFormat || metadata.Format == "csv") && schemaErr == nil {
+					schemaErr = in.schemaInference.addRow(record)
+				}
 				if eerr := emit(record); eerr != nil {
 					return 0, nil, eerr
 				}
@@ -425,6 +445,10 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 			seenFormat = true
 			if derr := dec.Decode(&metadata.Format); derr != nil {
 				return 0, nil, fmt.Errorf("batched_scan_decode: format: %w", derr)
+			}
+		case "columns":
+			if derr := dec.Decode(&csvColumns); derr != nil {
+				return 0, nil, fmt.Errorf("batched_scan_decode: columns: %w", derr)
 			}
 		case "schema_version":
 			if seenVersion {
@@ -499,6 +523,19 @@ func (c batchedDatasetClient) decodeScanPage(body io.Reader, expectedDataset uui
 	}
 	if metadata.Format == batchedParquetFormat && parquetErr != nil {
 		return 0, nil, parquetErr
+	}
+	if in.flattenJSON && metadata.Format != "" && metadata.Format != "ndjson" {
+		return 0, nil, errJSONFlattenInputFormat
+	}
+	if in.schemaInference != nil && (in.flattenJSON || metadata.Format == "csv") {
+		if schemaErr != nil {
+			return 0, nil, schemaErr
+		}
+		if !in.flattenJSON {
+			if err := in.schemaInference.addHeaders(csvColumns); err != nil {
+				return 0, nil, err
+			}
+		}
 	}
 	if envRowCount >= 0 && envRowCount != pageRows {
 		return 0, nil, fmt.Errorf("batched_scan_row_count_mismatch: page reports %d rows but %d were streamed", envRowCount, pageRows)

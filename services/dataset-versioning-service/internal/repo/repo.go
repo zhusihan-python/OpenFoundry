@@ -240,6 +240,24 @@ func (r *Repo) GetVersion(ctx context.Context, datasetID uuid.UUID, version int3
 	return v, err
 }
 
+// GetPublishedVersionAt selects the latest visible commit at or before at.
+// Break timestamp ties using version order, which is assigned at publication.
+func (r *Repo) GetPublishedVersionAt(ctx context.Context, datasetID uuid.UUID, branch string, at time.Time) (int32, error) {
+	var version int32
+	err := r.Pool.QueryRow(ctx, `SELECT v.version
+		FROM dataset_versions v
+		JOIN dataset_transactions t ON t.dataset_id = v.dataset_id AND t.id = v.transaction_id
+		JOIN dataset_branches b ON b.dataset_id = t.dataset_id AND b.id = t.branch_id
+		WHERE v.dataset_id = $1 AND b.name = $2 AND b.archived_at IS NULL AND b.deleted_at IS NULL
+		  AND t.status = 'COMMITTED' AND t.committed_at <= $3
+		ORDER BY t.committed_at DESC, v.version DESC
+		LIMIT 1`, datasetID, branch, at).Scan(&version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return version, err
+}
+
 func (r *Repo) CreateVersion(ctx context.Context, datasetID uuid.UUID, body *models.CreateDatasetVersionRequest) (*models.DatasetVersion, error) {
 	version := int32(0)
 	if body.Version != nil {

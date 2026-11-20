@@ -1074,6 +1074,8 @@ type CsvOptions struct {
 	Quote           string  `json:"quote"`
 	Escape          string  `json:"escape"`
 	Header          bool    `json:"header"`
+	HeaderRow       *int    `json:"headerRow,omitempty"`
+	BOM             string  `json:"bom,omitempty"`
 	NullValue       string  `json:"nullValue"`
 	DateFormat      *string `json:"dateFormat,omitempty"`
 	TimestampFormat *string `json:"timestampFormat,omitempty"`

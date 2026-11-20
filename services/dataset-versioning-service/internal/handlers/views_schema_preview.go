@@ -306,7 +306,7 @@ func (h *Handlers) PreviewDataset(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "invalid query encoding")
 		return
 	}
-	if query.Has("version") || query.Has("cursor") {
+	if query.Has("version") || query.Has("ts") || query.Has("cursor") {
 		h.previewPinnedDataset(w, r, query)
 		return
 	}

@@ -225,7 +225,7 @@ func TestScanRejectsBadRequests(t *testing.T) {
 		{name: "unknown branch", query: func() string { return "?branch=nope&version=1&path=part-00000.ndjson" }, status: 404, errSub: "branch not found"},
 		{name: "unknown version", query: func() string { return scanQuery(99, "part-00000.ndjson", "", 0) }, status: 404, errSub: "dataset version not found"},
 		{name: "unregistered path", query: func() string { return scanQuery(version, "part-99999.ndjson", "", 0) }, status: 404, errSub: "file not registered in dataset version"},
-		{name: "non-ndjson path", query: func() string { return scanQuery(version, "data.csv", "", 0) }, status: 422, errSub: "dataset_file_format_unsupported"},
+		{name: "unsupported format path", query: func() string { return scanQuery(version, "data.txt", "", 0) }, status: 422, errSub: "dataset_file_format_unsupported"},
 		{name: "corrupt cursor", query: func() string { return scanQuery(version, "part-00000.ndjson", "QUJDRA", 0) }, status: 400, errSub: "dataset_scan_cursor_invalid"},
 		// A cursor with an invalid percent-escape must 400, not silently
 		// degrade into a first-page request (r.URL.Query() drops such

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,7 @@ type datasetInputSnapshot struct {
 	Branch        string
 	Version       int32
 	TransactionID uuid.UUID
+	FlattenJSON   bool
 }
 
 // PayloadDeclaresDatasetSnapshot reports whether a logic_payload declares
@@ -120,7 +122,13 @@ func parseDatasetInputSnapshot(raw json.RawMessage) (*datasetInputSnapshot, erro
 	if err != nil {
 		return nil, bad("transaction_id %q is not a transaction RID", txn)
 	}
-	return &datasetInputSnapshot{Branch: strings.TrimSpace(branch), Version: int32(version), TransactionID: txnID}, nil
+	var flatten bool
+	if value, ok := fields["flatten_json"]; ok {
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) || json.Unmarshal(value, &flatten) != nil {
+			return nil, bad("flatten_json must be a boolean")
+		}
+	}
+	return &datasetInputSnapshot{Branch: strings.TrimSpace(branch), Version: int32(version), TransactionID: txnID, FlattenJSON: flatten}, nil
 }
 
 // readDatasetSnapshotRows materializes the pinned snapshot through the
@@ -161,6 +169,8 @@ func (r DatasetServiceRowReader) readDatasetSnapshotRows(ctx context.Context, re
 	var totalBytes int64
 	expectedTxn := req.Snapshot.TransactionID
 	scan, scanErr := client.ScanStream(ctx, batchedScanInput{
+		schemaInference:       scanSchemaInference(req.Snapshot.FlattenJSON),
+		flattenJSON:           req.Snapshot.FlattenJSON,
 		DatasetRID:            rid,
 		Branch:                req.Snapshot.Branch,
 		Version:               req.Snapshot.Version,
