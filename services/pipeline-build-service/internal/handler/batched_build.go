@@ -657,12 +657,13 @@ func executeBatchedRun(w http.ResponseWriter, r *http.Request, store batchedBuil
 	// concurrently recorded abort request (that path completes the exact
 	// cancel itself).
 	intent := batchedCommitRequest{
-		IdempotencyKey:  batchedStableKey(cfg.BuildID),
-		Branch:          cfg.OutputBranch,
-		TransactionType: "SNAPSHOT",
-		ReservationID:   reservationUUID,
-		BuildID:         cfg.BuildID,
-		Schema:          digest.schema,
+		IdempotencyKey:   batchedStableKey(cfg.BuildID),
+		Branch:           cfg.OutputBranch,
+		TransactionType:  "SNAPSHOT",
+		ReservationID:    reservationUUID,
+		BuildID:          cfg.BuildID,
+		Schema:           digest.schema,
+		ArtifactManifest: newBatchedArtifactManifest(cfg, digest.inputTransaction),
 		Files: []batchedCommitFile{{
 			LogicalPath:    cfg.LogicalPath,
 			Operation:      "STAGED_ADD",
@@ -835,13 +836,14 @@ func verifyBatchedCommitACK(body []byte, cfg *models.BatchedBuildConfig) (string
 // batchedCommitRequest is the exact keyed commit wire shape (ONE marshal
 // per build; the bytes are what gets persisted and replayed).
 type batchedCommitRequest struct {
-	IdempotencyKey  string              `json:"idempotency_key"`
-	Branch          string              `json:"branch"`
-	TransactionType string              `json:"transaction_type"`
-	ReservationID   uuid.UUID           `json:"reservation_id"`
-	BuildID         uuid.UUID           `json:"build_id"`
-	Files           []batchedCommitFile `json:"files"`
-	Schema          *datasetRowsSchema  `json:"schema,omitempty"`
+	IdempotencyKey   string                   `json:"idempotency_key"`
+	Branch           string                   `json:"branch"`
+	TransactionType  string                   `json:"transaction_type"`
+	ReservationID    uuid.UUID                `json:"reservation_id"`
+	BuildID          uuid.UUID                `json:"build_id"`
+	Files            []batchedCommitFile      `json:"files"`
+	Schema           *datasetRowsSchema       `json:"schema,omitempty"`
+	ArtifactManifest *batchedArtifactManifest `json:"artifact_manifest,omitempty"`
 }
 
 type batchedCommitFile struct {
@@ -862,10 +864,11 @@ func batchedStableKey(buildID uuid.UUID) string { return "wp33." + buildID.Strin
 
 // batchedDigest accumulates the streamed stage body facts.
 type batchedDigest struct {
-	sha     string
-	size    int64
-	records int64
-	schema  *datasetRowsSchema
+	sha              string
+	size             int64
+	records          int64
+	schema           *datasetRowsSchema
+	inputTransaction uuid.UUID
 }
 
 // stageBatchedInput streams the pinned input scan into ONE stage upload:
@@ -894,6 +897,7 @@ func stageBatchedInput(ctx context.Context, client batchedDatasetClient, cfg *mo
 	hash := sha256.New()
 	var size, records int64
 	var schema *datasetRowsSchema
+	var inputTransaction uuid.UUID
 	maxRecord := client.cfg.StageMaxRecordBytes
 	receipt, err := client.StageStream(ctx, req, func(feedCtx context.Context, w *bufio.Writer) error {
 		// feedCtx is the stage attempt context: an early HTTP answer (or
@@ -901,7 +905,8 @@ func stageBatchedInput(ctx context.Context, client batchedDatasetClient, cfg *mo
 		if req.Format == batchedParquetFormat {
 			var err error
 			size, records, err = streamOrdersParquet(feedCtx, w, hash, maxRecord, func(emit func([]byte) error) error {
-				_, err := client.ScanStream(feedCtx, input, emit)
+				stats, err := client.ScanStream(feedCtx, input, emit)
+				inputTransaction = stats.TransactionID
 				return err
 			})
 			return err
@@ -938,6 +943,7 @@ func stageBatchedInput(ctx context.Context, client batchedDatasetClient, cfg *mo
 			records++
 			return nil
 		})
+		inputTransaction = stats.TransactionID
 		if scanErr == nil && (stats.Metadata.Format == "csv" || input.flattenJSON) {
 			schema = stats.Metadata.Schema
 		}
@@ -946,7 +952,7 @@ func stageBatchedInput(ctx context.Context, client batchedDatasetClient, cfg *mo
 	if err != nil {
 		return batchedStageResponse{}, batchedDigest{}, err
 	}
-	return receipt, batchedDigest{sha: hex.EncodeToString(hash.Sum(nil)), size: size, records: records, schema: schema}, nil
+	return receipt, batchedDigest{sha: hex.EncodeToString(hash.Sum(nil)), size: size, records: records, schema: schema, inputTransaction: inputTransaction}, nil
 }
 
 // handleBatchedStageFailure terminates a PRE-INTENT failure: the precise

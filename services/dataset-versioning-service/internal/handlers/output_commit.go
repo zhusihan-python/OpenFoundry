@@ -151,6 +151,10 @@ func (h *Handlers) CommitDatasetOutput(w http.ResponseWriter, r *http.Request) {
 // byte-for-byte in behavior — a request without idempotency_key must be
 // indistinguishable from before P2.6.
 func (h *Handlers) commitDatasetOutputLegacy(w http.ResponseWriter, r *http.Request, body models.CommitDatasetOutputRequest, claims *authmw.Claims) {
+	if body.ArtifactManifest != nil {
+		writeJSONErr(w, http.StatusBadRequest, "artifact_manifest requires staged publication")
+		return
+	}
 	if err := normalizeOutputCSVOptions(body.Schema); err != nil {
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -423,6 +427,9 @@ func (h *Handlers) keyedOutputCommitBuild(rawRef string, body models.CommitDatas
 	}
 	return func(ctx context.Context, tx repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error) {
 		var zero models.CommitDatasetOutputResponse
+		if body.ArtifactManifest != nil {
+			return zero, keyedFileError{errString("artifact_manifest requires staged publication")}
+		}
 		if err := normalizeOutputCSVOptions(body.Schema); err != nil {
 			return zero, keyedFileError{err}
 		}
@@ -765,6 +772,7 @@ func outputFileMetadata(datasetID uuid.UUID, txnID uuid.UUID, file models.Commit
 			return nil, err
 		}
 	}
+	delete(meta, artifactManifestKey)
 	meta["dataset_id"] = datasetID.String()
 	meta["transaction_id"] = txnID.String()
 	meta["preview_columns"] = body.PreviewColumns
@@ -784,6 +792,7 @@ func outputCommitMetadata(body models.CommitDatasetOutputRequest, fileCount int)
 		}
 		meta["pipeline_output"] = true
 	}
+	delete(meta, artifactManifestKey)
 	if body.Schema != nil {
 		meta["schema"] = body.Schema
 	}

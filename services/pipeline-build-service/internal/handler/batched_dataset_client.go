@@ -203,10 +203,11 @@ type batchedScanInput struct {
 
 // batchedScanStats reports what a completed scan consumed.
 type batchedScanStats struct {
-	Pages     int
-	Rows      int64
-	PageBytes int64
-	Metadata  batchedScanMetadata
+	TransactionID uuid.UUID
+	Pages         int
+	Rows          int64
+	PageBytes     int64
+	Metadata      batchedScanMetadata
 }
 
 // batchedClientError carries the DVS status and machine code so the
@@ -304,6 +305,7 @@ func (c batchedDatasetClient) ScanStream(ctx context.Context, in batchedScanInpu
 		}
 		stats.Rows += pageStats
 		if pageCursor == nil {
+			stats.TransactionID = pinnedTxn
 			if in.schemaInference != nil && (stats.Metadata.Format == "csv" || in.flattenJSON) {
 				stats.Metadata.Schema = in.schemaInference.schema()
 			}

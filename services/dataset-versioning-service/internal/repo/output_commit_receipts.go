@@ -63,6 +63,9 @@ const outputCommitRollbackTimeout = 5 * time.Second
 // transaction; every Start/Stage/Merge/Publish call of the build must go
 // through this view, never through the global Repo.
 type OutputCommitTxStore interface {
+	GetVersion(ctx context.Context, datasetID uuid.UUID, version int32) (*models.DatasetVersion, error)
+	GetRuntimeTransaction(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID) (*models.RuntimeTransaction, error)
+	GetTransactionStagedFile(ctx context.Context, transactionID uuid.UUID, logicalPath string) (*models.StageTransactionFile, error)
 	EnsureDefaultBranch(ctx context.Context, dataset *models.Dataset) error
 	GetRuntimeBranch(ctx context.Context, datasetID uuid.UUID, branch string) (*models.RuntimeBranch, error)
 	ResolveDatasetForTenant(ctx context.Context, raw string, scope TenantScope) (*models.Dataset, error)
