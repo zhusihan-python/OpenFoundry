@@ -34,7 +34,7 @@ func (c DatasetServiceOutputCommitter) Commit(ctx context.Context, tx executor.O
 	if !canCommitDatasetOutput(tx.DatasetRID) {
 		return commitOutputMetadata(ctx, c.Metadata, tx, result)
 	}
-	body, err := datasetOutputCommitBody(tx, result)
+	body, err := datasetOutputCommitBodyWithContext(ctx, tx, result)
 	if err != nil {
 		return err
 	}
@@ -116,21 +116,22 @@ func routeDatasetRID(datasetRID string) string {
 }
 
 type datasetOutputCommitRequest struct {
-	IdempotencyKey    string                     `json:"idempotency_key,omitempty"`
-	ManualReservation *manualDatasetReservation  `json:"manual_reservation,omitempty"`
-	CreateIfMissing   bool                       `json:"create_if_missing"`
-	DatasetName       string                     `json:"dataset_name,omitempty"`
-	Format            *string                    `json:"format,omitempty"`
-	Branch            string                     `json:"branch,omitempty"`
-	TransactionType   string                     `json:"transaction_type,omitempty"`
-	Summary           string                     `json:"summary,omitempty"`
-	Provenance        json.RawMessage            `json:"provenance,omitempty"`
-	Schema            *datasetOutputSchema       `json:"schema,omitempty"`
-	Files             []datasetOutputFile        `json:"files,omitempty"`
-	PreviewColumns    []string                   `json:"preview_columns,omitempty"`
-	PreviewRows       [][]json.RawMessage        `json:"preview_rows,omitempty"`
-	LineageLinks      []datasetOutputLineageLink `json:"lineage_links,omitempty"`
-	Metadata          json.RawMessage            `json:"metadata,omitempty"`
+	IdempotencyKey      string                     `json:"idempotency_key,omitempty"`
+	ManualReservation   *manualDatasetReservation  `json:"manual_reservation,omitempty"`
+	CreateIfMissing     bool                       `json:"create_if_missing"`
+	DatasetName         string                     `json:"dataset_name,omitempty"`
+	Format              *string                    `json:"format,omitempty"`
+	OutputSchemaVersion string                     `json:"output_schema_version,omitempty"`
+	Branch              string                     `json:"branch,omitempty"`
+	TransactionType     string                     `json:"transaction_type,omitempty"`
+	Summary             string                     `json:"summary,omitempty"`
+	Provenance          json.RawMessage            `json:"provenance,omitempty"`
+	Schema              *datasetOutputSchema       `json:"schema,omitempty"`
+	Files               []datasetOutputFile        `json:"files,omitempty"`
+	PreviewColumns      []string                   `json:"preview_columns,omitempty"`
+	PreviewRows         [][]json.RawMessage        `json:"preview_rows,omitempty"`
+	LineageLinks        []datasetOutputLineageLink `json:"lineage_links,omitempty"`
+	Metadata            json.RawMessage            `json:"metadata,omitempty"`
 }
 
 type datasetOutputSchema struct {
@@ -138,11 +139,7 @@ type datasetOutputSchema struct {
 	FileFormat string               `json:"file_format"`
 }
 
-type datasetOutputField struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Nullable bool   `json:"nullable"`
-}
+type datasetOutputField = datasetRowsField
 
 type datasetOutputFile struct {
 	LogicalPath string          `json:"logical_path"`
@@ -169,53 +166,81 @@ type datasetOutputLineageLink struct {
 }
 
 func datasetOutputCommitBody(tx executor.OutputTransaction, result executor.NodeResult) (datasetOutputCommitRequest, error) {
-	rows, hasFullRows := fullResultRows(result.Metadata)
-	if !hasFullRows {
-		rows = resultRows(result.Metadata)
-	}
-	columns := resultColumns(result.Metadata)
-	if len(columns) == 0 {
-		columns = inferResultColumns(rows)
-	}
-	previewRows := orderedPreviewRows(columns, rows, 100)
-	payload := encodeNDJSON(rows)
-	// Only genuine data_rows are uploaded as the full output file — sample
-	// rows must not be promoted to dataset contents. Zero-row outputs still
-	// upload an explicit empty file so downloads return empty content
-	// instead of 404.
-	var content []byte
-	if hasFullRows {
-		content = payload
-		if content == nil {
-			content = []byte{}
-		}
-	}
-	sum := sha256.Sum256(payload)
-	fileMeta, err := json.Marshal(map[string]any{
-		"sha256":              hex.EncodeToString(sum[:]),
-		"output_content_hash": result.OutputContentHash,
-		"output_node_id":      tx.OutputNodeID,
-		"source_node_id":      tx.SourceNodeID,
-	})
+	return datasetOutputCommitBodyWithContext(context.Background(), tx, result)
+}
+
+func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputTransaction, result executor.NodeResult) (datasetOutputCommitRequest, error) {
+	parquet, err := selectTypedDatasetOutput(tx)
 	if err != nil {
 		return datasetOutputCommitRequest{}, err
 	}
 	logicalPath := strings.Trim(strings.TrimSpace(tx.LogicalPath), "/")
-	if logicalPath == "" {
-		logicalPath = "part-00000.ndjson"
+	var (
+		rows          []map[string]json.RawMessage
+		columns       []string
+		previewRows   [][]json.RawMessage
+		schema        *datasetOutputSchema
+		schemaVersion string
+		digest        string
+		payload       []byte
+		content       []byte
+	)
+	contentType := "application/x-ndjson"
+	format := normaliseOutputFileFormat(tx.FileFormat)
+	if parquet {
+		payload, rows, digest, err = encodeInlineOrdersParquet(ctx, result)
+		if err != nil {
+			return datasetOutputCommitRequest{}, err
+		}
+		typed := ordersDatasetSchema()
+		columns = typed.columns()
+		previewRows = inlineParquetPreview(columns, rows)
+		schemaVersion = ordersSchemaVersion
+		schema = &datasetOutputSchema{Fields: typed.Fields, FileFormat: typed.FileFormat}
+		content, contentType, format = payload, batchedParquetContentType, typed.FileFormat
+		logicalPath = defaultString(logicalPath, "part-00000.parquet")
+	} else {
+		var hasFullRows bool
+		rows, hasFullRows = fullResultRows(result.Metadata)
+		if !hasFullRows {
+			rows = resultRows(result.Metadata)
+		}
+		columns = resultColumns(result.Metadata)
+		if len(columns) == 0 {
+			columns = inferResultColumns(rows)
+		}
+		previewRows = orderedPreviewRows(columns, rows, 100)
+		payload = encodeNDJSON(rows)
+		logicalPath = defaultString(logicalPath, "part-00000.ndjson")
+		if hasFullRows {
+			if !strings.HasSuffix(logicalPath, ".ndjson") {
+				return datasetOutputCommitRequest{}, fmt.Errorf("dataset_output_commit_invalid: logical_path %q must end with .ndjson when full data rows are uploaded as NDJSON", logicalPath)
+			}
+			content = payload
+			if content == nil {
+				content = []byte{}
+			}
+			format = normaliseOutputFileFormat("NDJSON")
+		}
+		sum := sha256.Sum256(payload)
+		digest = hex.EncodeToString(sum[:])
+		schema = inferOutputSchema(columns, rows, format)
 	}
-	if hasFullRows && !strings.HasSuffix(logicalPath, ".ndjson") {
-		return datasetOutputCommitRequest{}, fmt.Errorf("dataset_output_commit_invalid: logical_path %q must end with .ndjson when full data rows are uploaded as NDJSON", logicalPath)
+	fileMetadata := map[string]any{
+		"sha256":              digest,
+		"output_content_hash": result.OutputContentHash,
+		"output_node_id":      tx.OutputNodeID,
+		"source_node_id":      tx.SourceNodeID,
+	}
+	if parquet {
+		fileMetadata["schema_version"] = schemaVersion
+	}
+	fileMeta, err := json.Marshal(fileMetadata)
+	if err != nil {
+		return datasetOutputCommitRequest{}, err
 	}
 	storagePath := "pipeline-build/" + strings.Trim(strings.TrimSpace(tx.TransactionRID), "/") + "/" + strings.Trim(strings.TrimSpace(tx.OutputNodeID), "/") + "/" + logicalPath
 	storagePath = strings.Trim(strings.ReplaceAll(storagePath, "//", "/"), "/")
-	contentType := "application/x-ndjson"
-	format := normaliseOutputFileFormat(tx.FileFormat)
-	if hasFullRows {
-		// The uploaded bytes are NDJSON regardless of the configured file
-		// format, so schema and format metadata must not claim PARQUET.
-		format = normaliseOutputFileFormat("NDJSON")
-	}
 	bodyMeta, err := json.Marshal(datasetOutputCommitMetadata(tx, result, len(rows), len(payload)))
 	if err != nil {
 		return datasetOutputCommitRequest{}, err
@@ -231,14 +256,15 @@ func datasetOutputCommitBody(tx executor.OutputTransaction, result executor.Node
 		return datasetOutputCommitRequest{}, err
 	}
 	return datasetOutputCommitRequest{
-		CreateIfMissing: tx.CreateIfMissing,
-		DatasetName:     defaultDatasetOutputName(tx),
-		Format:          &format,
-		Branch:          defaultString(tx.Branch, "main"),
-		TransactionType: defaultString(strings.ToUpper(strings.TrimSpace(tx.WriteMode)), "SNAPSHOT"),
-		Summary:         "Pipeline output commit for " + defaultString(tx.OutputNodeID, "output"),
-		Provenance:      provenance,
-		Schema:          inferOutputSchema(columns, rows, format),
+		CreateIfMissing:     tx.CreateIfMissing,
+		DatasetName:         defaultDatasetOutputName(tx),
+		Format:              &format,
+		OutputSchemaVersion: schemaVersion,
+		Branch:              defaultString(tx.Branch, "main"),
+		TransactionType:     defaultString(strings.ToUpper(strings.TrimSpace(tx.WriteMode)), "SNAPSHOT"),
+		Summary:             "Pipeline output commit for " + defaultString(tx.OutputNodeID, "output"),
+		Provenance:          provenance,
+		Schema:              schema,
 		Files: []datasetOutputFile{{
 			LogicalPath:   logicalPath,
 			StoragePath:   storagePath,

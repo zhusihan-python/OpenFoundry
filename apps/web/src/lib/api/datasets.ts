@@ -70,6 +70,10 @@ export interface DatasetVersion {
 export interface DatasetPreviewResponse {
   dataset_id: string;
   version?: number;
+  transaction_id?: string;
+  schema_version?: string;
+  schema?: DatasetSchemaPayload;
+  next_cursor?: string | null;
   size_bytes?: number;
   format?: string;
   branch?: string | null;
@@ -643,12 +647,17 @@ function normalizeDatasetPreviewResponse(
   return { ...response, columns, rows } as DatasetPreviewResponse;
 }
 
-export async function previewDataset(datasetId: string, params?: { limit?: number; offset?: number; version?: number; branch?: string }) {
+export async function previewDataset(datasetId: string, params?: { limit?: number; offset?: number; version?: number; branch?: string; cursor?: string }) {
   const query = new URLSearchParams();
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.offset) query.set('offset', String(params.offset));
-  if (params?.version !== undefined) query.set('version', String(params.version));
-  if (params?.branch) query.set('branch', params.branch);
+  if (params?.version !== undefined) {
+    query.set('version', String(params.version));
+    query.set('branch', params.branch ?? (await getDataset(datasetId)).active_branch);
+  } else if (params?.branch) {
+    query.set('branch', params.branch);
+  }
+  if (params?.cursor) query.set('cursor', params.cursor);
   const qs = query.toString();
   const response = await api.get<DatasetPreviewWireResponse>(`/datasets/${datasetId}/preview${qs ? `?${qs}` : ''}`);
   return normalizeDatasetPreviewResponse(response);
@@ -853,12 +862,53 @@ export function exportDataset(datasetId: string, params: DatasetExportParams) {
   return api.post<DatasetExportResponse>(`/datasets/${datasetId}/exports`, params);
 }
 
-export function getVersions(datasetId: string) {
-  return api.get<DatasetVersion[]>(`/datasets/${datasetId}/versions`);
+type DatasetListPage<T> = T[] | { data: T[]; next_cursor?: string | null };
+
+async function listDatasetPages<T>(path: string): Promise<T[]> {
+  const entries: T[] = [];
+  const seen = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const page: DatasetListPage<T> = await api.get<DatasetListPage<T>>(
+      cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
+    );
+    if (Array.isArray(page)) return [...entries, ...page];
+    entries.push(...page.data);
+    cursor = page.next_cursor ?? null;
+    if (cursor && seen.has(cursor)) throw new Error('Dataset listing cursor did not advance.');
+    if (cursor) seen.add(cursor);
+  } while (cursor);
+  return entries;
 }
 
-export function listDatasetTransactions(datasetId: string) {
-  return api.get<DatasetTransaction[]>(`/datasets/${datasetId}/transactions`);
+type RuntimeDatasetTransaction = Omit<DatasetTransaction, 'operation' | 'created_at'> & {
+  tx_type: string;
+  started_at: string;
+};
+
+function normalizeDatasetTransaction(transaction: DatasetTransaction | RuntimeDatasetTransaction): DatasetTransaction {
+  if ('tx_type' in transaction) {
+    return { ...transaction, operation: transaction.tx_type, created_at: transaction.started_at };
+  }
+  return transaction;
+}
+
+export function getVersions(datasetId: string) {
+  return listDatasetPages<DatasetVersion>(`/datasets/${datasetId}/versions`);
+}
+
+export async function listDatasetTransactions(datasetId: string): Promise<DatasetTransaction[]> {
+  const transactions = await listDatasetPages<DatasetTransaction | RuntimeDatasetTransaction>(
+    `/datasets/${datasetId}/transactions`,
+  );
+  return transactions.map(normalizeDatasetTransaction);
+}
+
+export async function getDatasetTransaction(datasetId: string, transactionId: string): Promise<DatasetTransaction | null> {
+  const [result] = await api.post<Array<{ status: number; data?: RuntimeDatasetTransaction }>>(
+    `/datasets/${datasetId}/transactions:batchGet`, { ids: [transactionId] },
+  );
+  return result?.status === 200 && result.data ? normalizeDatasetTransaction(result.data) : null;
 }
 
 export function listBranches(datasetId: string) {

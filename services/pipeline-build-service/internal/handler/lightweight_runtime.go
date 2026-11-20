@@ -13,7 +13,9 @@ import (
 	"sync"
 	"unicode"
 
+	"github.com/google/uuid"
 	pipelineexpression "github.com/openfoundry/openfoundry-go/libs/pipeline-expression"
+
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/domain/executor"
 )
 
@@ -405,6 +407,15 @@ func (rt *lightweightTableRuntime) datasetInputRows(ctx context.Context, node ex
 	if ref.Version != "" {
 		return nil, nil, fmt.Errorf("dataset_input_version_not_supported: node %q pins dataset version %q; historical dataset versions are not readable yet — clear dataset_version or pin dataset_branch instead of silently reading the latest rows", node.Node.ID, ref.Version)
 	}
+	if producers, ok := ctx.Value(manualGroupedDatasetProducersKey{}).(map[string]uuid.UUID); ok && ref.Snapshot == nil {
+		id, err := canonicalDatasetRIDForComparison(ref.DatasetRID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if producer, inGroup := producers[id]; inGroup && producer != node.Node.JobID {
+			return nil, nil, fmt.Errorf("manual build cannot read unpublished grouped dataset %s; use a DAG input or a committed snapshot", ref.DatasetRID)
+		}
+	}
 	if rt.datasets == nil {
 		return nil, nil, fmt.Errorf("dataset_input_source_not_configured: node %q references dataset %s but no dataset row source is wired (set DATASET_SERVICE_URL)", node.Node.ID, ref.DatasetRID)
 	}
@@ -435,6 +446,11 @@ func (rt *lightweightTableRuntime) datasetInputRows(ctx context.Context, node ex
 		meta["dataset_branch"] = ref.Snapshot.Branch
 		meta["dataset_version"] = ref.Snapshot.Version
 		meta["dataset_transaction_id"] = "ri.foundry.main.transaction." + ref.Snapshot.TransactionID.String()
+		if result.Schema != nil {
+			meta["columns"] = result.Columns
+			meta["dataset_schema_version"] = result.SchemaVersion
+			meta["dataset_schema"] = result.Schema
+		}
 	} else if ref.Branch != "" {
 		meta["dataset_branch"] = ref.Branch
 	}

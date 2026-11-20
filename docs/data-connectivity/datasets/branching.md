@@ -84,3 +84,24 @@ Each successful mutation emits a structured audit record under `target = "audit"
 
 * [transactions.md](./transactions.md)
 * [retention.md](./retention.md)
+
+## Publish a manual output group
+
+DVS accepts `POST /v1/datasets/outputs:commit-group` for manual canonical
+builds with existing output reservations. The request contains a `members`
+array of 2 to 16 elements. Each element supplies a `dataset_rid` and an
+`output` object in the keyed inline snapshot commit format. Use a distinct
+dataset per member and reservations from the same build and caller. The inline
+content limit applies to the entire request.
+
+DVS commits the group as one PostgreSQL transaction and returns a
+`receipts` array in request order. A fresh commit returns HTTP 201. An
+exact-byte replay returns HTTP 200 with the original receipts. An existing
+key bound to other bytes or an incomplete receipt set returns HTTP 409.
+A rejected member leaves both committed versions and indexes unchanged.
+The service removes files created by the request on a known rollback.
+If the database commit outcome is unknown, DVS returns HTTP 503 and retains
+the files. Retry with the exact request bytes.
+
+This endpoint uses the local backing filesystem. PBS orchestration must
+prepare every output before calling it.

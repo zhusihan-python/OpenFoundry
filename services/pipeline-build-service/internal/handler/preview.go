@@ -35,16 +35,19 @@ type previewPipelineNodeRequest struct {
 }
 
 type pipelineNodePreviewResponse struct {
-	PipelineID  string                       `json:"pipeline_id"`
-	NodeID      string                       `json:"node_id"`
-	Columns     []string                     `json:"columns"`
-	Rows        []map[string]json.RawMessage `json:"rows"`
-	SampleSize  int                          `json:"sample_size"`
-	GeneratedAt time.Time                    `json:"generated_at"`
-	Seed        uint64                       `json:"seed"`
-	SourceChain []string                     `json:"source_chain"`
-	Fresh       bool                         `json:"fresh"`
-	Error       *pipelineNodePreviewError    `json:"error,omitempty"`
+	PipelineID           string                       `json:"pipeline_id"`
+	NodeID               string                       `json:"node_id"`
+	Columns              []string                     `json:"columns"`
+	Rows                 []map[string]json.RawMessage `json:"rows"`
+	SampleSize           int                          `json:"sample_size"`
+	GeneratedAt          time.Time                    `json:"generated_at"`
+	Seed                 uint64                       `json:"seed"`
+	SourceChain          []string                     `json:"source_chain"`
+	Fresh                bool                         `json:"fresh"`
+	Error                *pipelineNodePreviewError    `json:"error,omitempty"`
+	DatasetFileFormat    string                       `json:"dataset_file_format,omitempty"`
+	DatasetSchemaVersion string                       `json:"dataset_schema_version,omitempty"`
+	DatasetSchema        *datasetRowsSchema           `json:"dataset_schema,omitempty"`
 }
 
 type pipelineNodePreviewError struct {
@@ -150,6 +153,7 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 	runtime.datasets = ports.DatasetRows
 	runtime.datasetRowsPreview = true
 	runner := runtimeNodeRunner{Table: runtime, LLM: ports.LLM}
+	var targetMetadata map[string]any
 	for _, node := range chain {
 		transform := strings.TrimSpace(node.TransformType)
 		if !runtime.Supports(transform) && !isLLMTransform(transform) {
@@ -173,7 +177,7 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 				metadata["input_dataset_ids"] = ids
 			}
 		}
-		_, err := runner.Run(ctx, executor.NodeContext{
+		result, err := runner.Run(ctx, executor.NodeContext{
 			BuildID:     pipelineID,
 			BuildBranch: "preview",
 			Attempt:     1,
@@ -187,10 +191,13 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 		if err != nil {
 			return pipelineNodePreviewResponse{}, previewExecutionError{status: http.StatusBadRequest, err: pipelineNodePreviewError{Kind: "transform_failed", NodeID: node.ID, Transform: transform, Message: err.Error()}}
 		}
+		if node.ID == nodeID {
+			targetMetadata = result.Metadata
+		}
 		runtime.trimRows(node.ID, sampleSize)
 	}
 	rows := limitRuntimeRows(runtime.snapshotRows(nodeID), sampleSize)
-	return pipelineNodePreviewResponse{
+	response := pipelineNodePreviewResponse{
 		PipelineID:  pipelineID.String(),
 		NodeID:      nodeID,
 		Columns:     deriveRuntimeColumns(rows),
@@ -200,7 +207,14 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 		Seed:        pipelinePreviewSeed(pipelineID, nodeID),
 		SourceChain: chainIDs(chain),
 		Fresh:       true,
-	}, nil
+	}
+	if schema, ok := targetMetadata["dataset_schema"].(*datasetRowsSchema); ok && schema != nil {
+		response.Columns = schema.columns()
+		response.DatasetFileFormat = metadataString(targetMetadata, "dataset_file_format")
+		response.DatasetSchemaVersion = metadataString(targetMetadata, "dataset_schema_version")
+		response.DatasetSchema = schema
+	}
+	return response, nil
 }
 
 func upstreamExecutionChain(nodes []models.PipelineNode, target string) ([]models.PipelineNode, error) {

@@ -32,6 +32,8 @@ type snapshotTestServer struct {
 	// txnByPage optionally overrides the reported transaction per page
 	// (1-based) for later-page mismatch controls.
 	txnByPage func(page int) string
+	// metadataByPage appends scan metadata fields, including a leading comma.
+	metadataByPage func(page int) string
 	// rowsFirst writes the rows array before the binding fields so the
 	// client can only post-validate them after the rows streamed.
 	rowsFirst bool
@@ -83,6 +85,10 @@ func (s *snapshotTestServer) scanPage(r *http.Request) []byte {
 	if s.txnByPage != nil {
 		txn = s.txnByPage(len(s.requests))
 	}
+	metadata := ""
+	if s.metadataByPage != nil {
+		metadata = s.metadataByPage(len(s.requests))
+	}
 	var b strings.Builder
 	if s.rowsFirst {
 		// Binding fields AFTER the rows: the client can only post-validate
@@ -101,10 +107,10 @@ func (s *snapshotTestServer) scanPage(r *http.Request) []byte {
 		} else {
 			b.WriteString(`,"next_cursor":null`)
 		}
-		b.WriteString(`,"dataset_id":"` + datasetUUID + `","branch":` + jsonString(q.Get("branch")) + `,"version":` + version + `,"transaction_id":"` + txn + `","page_bytes":100}`)
+		b.WriteString(`,"dataset_id":"` + datasetUUID + `","branch":` + jsonString(q.Get("branch")) + `,"version":` + version + `,"transaction_id":"` + txn + `"` + metadata + `,"page_bytes":100}`)
 		return []byte(b.String())
 	}
-	b.WriteString(`{"dataset_id":"` + datasetUUID + `","branch":` + jsonString(q.Get("branch")) + `,"version":` + version + `,"transaction_id":"` + txn + `","rows":[`)
+	b.WriteString(`{"dataset_id":"` + datasetUUID + `","branch":` + jsonString(q.Get("branch")) + `,"version":` + version + `,"transaction_id":"` + txn + `"` + metadata + `,"rows":[`)
 	for i := offset; i < end; i++ {
 		if i > offset {
 			b.WriteByte(',')

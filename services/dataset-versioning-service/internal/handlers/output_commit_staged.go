@@ -16,10 +16,12 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -101,7 +103,14 @@ func validateStagedCommitRequest(body models.CommitDatasetOutputRequest) error {
 		return fmt.Errorf("%w: size_bytes must be non-negative", errStagedCommitShape)
 	}
 	logical := strings.TrimSpace(file.LogicalPath)
-	if !safeObjectKey(logical) || !strings.HasSuffix(logical, ".ndjson") {
+	if strings.HasSuffix(logical, stagedParquetExtension) {
+		if !validStagedParquetPath(file.LogicalPath) {
+			return fmt.Errorf("%w: logical_path must be a canonical object key ending in .parquet", errStagedCommitShape)
+		}
+		if file.ContentType == nil || *file.ContentType != stagedParquetContentType {
+			return fmt.Errorf("%w: files[].content_type must be %s for Parquet", errStagedCommitShape, stagedParquetContentType)
+		}
+	} else if !safeObjectKey(logical) || !strings.HasSuffix(logical, ".ndjson") {
 		return fmt.Errorf("%w: logical_path must be a safe object key ending in .ndjson", errStagedCommitShape)
 	}
 	if reservedServerObjectSubtree(logical) {
@@ -127,6 +136,7 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.Com
 	buildID, _ := uuid.Parse(body.BuildID)
 	stagedObjectID, _ := uuid.Parse(file.StagedObjectID)
 	logical := strings.TrimSpace(file.LogicalPath)
+	isParquet := strings.HasSuffix(logical, stagedParquetExtension)
 	summary := strings.TrimSpace(body.Summary)
 	if summary == "" {
 		summary = "Pipeline staged dataset output commit"
@@ -234,11 +244,18 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.Com
 		}
 		entryType := models.FileEntryTypeFile
 		contentType := "application/x-ndjson"
+		if isParquet {
+			contentType = stagedParquetContentType
+		}
 		now := time.Now().UTC()
 		sizeBytes := obj.SizeBytes
 		meta, merr := stagedFileMetadata(dataset.ID, txn.ID, obj, body)
 		if merr != nil {
 			return zero, keyedFileError{merr}
+		}
+		paths, err := h.stagedOutputPaths()
+		if err != nil {
+			return zero, err
 		}
 		storageKey := outputCommitObjectKey(h.BackingFS.BaseDirectory(), dataset.ID, txn.ID, logical)
 		indexEntries := []models.PutDatasetFileIndexEntry{{
@@ -265,10 +282,6 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.Com
 		// size. Any anomaly aborts before a single row is written, with a
 		// fixed message (never an absolute path) — the detail goes to the
 		// log. No generic upload permission is reopened anywhere.
-		paths, err := h.stagedOutputPaths()
-		if err != nil {
-			return zero, err
-		}
 		if !safeObjectKey(storageKey) {
 			slog.ErrorContext(ctx, "staged install storage key rejected by lexical object-key rule", slog.String("base_dir", h.BackingFS.BaseDirectory()))
 			return zero, errStagedInstallFailed
@@ -299,6 +312,16 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.Com
 				}
 			}
 		}()
+
+		// Rehash the actual linked Parquet bytes before indexing them. A
+		// same-size corruption of a private spool is invisible to stat but
+		// must never publish under the original descriptor's digest.
+		if isParquet {
+			if err := verifyInstalledParquetDigest(dstAbs, obj); err != nil {
+				slog.ErrorContext(ctx, "installed Parquet failed verification", slog.String("staged_object", obj.ID.String()), slog.String("error", err.Error()))
+				return zero, errStagedSealedFileMissing
+			}
+		}
 
 		// The staged-file row is ADD: STAGED_ADD is a wire marker only.
 		staged := []models.StageTransactionFile{{
@@ -373,6 +396,10 @@ func stagedFileMetadata(datasetID uuid.UUID, txnID uuid.UUID, obj *repo.StagedOu
 	meta["sha256"] = obj.SHA256
 	meta["record_count"] = obj.RecordCount
 	meta["build_id"] = obj.BuildID.String()
+	if strings.HasSuffix(obj.LogicalPath, stagedParquetExtension) {
+		meta["format"] = stagedParquetFormat
+		meta["schema_version"] = stagedParquetSchemaVersion
+	}
 	if body.Schema != nil {
 		meta["schema"] = body.Schema
 	}
@@ -471,6 +498,30 @@ func installSealedArtifact(paths *stagedOutputPaths, srcAbs string, storageKey s
 		return "", fmt.Errorf("installed target is not a regular file")
 	}
 	return dstAbs, nil
+}
+
+func verifyInstalledParquetDigest(installed string, obj *repo.StagedOutputObject) error {
+	f, err := os.Open(installed)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() || fi.Size() != obj.SizeBytes {
+		return repo.ErrStagedDigestMismatch
+	}
+	hasher := sha256.New()
+	n, err := io.Copy(hasher, io.LimitReader(f, obj.SizeBytes))
+	if err != nil {
+		return err
+	}
+	if n != obj.SizeBytes || hex.EncodeToString(hasher.Sum(nil)) != obj.SHA256 {
+		return repo.ErrStagedDigestMismatch
+	}
+	return nil
 }
 
 // commonParentDir returns the deepest existing directory that is an

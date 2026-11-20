@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
@@ -12,6 +13,7 @@ import {
   getDataset,
   getDatasetQuality,
   getDatasetSchema,
+  getDatasetTransaction,
   getVersions,
   listDatasetFilesystem,
   listDatasetTransactions,
@@ -81,11 +83,8 @@ export function DatasetDetailPage() {
   const [tab, setTab] = useState<Tab>(() => normalizeTab(searchParams.get('tab')));
 
   const [dataset, setDataset] = useState<Dataset | null>(null);
-  const [preview, setPreview] = useState<DatasetPreviewResponse | null>(null);
   const [schema, setSchema] = useState<DatasetSchema | null>(null);
   const [files, setFiles] = useState<DatasetFilesystemEntry[]>([]);
-  const [transactions, setTransactions] = useState<DatasetTransaction[]>([]);
-  const [versions, setVersions] = useState<DatasetVersion[]>([]);
   const [quality, setQuality] = useState<DatasetQualityResponse | null>(null);
   const [loadedTabs, setLoadedTabs] = useState<Partial<Record<Tab, boolean>>>({});
   const [tabLoading, setTabLoading] = useState<Partial<Record<Tab, boolean>>>({});
@@ -104,6 +103,10 @@ export function DatasetDetailPage() {
 
   const selectedTransactionId = searchParams.get('txn');
   const busy = busyAction !== null;
+  const {
+    preview, previewQuery, history, selectedSnapshot, historyLoading, historyError,
+    transactions, transactionsQuery, versions, versionsQuery, previewCursor,
+  } = useDatasetPreview(id, tab, selectedTransactionId, searchParams.get('cursor'));
 
   useEffect(() => {
     const next = normalizeTab(searchParams.get('tab'));
@@ -118,11 +121,8 @@ export function DatasetDetailPage() {
       setLoading(true);
       setError('');
       setNotice(null);
-      setPreview(null);
       setSchema(null);
       setFiles([]);
-      setTransactions([]);
-      setVersions([]);
       setQuality(null);
       setLoadedTabs({});
       setTabLoading({});
@@ -161,37 +161,22 @@ export function DatasetDetailPage() {
     return Object.keys(previewRows[0]).map((columnName) => ({ name: columnName }));
   }, [preview?.columns, previewRows]);
 
+  const nextCursor = selectedSnapshot ? preview?.next_cursor : null;
+
   async function ensureTabData(next: Tab, options: { force?: boolean } = {}) {
-    if (!id) return;
+    if (!id || next === 'preview' || next === 'transactions' || next === 'versions') return;
     if (!options.force && loadedTabs[next]) return;
 
     setTabLoading((prev) => ({ ...prev, [next]: true }));
     setError('');
     try {
-      if (next === 'preview') {
-        const [previewResponse, txResponse] = await Promise.all([
-          previewDataset(id, { limit: 100 }),
-          loadedTabs.transactions ? Promise.resolve<DatasetTransaction[] | null>(null) : listDatasetTransactions(id).catch(() => null),
-        ]);
-        setPreview(previewResponse);
-        setLoadedTabs((prev) => ({ ...prev, preview: true }));
-        if (txResponse) {
-          setTransactions(txResponse);
-          setLoadedTabs((prev) => ({ ...prev, transactions: true }));
-        }
-      } else if (next === 'schema') {
+      if (next === 'schema') {
         setSchema(await getDatasetSchema(id));
         setLoadedTabs((prev) => ({ ...prev, schema: true }));
       } else if (next === 'files') {
         const response = await listDatasetFilesystem(id);
         setFiles(response.entries ?? response.items ?? []);
         setLoadedTabs((prev) => ({ ...prev, files: true }));
-      } else if (next === 'transactions') {
-        setTransactions(await listDatasetTransactions(id));
-        setLoadedTabs((prev) => ({ ...prev, transactions: true }));
-      } else if (next === 'versions') {
-        setVersions(await getVersions(id));
-        setLoadedTabs((prev) => ({ ...prev, versions: true }));
       } else if (next === 'quality') {
         setQuality(await getDatasetQuality(id));
         setLoadedTabs((prev) => ({ ...prev, quality: true }));
@@ -210,6 +195,7 @@ export function DatasetDetailPage() {
     const params = new URLSearchParams(searchParams);
     if (next === 'preview') params.delete('tab');
     else params.set('tab', next);
+    if (next !== 'preview') params.delete('cursor');
     if (next !== 'preview' && next !== 'transactions') params.delete('txn');
     setSearchParams(params);
     void ensureTabData(next);
@@ -218,8 +204,15 @@ export function DatasetDetailPage() {
   function selectPreviewTransaction(txId: string | null) {
     const params = new URLSearchParams(searchParams);
     params.delete('tab');
+    params.delete('cursor');
     if (txId) params.set('txn', txId);
     else params.delete('txn');
+    setSearchParams(params);
+  }
+
+  function nextPreviewPage(cursor: string) {
+    const params = new URLSearchParams(searchParams);
+    params.set('cursor', cursor);
     setSearchParams(params);
   }
 
@@ -404,7 +397,7 @@ export function DatasetDetailPage() {
           dataset={dataset}
           quality={quality}
           fileCount={loadedTabs.files ? files.length : undefined}
-          transactionCount={loadedTabs.transactions ? transactions.length : undefined}
+          transactionCount={transactionsQuery.data?.length}
         />
 
         <section className="of-panel" style={{ minWidth: 0, overflow: 'hidden' }}>
@@ -446,19 +439,45 @@ export function DatasetDetailPage() {
               <button type="button" onClick={openContour} className="of-button" style={{ fontSize: 11 }}>Analyze data</button>
               <button type="button" onClick={explorePipeline} className="of-button" style={{ fontSize: 11 }}>Explore pipeline</button>
             </div>
-            {tabLoading.preview && <span className="of-text-muted" style={{ alignSelf: 'center', fontSize: 11 }}>Refreshing preview...</span>}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <label style={{ fontSize: 11 }}>
+                Preview transaction
+                <select
+                  className="of-input"
+                  value={selectedTransactionId ?? ''}
+                  onChange={(event) => selectPreviewTransaction(event.target.value || null)}
+                >
+                  <option value="">Latest</option>
+                  {selectedTransactionId && !selectedSnapshot && (
+                    <option value={selectedTransactionId}>Selected transaction</option>
+                  )}
+                  {history.map(({ id: transactionId, branch, version }) => (
+                    <option key={transactionId} value={transactionId}>
+                      v{version} · {branch} · {transactionId.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {nextCursor && (
+                <button type="button" className="of-button" onClick={() => nextPreviewPage(nextCursor)}>
+                  Next page
+                </button>
+              )}
+            </div>
           </div>
-          {tabLoading.preview && !preview ? (
+          {(selectedTransactionId && historyLoading) || previewQuery.isLoading ? (
             <LoadingBlock label="Loading preview..." />
+          ) : selectedTransactionId && !selectedSnapshot ? (
+            <EmptyBlock label={historyError?.message ?? 'This transaction has no committed snapshot to preview.'} />
+          ) : previewQuery.isError ? (
+            <EmptyBlock label={previewQuery.error.message} />
           ) : preview ? (
             <>
               <PreviewMessages preview={preview} />
               <VirtualizedPreviewTable
+                key={previewCursor ?? selectedTransactionId ?? id}
                 columns={previewColumns}
                 rows={previewRows}
-                transactions={transactions}
-                selectedTransactionId={selectedTransactionId}
-                onSelectTransaction={selectPreviewTransaction}
                 fileFormat={preview.format ?? null}
                 schemaInferred={Boolean((preview as DatasetPreviewResponse & { schema_inferred?: boolean }).schema_inferred)}
                 viewportHeight={560}
@@ -490,8 +509,10 @@ export function DatasetDetailPage() {
     if (tab === 'transactions') {
       return (
         <TabBody>
-          {tabLoading.transactions && transactions.length === 0 ? (
+          {transactionsQuery.isLoading ? (
             <LoadingBlock label="Loading transactions..." />
+          ) : transactionsQuery.isError ? (
+            <EmptyBlock label={transactionsQuery.error.message} />
           ) : (
             <TransactionsTable transactions={transactions} selectedTransactionId={selectedTransactionId} />
           )}
@@ -502,7 +523,11 @@ export function DatasetDetailPage() {
     if (tab === 'versions') {
       return (
         <TabBody>
-          {tabLoading.versions && versions.length === 0 ? <LoadingBlock label="Loading versions..." /> : <VersionsTable versions={versions} />}
+          {versionsQuery.isLoading ? (
+            <LoadingBlock label="Loading versions..." />
+          ) : versionsQuery.isError ? (
+            <EmptyBlock label={versionsQuery.error.message} />
+          ) : <VersionsTable versions={versions} />}
         </TabBody>
       );
     }
@@ -563,6 +588,80 @@ function EmptyBlock({ label }: { label: string }) {
       {label}
     </div>
   );
+}
+
+function useDatasetPreview(id: string, tab: Tab, selectedTransactionId: string | null, cursor: string | null) {
+  const previewCursor = selectedTransactionId ? cursor ?? undefined : undefined;
+  const transactionsQuery = useQuery({
+    queryKey: ['dataset-transactions', id],
+    queryFn: () => listDatasetTransactions(id),
+    enabled: Boolean(id) && (tab === 'preview' || tab === 'transactions'),
+  });
+  const versionsQuery = useQuery({
+    queryKey: ['dataset-versions', id],
+    queryFn: () => getVersions(id),
+    enabled: Boolean(id) && (tab === 'preview' || tab === 'versions'),
+  });
+  const transactions = transactionsQuery.data ?? [];
+  const versions = versionsQuery.data ?? [];
+  const missingTransactionId = selectedTransactionId && !transactions.some((txn) => txn.id === selectedTransactionId)
+    ? selectedTransactionId
+    : null;
+  const selectedTransactionQuery = useQuery({
+    queryKey: ['dataset-transaction', id, missingTransactionId],
+    queryFn: () => missingTransactionId ? getDatasetTransaction(id, missingTransactionId) : null,
+    enabled: Boolean(id && missingTransactionId) && tab === 'preview' && transactionsQuery.isSuccess,
+  });
+  const olderTransaction = selectedTransactionQuery.data;
+  const history = previewHistory(olderTransaction ? [...transactions, olderTransaction] : transactions, versions);
+  const selectedSnapshot = history.find((snapshot) => snapshot.id === selectedTransactionId);
+  const historyLoading = transactionsQuery.isLoading || versionsQuery.isLoading || selectedTransactionQuery.isLoading;
+  const historyError = transactionsQuery.error ?? versionsQuery.error ?? selectedTransactionQuery.error;
+
+  const previewQuery = useQuery({
+    queryKey: ['dataset-preview', id, selectedTransactionId, selectedSnapshot?.branch, selectedSnapshot?.version, previewCursor],
+    queryFn: async () => {
+      const result = await previewDataset(id, {
+        limit: 100,
+        ...(selectedSnapshot && {
+          version: selectedSnapshot.version,
+          branch: selectedSnapshot.branch,
+          cursor: previewCursor,
+        }),
+      });
+      if (selectedSnapshot && (
+        result.transaction_id !== selectedSnapshot.id
+        || result.version !== selectedSnapshot.version
+        || result.branch !== selectedSnapshot.branch
+      )) {
+        throw new Error('Preview did not match the selected transaction.');
+      }
+      return result;
+    },
+    enabled: Boolean(id) && tab === 'preview' && (!selectedTransactionId || selectedSnapshot !== undefined),
+  });
+  const preview = previewQuery.data;
+  return {
+    preview, previewQuery, history, selectedSnapshot, historyLoading, historyError,
+    transactions, transactionsQuery, versions, versionsQuery, previewCursor,
+  };
+}
+
+function previewHistory(transactions: DatasetTransaction[], versions: DatasetVersion[]) {
+  const versionsByTransaction = new Map<string, number>();
+  for (const version of versions) {
+    if (version.transaction_id && !versionsByTransaction.has(version.transaction_id)) {
+      versionsByTransaction.set(version.transaction_id, version.version);
+    }
+  }
+  const history = new Map<string, { id: string; branch: string; version: number }>();
+  for (const transaction of transactions) {
+    const version = versionsByTransaction.get(transaction.id);
+    if (transaction.status === 'COMMITTED' && transaction.operation === 'SNAPSHOT' && transaction.branch_name && version !== undefined) {
+      history.set(transaction.id, { id: transaction.id, branch: transaction.branch_name, version });
+    }
+  }
+  return Array.from(history.values());
 }
 
 function PreviewMessages({ preview }: { preview: DatasetPreviewResponse }) {

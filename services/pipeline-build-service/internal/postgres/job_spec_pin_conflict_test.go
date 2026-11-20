@@ -101,6 +101,19 @@ func TestJSONEqualBytesPrecision(t *testing.T) {
 	})
 }
 
+func TestJobSpecTypedOutputReuseConflict(t *testing.T) {
+	plain := []byte(`{"v":"plain"}`)
+	direct := []byte(`{"output_schema_version":"orders.v1","logical_path":"typed.parquet"}`)
+	nested := []byte(`{"_output":{"output_schema_version":"orders.v1","file_format":"NDJSON"}}`)
+	nestedReordered := []byte(`{"_output":{"file_format":"NDJSON","output_schema_version":"orders.v1"}}`)
+	inputs := []byte(`[]`)
+	assert.True(t, jobSpecPinnedReuseConflict(plain, inputs, direct, inputs))
+	assert.True(t, jobSpecPinnedReuseConflict(direct, inputs, plain, inputs))
+	assert.True(t, jobSpecPinnedReuseConflict(plain, inputs, nested, inputs))
+	assert.True(t, jobSpecPinnedReuseConflict(nested, inputs, direct, inputs))
+	assert.False(t, jobSpecPinnedReuseConflict(nested, inputs, nestedReordered, inputs))
+}
+
 func TestPinConflictHelpersCoverRawMessageUsage(t *testing.T) {
 	// The repository passes []byte straight from pgx scans and from
 	// json.Marshal outputs; ensure json.RawMessage values behave the same.

@@ -23,7 +23,14 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 ## [Unreleased]
 
 ### Added
-- _(add entries here)_
+- DVS can publish a group of reserved manual build outputs in one transaction
+  and replay the original receipts.
+- Manual batched dataset builds can explicitly publish an `orders.v1` Parquet
+  file using the staged output transaction.
+- Paginate committed `orders.v1` Parquet files by dataset version, and use the
+  same version binding in dataset history previews and pinned pipeline inputs.
+- Default declared `orders.v1` pipeline snapshot outputs to Parquet in graph
+  runs and canonical scheduled builds.
 
 ### Changed
 - _(add entries here)_
