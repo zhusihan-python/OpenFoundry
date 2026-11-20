@@ -20,6 +20,8 @@ import (
 
 const maxManualDatasetGroup = 16
 
+var errManualGroupReceiptsPending = errors.New("complete manual group receipts are not available")
+
 type ManualBuildPublication struct {
 	Output         ManualBuildOutput
 	TransactionRID string
@@ -149,6 +151,16 @@ func (m manualBuildExecution) publishGroup(ctx, recoveryCtx context.Context, gro
 	if err != nil {
 		return nil, true, err
 	}
+	// Persist the exact ordered request fingerprint before contacting DVS.
+	// A concurrent abort that changes the build state wins before this
+	// compare-and-set and prevents publication.
+	saved, err := m.store.SetManualGroupPublishFingerprint(recoveryCtx, m.buildID, "", fingerprint)
+	if err != nil {
+		return nil, false, err
+	}
+	if !saved {
+		return nil, false, errManualGroupReceiptsPending
+	}
 	status, raw, err := m.dataset.do(ctx, http.MethodPost, "/v1/datasets/outputs:commit-group", payload)
 	if err == nil && (status == http.StatusCreated || status == http.StatusOK) {
 		publications, decodeErr := decodeManualGroupReceipts(group, raw, fingerprint)
@@ -175,6 +187,12 @@ func (m manualBuildExecution) publishGroup(ctx, recoveryCtx context.Context, gro
 		return publications, false, nil
 	}
 	rejected := len(publications) == 0 && status >= 400 && status < 500 && status != http.StatusRequestTimeout
+	if rejected {
+		cleared, clearErr := m.store.SetManualGroupPublishFingerprint(recoveryCtx, m.buildID, fingerprint, "")
+		if clearErr != nil || !cleared {
+			return nil, false, errors.Join(errManualGroupReceiptsPending, err, clearErr)
+		}
+	}
 	return nil, rejected, err
 }
 

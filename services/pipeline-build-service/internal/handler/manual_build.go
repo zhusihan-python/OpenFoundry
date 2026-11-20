@@ -32,6 +32,8 @@ type manualBuildStore interface {
 	SettleManualBuildOutputs(context.Context, uuid.UUID, []ManualBuildPublication) error
 	FinishManualBuild(context.Context, uuid.UUID, models.BuildState, executor.Outcome) (bool, error)
 	RecoverManualBuildCompletion(context.Context, uuid.UUID) (bool, error)
+	ManualGroupPublishFingerprint(context.Context, uuid.UUID) (string, error)
+	SetManualGroupPublishFingerprint(context.Context, uuid.UUID, string, string) (bool, error)
 }
 
 func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts, buildID uuid.UUID) {
@@ -204,6 +206,21 @@ func abortManualBuildIfConfigured(w http.ResponseWriter, r *http.Request, id str
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
 	defer cancelCleanup()
 	run := manualBuildExecution{base: ctx, store: store, dataset: *ports.ManualDataset, buildID: build.ID, subject: subject}
+	fingerprint, err := store.ManualGroupPublishFingerprint(cleanupCtx, build.ID)
+	if err != nil {
+		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_recovery_pending", err)
+		return true
+	}
+	if fingerprint != "" {
+		// Once an exact request may have reached DVS, abort must not
+		// invalidate reservations while its outcome is still unknown.
+		if err := run.reconcileReceipts(cleanupCtx); err != nil {
+			writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_recovery_pending", err)
+			return true
+		}
+		w.WriteHeader(http.StatusConflict)
+		return true
+	}
 	outputs, err := store.ListManualBuildOutputs(cleanupCtx, build.ID)
 	if err != nil {
 		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_recovery_pending", err)
@@ -375,6 +392,10 @@ func (m manualBuildExecution) settle(ctx context.Context, output ManualBuildOutp
 }
 
 func (m manualBuildExecution) reconcileReceipts(ctx context.Context) error {
+	fingerprint, err := m.store.ManualGroupPublishFingerprint(ctx, m.buildID)
+	if err != nil {
+		return err
+	}
 	outputs, err := m.store.ListManualBuildOutputs(ctx, m.buildID)
 	if err != nil {
 		return err
@@ -387,12 +408,26 @@ func (m manualBuildExecution) reconcileReceipts(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		published, err := remote.receipt(ctx, "")
+		published, err := remote.receipt(ctx, fingerprint)
 		if err != nil {
 			return err
 		}
 		if published != "" {
 			publications = append(publications, ManualBuildPublication{output, published})
+		}
+	}
+	if len(outputs) > 0 && fingerprint != "" && len(publications) != len(outputs) {
+		return errManualGroupReceiptsPending
+	}
+	if len(outputs) > 1 && len(publications) > 0 && fingerprint == "" {
+		// The publisher may have persisted its intent after the first
+		// read. Do not settle receipts read without that fingerprint.
+		current, err := m.store.ManualGroupPublishFingerprint(ctx, m.buildID)
+		if err != nil {
+			return err
+		}
+		if current != "" || len(publications) != len(outputs) {
+			return errManualGroupReceiptsPending
 		}
 	}
 	if len(publications) > 0 {
