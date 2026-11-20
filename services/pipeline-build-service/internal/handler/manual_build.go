@@ -29,6 +29,7 @@ type manualBuildStore interface {
 	ListManualBuildOutputs(context.Context, uuid.UUID) ([]ManualBuildOutput, error)
 	MoveManualBuild(context.Context, uuid.UUID, models.BuildState, models.BuildState) (bool, error)
 	SettleManualBuildOutput(context.Context, uuid.UUID, ManualBuildOutput, string) error
+	SettleManualBuildOutputs(context.Context, uuid.UUID, []ManualBuildPublication) error
 	FinishManualBuild(context.Context, uuid.UUID, models.BuildState, executor.Outcome) (bool, error)
 	RecoverManualBuildCompletion(context.Context, uuid.UUID) (bool, error)
 }
@@ -90,6 +91,10 @@ func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts
 		writeManualBuildError(w, http.StatusConflict, "manual_build_outputs_not_ready", err)
 		return
 	}
+	if len(outputs) > maxManualDatasetGroup {
+		writeManualBuildError(w, http.StatusConflict, "manual_build_output_limit_exceeded", nil)
+		return
+	}
 	started, err := store.MoveManualBuild(ctx, buildID, models.BuildResolution, models.BuildRunning)
 	if err != nil {
 		writeManualBuildError(w, http.StatusInternalServerError, "manual_build_start_failed", err)
@@ -108,7 +113,12 @@ func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts
 	defer cancel()
 	unregister := registerExecutionCancel(buildID, cancel)
 	defer unregister()
-	outcome, err := executor.Execute(execCtx, normalizePlan(plan, ports), runner, run, run, ports.Audit)
+	plan = normalizePlan(plan, ports)
+	if len(outputs) > 1 {
+		run.executeGroup(w, execCtx, build, plan, runner, ports.Audit)
+		return
+	}
+	outcome, err := executor.Execute(execCtx, plan, runner, run, run, ports.Audit)
 	finishCtx, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancelFinish()
 	if err != nil {
@@ -116,7 +126,7 @@ func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts
 		// Release the same owned reservations through the normal cleanup.
 		outcome = manualStoppedOutcome(build, models.BuildFailed, err.Error())
 		for _, output := range outputs {
-			if _, cleanupErr := run.settle(finishCtx, output, true); cleanupErr != nil {
+			if _, cleanupErr := run.settle(finishCtx, output); cleanupErr != nil {
 				writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_recovery_pending", cleanupErr)
 				return
 			}
@@ -200,7 +210,7 @@ func abortManualBuildIfConfigured(w http.ResponseWriter, r *http.Request, id str
 		return true
 	}
 	for _, output := range outputs {
-		published, err := run.settle(cleanupCtx, output, true)
+		published, err := run.settle(cleanupCtx, output)
 		if err != nil {
 			response.TransactionErrors = append(response.TransactionErrors, fmt.Sprintf("%s: %v", output.TransactionRID, err))
 		} else if published == "" {
@@ -328,11 +338,11 @@ func (m manualBuildExecution) Abort(_ context.Context, output executor.OutputTra
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(m.base), 45*time.Second)
 	defer cancel()
-	_, err := m.settle(ctx, owned, true)
+	_, err := m.settle(ctx, owned)
 	return err
 }
 
-func (m manualBuildExecution) settle(ctx context.Context, output ManualBuildOutput, abort bool) (string, error) {
+func (m manualBuildExecution) settle(ctx context.Context, output ManualBuildOutput) (string, error) {
 	remote, err := newManualDatasetOutput(m.dataset, m.subject, m.buildID, executor.OutputTransaction{
 		DatasetRID: output.DatasetRID, TransactionRID: output.TransactionRID, Branch: output.Branch,
 	})
@@ -346,7 +356,7 @@ func (m manualBuildExecution) settle(ctx context.Context, output ManualBuildOutp
 		}
 	}
 	published, err := remote.receipt(ctx, fingerprint)
-	if err != nil || (published == "" && !abort) {
+	if err != nil {
 		return "", err
 	}
 	if published == "" {
@@ -369,8 +379,24 @@ func (m manualBuildExecution) reconcileReceipts(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var publications []ManualBuildPublication
 	for _, output := range outputs {
-		if _, err := m.settle(ctx, output, false); err != nil {
+		remote, err := newManualDatasetOutput(m.dataset, m.subject, m.buildID, executor.OutputTransaction{
+			DatasetRID: output.DatasetRID, TransactionRID: output.TransactionRID, Branch: output.Branch,
+		})
+		if err != nil {
+			return err
+		}
+		published, err := remote.receipt(ctx, "")
+		if err != nil {
+			return err
+		}
+		if published != "" {
+			publications = append(publications, ManualBuildPublication{output, published})
+		}
+	}
+	if len(publications) > 0 {
+		if err := m.store.SettleManualBuildOutputs(ctx, m.buildID, publications); err != nil {
 			return err
 		}
 	}

@@ -52,18 +52,23 @@ func newManualDatasetOutput(client DatasetHTTPVersioning, subject, buildID uuid.
 }
 
 func (m manualDatasetOutput) commitPayload(output executor.OutputTransaction, result executor.NodeResult) ([]byte, string, error) {
-	body, err := datasetOutputCommitBody(output, result)
+	body, err := m.commitBody(context.Background(), output, result)
 	if err != nil {
 		return nil, "", err
 	}
-	body.IdempotencyKey = m.key
-	body.ManualReservation = &m.binding
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, "", err
 	}
 	fingerprint := sha256.Sum256(payload)
 	return payload, hex.EncodeToString(fingerprint[:]), nil
+}
+
+func (m manualDatasetOutput) commitBody(ctx context.Context, output executor.OutputTransaction, result executor.NodeResult) (datasetOutputCommitRequest, error) {
+	body, err := datasetOutputCommitBodyWithContext(ctx, output, result)
+	body.IdempotencyKey = m.key
+	body.ManualReservation = &m.binding
+	return body, err
 }
 
 func (m manualDatasetOutput) commit(ctx context.Context, payload []byte, fingerprint string) (string, error) {

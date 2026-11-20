@@ -69,6 +69,10 @@ WHERE b.id=$1 AND b.state=`+current+sb.whereSQL(), sb.args...)
 }
 
 func (r *Repository) SettleManualBuildOutput(ctx context.Context, buildID uuid.UUID, output handler.ManualBuildOutput, published string) error {
+	return r.SettleManualBuildOutputs(ctx, buildID, []handler.ManualBuildPublication{{Output: output, TransactionRID: published}})
+}
+
+func (r *Repository) SettleManualBuildOutputs(ctx context.Context, buildID uuid.UUID, publications []handler.ManualBuildPublication) error {
 	sb, err := manualBuildOwner(ctx, buildID)
 	if err != nil {
 		return err
@@ -88,6 +92,15 @@ func (r *Repository) SettleManualBuildOutput(ctx context.Context, buildID uuid.U
 	if err := tx.QueryRow(ctx, `SELECT b.state FROM builds b WHERE b.id=$1`+sb.whereSQL()+` FOR UPDATE`, sb.args...).Scan(&state); err != nil {
 		return err
 	}
+	for _, publication := range publications {
+		if err := settleManualBuildOutput(ctx, tx, buildID, state, publication.Output, publication.TransactionRID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func settleManualBuildOutput(ctx context.Context, tx pgx.Tx, buildID uuid.UUID, state string, output handler.ManualBuildOutput, published string) error {
 	var current string
 	var committed, aborted bool
 	if err := tx.QueryRow(ctx, `SELECT o.transaction_rid, o.committed, o.aborted
@@ -134,10 +147,7 @@ WHERE id=$1 AND $2=ANY(output_transaction_rids)`, output.JobID, output.Transacti
 			}
 		}
 	}
-	if err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return err
 }
 
 func (r *Repository) FinishManualBuild(ctx context.Context, buildID uuid.UUID, from models.BuildState, outcome executor.Outcome) (bool, error) {
