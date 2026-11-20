@@ -289,6 +289,9 @@ func (h *Handlers) scanPathWithPredicate(w http.ResponseWriter, r *http.Request,
 		Rows: seg.rows, RowCount: len(seg.rows),
 		PageBytes: seg.consumed, SizeBytes: staged.SizeBytes,
 	}
+	if staged.SizeBytes == 0 {
+		resp.Schema = emptyStagedNDJSONSchema(txn.Metadata)
+	}
 	if !seg.fileDone {
 		next := encodeScanCursorV2(scanCursorV2{
 			datasetID: datasetID, branchID: branchRow.ID, version: uint32(version),
@@ -467,6 +470,9 @@ func (h *Handlers) scanNDJSONAllFilesPage(w http.ResponseWriter, r *http.Request
 		resp.NextCursor = &next
 	}
 	resp.RowCount = len(resp.Rows)
+	if !hasNext && resp.FilesAccessed == 1 && resp.PageBytes == 0 {
+		resp.Schema = emptyStagedNDJSONSchema(txn.Metadata)
+	}
 	return resp, true
 }
 

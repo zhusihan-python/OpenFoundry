@@ -349,6 +349,9 @@ func (h *Handlers) ScanDatasetFileRows(w http.ResponseWriter, r *http.Request) {
 		Rows: page.rows, RowCount: len(page.rows),
 		PageBytes: page.pageBytes, SizeBytes: staged.SizeBytes,
 	}
+	if staged.SizeBytes == 0 {
+		resp.Schema = emptyStagedNDJSONSchema(txn.Metadata)
+	}
 	if page.hasMore {
 		next := encodeScanCursor(scanCursor{
 			datasetID: datasetID, branchID: branchRow.ID, version: uint32(version),
@@ -358,6 +361,23 @@ func (h *Handlers) ScanDatasetFileRows(w http.ResponseWriter, r *http.Request) {
 	}
 	h.emitScanAudit(r, datasetID, branch, version, logical, limit, resp.RowCount, page.hasMore)
 	writeScanJSON(w, http.StatusOK, resp)
+}
+
+// An empty staged output has no records from which to infer columns.
+// Read its declaration from the exact committed snapshot.
+func emptyStagedNDJSONSchema(metadata models.JSONValue) *models.DatasetSchema {
+	var commit struct {
+		Schema *models.DatasetSchema `json:"schema"`
+		Staged *struct {
+			RecordCount *int64 `json:"record_count"`
+		} `json:"staged_output"`
+	}
+	if json.Unmarshal(metadata, &commit) != nil || commit.Staged == nil ||
+		commit.Staged.RecordCount == nil || *commit.Staged.RecordCount != 0 ||
+		commit.Schema == nil || len(commit.Schema.Fields) == 0 {
+		return nil
+	}
+	return commit.Schema
 }
 
 // parseScanPredicateParam parses an explicitly present predicate parameter,
