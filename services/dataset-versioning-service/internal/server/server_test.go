@@ -123,7 +123,8 @@ func TestStagedOutputGroupRouteIsInternal(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
 		srv.Handler.ServeHTTP(rec, req)
-		require.Equal(t, http.StatusNotFound, rec.Code, prefix)
+		// The generic dataset route matches the path but rejects POST.
+		require.Equal(t, http.StatusMethodNotAllowed, rec.Code, prefix)
 	}
 }
 
