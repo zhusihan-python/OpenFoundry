@@ -1,6 +1,6 @@
 # WP11.1 Excel 管道解析分批选项
 
-**状态：待产品裁决。** 截至 2026-11-20，T5 需要确认 WP11.2–WP11.6 的交付顺序、首批客户样本和验收口径。选定顺序后，每项能力仍按 DI-11 的完整范围验收。[需求矩阵](data-integration-requirements-coverage-matrix.md#di-11-microsoft-excel) · [工作包与估算](data-integration-openfoundry-t0-reestimate.md#di-11-microsoft-excel)
+**状态：待产品裁决。** 截至 2026-11-20，T5 需要确认 WP11.2–WP11.6 的交付顺序、首批客户样本和验收口径。选定顺序后，每项能力仍按 DI-11 的完整范围验收。[需求矩阵](data-integration-requirements-coverage-matrix.md#di-11-microsoft-excel-transforms-excel-parser) · [工作包与估算](data-integration-openfoundry-t0-reestimate.md#di-11-microsoft-excel)
 
 ## 可复用的基础
 
