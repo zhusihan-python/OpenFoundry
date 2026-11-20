@@ -45,6 +45,7 @@ type datasetInputSnapshot struct {
 	Version       int32
 	TransactionID uuid.UUID
 	FlattenJSON   bool
+	Excel         json.RawMessage
 }
 
 // PayloadDeclaresDatasetSnapshot reports whether a logic_payload declares
@@ -128,7 +129,11 @@ func parseDatasetInputSnapshot(raw json.RawMessage) (*datasetInputSnapshot, erro
 			return nil, bad("flatten_json must be a boolean")
 		}
 	}
-	return &datasetInputSnapshot{Branch: strings.TrimSpace(branch), Version: int32(version), TransactionID: txnID, FlattenJSON: flatten}, nil
+	excel := bytes.TrimSpace(fields["excel"])
+	if len(excel) > 0 && (excel[0] != '{' || flatten) {
+		return nil, bad("excel must be an object and cannot be combined with flatten_json")
+	}
+	return &datasetInputSnapshot{Branch: strings.TrimSpace(branch), Version: int32(version), TransactionID: txnID, FlattenJSON: flatten, Excel: excel}, nil
 }
 
 // readDatasetSnapshotRows materializes the pinned snapshot through the
@@ -165,9 +170,12 @@ func (r DatasetServiceRowReader) readDatasetSnapshotRows(ctx context.Context, re
 		maxTotalBytes = r.SnapshotMaxTotalBytes
 	}
 	limit := clampDatasetInputRows(req.Limit)
+	expectedTxn := req.Snapshot.TransactionID
+	if len(req.Snapshot.Excel) > 0 {
+		return client.readExcelSnapshotRows(ctx, rid, datasetUUID, req, limit, maxTotalBytes)
+	}
 	rows := make([]map[string]json.RawMessage, 0, limit)
 	var totalBytes int64
-	expectedTxn := req.Snapshot.TransactionID
 	scan, scanErr := client.ScanStream(ctx, batchedScanInput{
 		schemaInference:       scanSchemaInference(req.Snapshot.FlattenJSON),
 		flattenJSON:           req.Snapshot.FlattenJSON,

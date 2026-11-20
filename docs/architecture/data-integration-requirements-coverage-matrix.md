@@ -379,7 +379,7 @@
 | T2 | 管道代码交付契约：源规划 PipelineDef/TS/DuckDB vs 本仓 Go pipeline_ir.v1/local-table（不自行换引擎/改语言） | 架构组 + 数据与接入组 | DI-03/05/06/11 | 调度真实周期验收、表达式/变换执行核对（不依赖契约终稿） |
 | T3 | 健康检查类型映射：PL-26「6 类」vs 官方 checks-reference 五类 + expectations 独立；同时核对 `maintaining-pipelines/recommended-health-checks/en.md` 的推荐项与汇总表 | 数据与接入组 × 可观测性组 | DI-04、DI-01 | input/pre+output/post 合同、求值框架 |
 | T4 | S3 兼容 API 优先级（路线图暂按 P2） | 产品 | DI-12 | 动作子集与认证 profile 草案、全仓盘点 |
-| T5 | Excel Parser 分批范围（格式集/多 sheet/多输出/错误隔离等未裁剪） | 产品（数据与接入组起草） | DI-11 | raw workbook 管道输入链路 |
+| T5 | 已选 A：单 XLSX 链路、多 sheet/多输出及错误隔离、格式扩展、抽取与跨文件 schema、全量容量验收。[决策记录](data-integration-wp11-1-excel-parser-t5.md) | 产品（数据与接入组起草） | DI-11 | 首批为 raw XLSX 管道输入；客户样本与实施验收待补 |
 | T6 | 出站 Webhook 归属（Data Connection 细点 vs Action 副作用）与租户修法 | 数据与接入组 × 本体构建/用例开发 | DI-02 | registrations.go:737/:746 租户修复（**已完成并工程验收，未提交**——WP2.1；T6 归属裁决本身仍待决） |
 | T7 | 电商连接器（紫鸟/noon/领星）实现位置映射 | 数据与接入组（Allen） | DI-02 | 通用连接器补差不依赖此项 |
 | T8 | 本模块已选 ADR-0037 CronJob→Kafka，WP3.2 工程实现与真实隔离验收完成；四方案及批准门槛历史见 [WP3.1 评估](data-integration-wp3-1-t8-scheduling-assessment.md) | 架构组 + 数据与接入组 + 平台运行时 | DI-01、DI-03 | 本模块调度 gate 已满足，见[验收报告](data-integration-wp3-2-acceptance.md)与[决策记录](data-integration-t8-scheduling-decision.md)；生产前置仍按[部署 profile](data-integration-wp3-2-deployment-profile.md)，不整体关闭 DI-03/B2、不改变其他 T 项 |
