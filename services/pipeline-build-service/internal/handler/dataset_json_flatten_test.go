@@ -59,6 +59,22 @@ func TestJSONInferencePreservesOutOfRangeNumbers(t *testing.T) {
 	}, inference.schema().Fields)
 }
 
+func TestJSONInferencePreservesNonzeroUnderflow(t *testing.T) {
+	raw := json.RawMessage(`{"limits":{"negative":-1e-400,"positive":1e-400,"subnormal":5e-324,"zero":-0.0E-400}}`)
+	row, err := flattenJSONRecord(raw)
+	require.NoError(t, err)
+	require.Equal(t, `{"limits.negative":-1e-400,"limits.positive":1e-400,"limits.subnormal":5e-324,"limits.zero":-0.0E-400}`, string(row))
+
+	inference := datasetSchemaInference{format: "json"}
+	require.NoError(t, inference.addRow(row))
+	require.Equal(t, []datasetRowsField{
+		{Name: "limits.negative", Type: "STRING"},
+		{Name: "limits.positive", Type: "STRING"},
+		{Name: "limits.subnormal", Type: "DOUBLE"},
+		{Name: "limits.zero", Type: "DOUBLE"},
+	}, inference.schema().Fields)
+}
+
 func TestDatasetSnapshotFlattenJSONRequiresBoolean(t *testing.T) {
 	base := `{"branch":"main","version":1,"transaction_id":"11111111-1111-1111-1111-111111111111","flatten_json":%s}`
 	pin, err := parseDatasetInputSnapshot(json.RawMessage(fmt.Sprintf(base, "true")))

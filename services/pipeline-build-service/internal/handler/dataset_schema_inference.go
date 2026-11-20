@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // Match the DVS CSV column limit. Streaming inference keeps one entry per
@@ -75,7 +76,14 @@ func (c *datasetSchemaInference) addRow(raw json.RawMessage) error {
 					kind = "STRING"
 				}
 			case kind == "DOUBLE":
-				if _, err := strconv.ParseFloat(string(value), 64); err != nil {
+				number := string(value)
+				parsed, err := strconv.ParseFloat(number, 64)
+				mantissa := number
+				if exponent := strings.IndexAny(number, "eE"); exponent >= 0 {
+					mantissa = number[:exponent]
+				}
+				// ParseFloat rounds tiny nonzero values to zero without an error.
+				if err != nil || (parsed == 0 && strings.ContainsAny(mantissa, "123456789")) {
 					kind = "STRING"
 				}
 			}
