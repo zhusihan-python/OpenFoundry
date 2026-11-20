@@ -108,6 +108,26 @@ func TestRustParityRoutesRequireAuth(t *testing.T) {
 	}
 }
 
+func TestExcelSnapshotRouteIsInternal(t *testing.T) {
+	jwt := authmw.NewJWTConfig("dataset-versioning-router-test-secret")
+	srv := newTestServerWithJWT(t, jwt)
+	route := "/datasets/00000000-0000-0000-0000-000000000001/files/rows:excel"
+
+	unsigned := httptest.NewRequest(http.MethodPost, "/internal"+route, nil)
+	unsignedResponse := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(unsignedResponse, unsigned)
+	require.Equal(t, http.StatusUnauthorized, unsignedResponse.Code)
+
+	token := tokenFor(t, jwt)
+	for _, prefix := range []string{"/v1", "/api/v1"} {
+		req := httptest.NewRequest(http.MethodPost, prefix+route, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusNotFound, rec.Code, prefix)
+	}
+}
+
 func TestRustParityPublicRoutesStayPublic(t *testing.T) {
 	srv := newTestServer(t)
 

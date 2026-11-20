@@ -192,6 +192,7 @@ publish normalized NDJSON. On a `dataset_input` node, set `dataset_path` to the
 workbook's logical path. In `dataset_snapshot`, supply `branch`, `version`,
 `transaction_id`, and an `excel` object. The object selects one worksheet,
 the physical header row and the source columns to keep and rename.
+Pipeline Build uses the internal Dataset Versioning endpoint for this read.
 
 ```json
 {

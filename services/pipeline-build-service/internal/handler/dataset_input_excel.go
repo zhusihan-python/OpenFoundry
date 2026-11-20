@@ -30,7 +30,7 @@ func (c batchedDatasetClient) readExcelSnapshotRows(ctx context.Context, rid str
 	if err != nil {
 		return DatasetRowsResult{}, err
 	}
-	endpoint := c.baseURL() + "/v1/datasets/" + url.PathEscape(rid) + "/files/rows:excel"
+	endpoint := c.baseURL() + "/internal/datasets/" + url.PathEscape(rid) + "/files/rows:excel"
 	request, err := c.newRequest(ctx, http.MethodPost, endpoint, bytes.NewReader(body), "application/json")
 	if err != nil {
 		return DatasetRowsResult{}, err
