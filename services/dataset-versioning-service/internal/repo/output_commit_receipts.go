@@ -200,7 +200,7 @@ func lockOutputCommitDataset(ctx context.Context, tx pgx.Tx, scope TenantScope, 
 func commitOutputTransaction(ctx context.Context, tx pgx.Tx) error {
 	if err := tx.Commit(ctx); err != nil {
 		// The peer may already have committed. Retry the same bytes or read the receipt.
-		return fmt.Errorf("%w: %v", ErrCommitOutcomeUnknown, err)
+		return fmt.Errorf("%w: %s", ErrCommitOutcomeUnknown, err.Error())
 	}
 	return nil
 }
