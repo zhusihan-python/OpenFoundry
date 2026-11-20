@@ -39,7 +39,7 @@ func (c batchedDatasetClient) readExcelSnapshotRows(ctx context.Context, rid str
 	if err != nil {
 		return DatasetRowsResult{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, batchedErrorBodyLimit))
 		return DatasetRowsResult{}, batchedErrorFromResponse(resp.StatusCode, detail)
