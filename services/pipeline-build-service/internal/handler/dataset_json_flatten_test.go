@@ -85,3 +85,14 @@ func TestDatasetSnapshotFlattenJSONRequiresBoolean(t *testing.T) {
 		require.ErrorContains(t, err, "flatten_json must be a boolean")
 	}
 }
+
+func TestDatasetSnapshotExcelCannotShadowFlattening(t *testing.T) {
+	base := `{"branch":"main","version":1,"transaction_id":"11111111-1111-1111-1111-111111111111",%s}`
+	pin, err := parseDatasetInputSnapshot(json.RawMessage(fmt.Sprintf(base, `"excel":{"sheet":"订单"}`)))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"sheet":"订单"}`, string(pin.Excel))
+	for _, invalid := range []string{`"excel":null`, `"excel":[]`, `"excel":{},"flatten_json":true`} {
+		_, err := parseDatasetInputSnapshot(json.RawMessage(fmt.Sprintf(base, invalid)))
+		require.ErrorContains(t, err, "excel must be an object")
+	}
+}

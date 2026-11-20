@@ -160,6 +160,7 @@ func New(cfg *config.Config, jwt *authmw.JWTConfig, h *handlers.Handlers, m *obs
 		api.Get("/datasets/{rid}/files", h.ListFiles)
 		api.Get("/datasets/{rid}/files/rows", h.ReadDatasetFileRows)
 		api.Get("/datasets/{rid}/files/rows:scan", h.ScanDatasetFileRows)
+		api.Post("/datasets/{rid}/files/rows:excel", h.ReadExcelSnapshotRows)
 		api.Get("/datasets/{rid}/files/{file_id}/download", h.DownloadFile)
 		api.Post("/datasets/{rid}/transactions/{txn_id}/files", h.CreateFileUploadURL)
 		api.Post("/datasets/{rid}/outputs:commit", h.CommitDatasetOutput)

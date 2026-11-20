@@ -184,3 +184,36 @@ the files. Retry with the exact request bytes.
 
 This endpoint uses the local backing filesystem. PBS orchestration must
 prepare every output before calling it.
+
+## Read an XLSX snapshot in a pipeline
+
+A manual build can read one registered XLSX file from a committed snapshot and
+publish normalized NDJSON. On a `dataset_input` node, set `dataset_path` to the
+workbook's logical path. In `dataset_snapshot`, supply `branch`, `version`,
+`transaction_id`, and an `excel` object. The object selects one worksheet,
+the physical header row and the source columns to keep and rename.
+
+```json
+{
+  "dataset_path": "orders.xlsx",
+  "dataset_snapshot": {
+    "branch": "main",
+    "version": 1,
+    "transaction_id": "11111111-1111-1111-1111-111111111111",
+    "excel": {
+      "sheet": "订单",
+      "header_row": 3,
+      "mapping": [{"source_index": 0, "target": "order_no"}]
+    }
+  }
+}
+```
+
+Source column indexes are zero-based. An omitted or null `header_row` reads
+the sheet without a header. Normalization retains strings, including numeric
+text, and represents blank cells as null. A mapped formula requires a cached
+value. The parser accepts plain XLSX, bounds compressed and decompressed
+workbook sizes, and rejects sheets with more than 1,000 data rows. For pinned
+reads, a smaller node row limit also rejects the input. Workbook reads do not
+change the source dataset or create an import. The published output uses the
+ordinary single-output manual commit path.
