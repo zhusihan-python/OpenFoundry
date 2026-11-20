@@ -58,6 +58,64 @@ Content-Type: application/json
 
 A fallback resolution emits `dataset_branch_fallback_resolutions_total{outcome="hit|miss"}`.
 
+## Store CSV options with a published version
+
+Inline `outputs:commit` accepts CSV options in `schema.custom_metadata.csv`
+for a `TEXT` schema. The publication retains the effective options in the
+committed transaction's schema metadata. Later publications have their own
+configuration. You can inspect the stored configuration through the transaction
+endpoint for the version.
+
+| Option | Meaning |
+| --- | --- |
+| `delimiter` | A single CSV separator. Omission preserves the format default (comma for CSV, tab for TSV). |
+| `headerRow` | One-based record number for the header. Zero denotes no header. If omitted, `header: true` resolves to one and `header: false` resolves to zero. |
+| `charset` | `UTF-8` (default), `UTF-16LE`, or `UTF-16BE`. |
+| `bom` | `strip` (default), `require`, or `forbid`. |
+
+Version-pinned preview reads the options from the selected
+transaction. CSV and TSV snapshots without saved options use a first-record
+header, UTF-8 and optional matching BOM. A header record is counted by CSV
+records, including quoted multiline fields as one record. A headerless file
+uses `column_1`, `column_2`, and so on. The preview uses standard CSV
+double quoting and the existing cell conversion rules.
+
+The preview opens one local CSV or TSV ADD file per page, up to 32 MiB per
+file. Each continuation resumes at a logical record of that same snapshot.
+Malformed encoding, an incompatible BOM, and a missing file produce an error
+for the selected version. A CSV preview rejects snapshots containing another
+file format. Fixed-version scans at `files/rows:scan` use the same
+decoder and support either `all_files=true` or an explicit CSV/TSV `path`,
+with the existing equality predicate. Pipeline execution reads the decoded
+rows through this endpoint.
+
+For pinned CSV input, the pipeline node preview reports the inferred schema.
+Batched copy to NDJSON applies the same inference to the executed rows and
+saves the schema with the output transaction. Use the output version's
+transaction endpoint to read `metadata.schema`. Integers and decimals in one
+column infer `DOUBLE`. Other type conflicts infer `STRING`. A missing or null
+value makes its field nullable. A field with only a header or nulls infers
+nullable `STRING`. Columns are sorted by name. The inference retains statistics
+for at most 256 columns and 64 KiB of column names across all files.
+
+## Flatten nested JSON in a pinned pipeline
+
+Set `dataset_snapshot.flatten_json` to `true` in a pinned dataset input node
+to preview the expanded rows and inferred schema. For a published batched
+job, use `logic_payload.transform_type: "batched_json_flatten"` with a pinned
+NDJSON input and an `.ndjson` output. The output transaction stores the
+inferred schema in `metadata.schema`.
+
+Non-empty objects expand into dot-separated paths. A literal dot or
+backslash in a field name is escaped with a backslash, so `customer.name`
+and the literal key `customer.name` in the original record produce
+distinct columns (`customer.name` and `customer\.name`). Arrays keep their
+values and infer `ARRAY`. Empty objects keep their values and infer
+`STRUCT`. The scalar inference, missing or null values, column ordering
+and schema budgets follow the rules above. Out-of-range numbers keep their
+JSON values and infer `STRING`. Expansion rejects empty or
+duplicate keys in expanded objects and limits object nesting to 32 levels.
+
 ## Authorization
 
 All four mutating endpoints (`create_branch`, `delete_branch`, `:reparent`, `PUT /fallbacks`) require `dataset.write`. Read endpoints (`GET .../branches`, `GET .../branches/{branch}`) are open to any authenticated caller.
