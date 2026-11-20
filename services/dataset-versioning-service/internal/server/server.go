@@ -81,6 +81,7 @@ func New(cfg *config.Config, jwt *authmw.JWTConfig, h *handlers.Handlers, m *obs
 		api.Use(authmw.Middleware(jwt))
 		api.Get("/datasets/{rid}/metadata", h.GetDatasetMetadata)
 		api.Post("/datasets/{rid}/files/rows:excel", h.ReadExcelSnapshotRows)
+		api.Post("/datasets/outputs:commit-staged-group", h.CommitStagedDatasetOutputGroup)
 	})
 
 	r.Route("/v1", func(api chi.Router) {
