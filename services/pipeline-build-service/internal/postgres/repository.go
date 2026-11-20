@@ -1381,10 +1381,6 @@ func (r *Repository) PublishJobSpec(ctx context.Context, kind string, req handle
 	if len(outputs) == 0 && kind != "EXPORT" {
 		return handler.PublishedJobSpec{}, errors.New("output_dataset_rids must declare at least one dataset")
 	}
-	keyOutput := ""
-	if len(outputs) > 0 {
-		keyOutput = outputs[0]
-	}
 	dedupWhere := "pipeline_rid=$1 AND branch_name=$2 AND logic_kind=$3 AND output_dataset_rids=$4 AND content_hash=$5"
 	dedupArgs := []any{req.PipelineRID, req.BranchName, kind, outputs, contentHash}
 	if scope := scopeFromContext(ctx); scope != nil {
@@ -1427,7 +1423,7 @@ func (r *Repository) PublishJobSpec(ctx context.Context, kind string, req handle
 		if jobSpecPinnedReuseConflict(storedPayload, storedInputs, payload, inputsRaw) {
 			return handler.PublishedJobSpec{}, fmt.Errorf("job_spec_content_conflict: existing spec with content hash %s (rid %s) has a different frozen dataset_snapshot or output_schema_version definition; publish with its own content hash", contentHash, existing.RID)
 		}
-		if keyOutput == "" {
+		if len(outputs) == 0 {
 			return existing, nil
 		}
 		if beginner, ok := r.db.(txBeginner); ok {
@@ -1437,7 +1433,7 @@ func (r *Repository) PublishJobSpec(ctx context.Context, kind string, req handle
 			}
 			defer tx.Rollback(ctx) //nolint:errcheck
 			txCtx := context.WithValue(ctx, ctxTxKey{}, tx.(DB))
-			if err := r.upsertPipelineJobSpecMapping(txCtx, req, keyOutput, outputs, inputsRaw, jobSpecJSON, existing.ContentHash, existing.RID, publisher, tenantID); err != nil {
+			if err := r.upsertPipelineJobSpecMappings(txCtx, req, outputs, inputsRaw, jobSpecJSON, existing.ContentHash, existing.RID, publisher, tenantID); err != nil {
 				return handler.PublishedJobSpec{}, err
 			}
 			if err := tx.Commit(ctx); err != nil {
@@ -1445,12 +1441,15 @@ func (r *Repository) PublishJobSpec(ctx context.Context, kind string, req handle
 			}
 			return existing, nil
 		}
-		if err := r.upsertPipelineJobSpecMapping(ctx, req, keyOutput, outputs, inputsRaw, jobSpecJSON, existing.ContentHash, existing.RID, publisher, tenantID); err != nil {
+		if len(outputs) > 1 {
+			return handler.PublishedJobSpec{}, errors.New("multi-output JobSpec mapping requires a database transaction")
+		}
+		if err := r.upsertPipelineJobSpecMappings(ctx, req, outputs, inputsRaw, jobSpecJSON, existing.ContentHash, existing.RID, publisher, tenantID); err != nil {
 			return handler.PublishedJobSpec{}, err
 		}
 		return existing, nil
 	}
-	if keyOutput == "" {
+	if len(outputs) == 0 {
 		if _, err := r.db.Exec(ctx, `INSERT INTO job_specs (id, rid, pipeline_rid, branch_name, logic_kind, inputs, output_dataset_rids, logic_payload, content_hash, created_by, tenant_id)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, rid, req.PipelineRID, req.BranchName, kind, inputsRaw, outputs, payload, contentHash, createdBy, tenantID); err != nil {
 			return handler.PublishedJobSpec{}, err
@@ -1468,7 +1467,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, rid, req.PipelineRID, req.Bran
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, rid, req.PipelineRID, req.BranchName, kind, inputsRaw, outputs, payload, contentHash, createdBy, tenantID); err != nil {
 			return err
 		}
-		return r.upsertPipelineJobSpecMapping(txCtx, req, keyOutput, outputs, inputsRaw, jobSpecJSON, contentHash, rid, publisher, tenantID)
+		return r.upsertPipelineJobSpecMappings(txCtx, req, outputs, inputsRaw, jobSpecJSON, contentHash, rid, publisher, tenantID)
 	}
 	if beginner, ok := r.db.(txBeginner); ok {
 		tx, err := beginner.Begin(ctx)
@@ -1482,22 +1481,31 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, rid, req.PipelineRID, req.Bran
 		if err := tx.Commit(ctx); err != nil {
 			return handler.PublishedJobSpec{}, err
 		}
-	} else if err := execInTx(r.db); err != nil {
-		return handler.PublishedJobSpec{}, err
+	} else {
+		if len(outputs) > 1 {
+			return handler.PublishedJobSpec{}, errors.New("multi-output JobSpec publishing requires a database transaction")
+		}
+		if err := execInTx(r.db); err != nil {
+			return handler.PublishedJobSpec{}, err
+		}
 	}
 	return handler.PublishedJobSpec{RID: rid, LogicKind: kind, ContentHash: contentHash}, nil
 }
 
-// upsertPipelineJobSpecMapping rebinds the branch mapping row to the
+// upsertPipelineJobSpecMappings rebinds every declared output to the
 // given canonical job_spec rid (used for fresh publishes AND dedup hits
 // so A→B→A republishes leave the mapping pointing at the rid the API
 // returned). db must be the surrounding transaction when one is open.
-func (r *Repository) upsertPipelineJobSpecMapping(ctx context.Context, req handler.CreateJobSpecRequest, keyOutput string, outputs []string, inputsRaw []byte, jobSpecJSON []byte, contentHash, canonicalRID string, publisher uuid.UUID, tenantID *uuid.UUID) error {
+func (r *Repository) upsertPipelineJobSpecMappings(ctx context.Context, req handler.CreateJobSpecRequest, outputs []string, inputsRaw []byte, jobSpecJSON []byte, contentHash, canonicalRID string, publisher uuid.UUID, tenantID *uuid.UUID) error {
 	db := r.db
 	if tx, ok := txFromContext(ctx); ok {
 		db = tx
 	}
-	_, err := db.Exec(ctx, `INSERT INTO pipeline_job_specs (id, pipeline_rid, branch_name, output_dataset_rid, output_branch, job_spec_json, inputs, content_hash, published_by, tenant_id, job_spec_rid)
+	// Keep lock order stable for concurrent publishes with shared outputs.
+	sortedOutputs := append([]string(nil), outputs...)
+	sort.Strings(sortedOutputs)
+	for _, keyOutput := range sortedOutputs {
+		_, err := db.Exec(ctx, `INSERT INTO pipeline_job_specs (id, pipeline_rid, branch_name, output_dataset_rid, output_branch, job_spec_json, inputs, content_hash, published_by, tenant_id, job_spec_rid)
 VALUES ($1,$2,$3,$4,$3,$5,$6,$7,$8,$9,$10)
 ON CONFLICT (pipeline_rid, branch_name, output_dataset_rid,
     COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid),
@@ -1509,7 +1517,11 @@ ON CONFLICT (pipeline_rid, branch_name, output_dataset_rid,
   version=CASE WHEN pipeline_job_specs.content_hash=EXCLUDED.content_hash THEN pipeline_job_specs.version ELSE pipeline_job_specs.version + 1 END,
   published_at=NOW()
 `, uuid.New(), req.PipelineRID, req.BranchName, keyOutput, jobSpecJSON, inputsRaw, contentHash, publisher, tenantID, canonicalRID)
-	return err
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // txFromContext lets helpers join the caller's open transaction.

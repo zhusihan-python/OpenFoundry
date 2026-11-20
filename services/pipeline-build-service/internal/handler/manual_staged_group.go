@@ -102,6 +102,12 @@ func stagedManualGroupConfig(specs []models.JobSpec) (*manualStagedGroupConfig, 
 		if len(specs) != 1 || len(pin.Excel) != 0 || pin.FlattenJSON || !strings.HasSuffix(strings.ToLower(cfg.DatasetPath), ".xlsx") {
 			return nil, errors.New("excel_outputs requires one XLSX JobSpec without a single-sheet config")
 		}
+		declared, err := canonicalDatasetRIDForComparison(cfg.DatasetRID)
+		if err != nil || (declared != "" && declared != source) || cfg.DatasetID != "" ||
+			cfg.DatasetBranch != "" || cfg.DatasetVersion != "" || cfg.Rows != nil ||
+			cfg.SeedRows != nil || cfg.Records != nil || cfg.Data != nil {
+			return nil, errors.New("excel_outputs input must match the single pinned JobSpec dataset")
+		}
 		excel, err := parseManualExcelGroup(options.ExcelOutputs, targets)
 		if err != nil {
 			return nil, err

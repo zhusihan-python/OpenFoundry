@@ -79,3 +79,31 @@ func TestBuildFlowPublishPinHashCollisionRejected(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, plain1.RID, plain2.RID)
 }
+
+func TestBuildFlowPublishMapsEveryDeclaredOutput(t *testing.T) {
+	ctx := context.Background()
+	f := newBuildFlowFixture(ctx, t)
+	sub := uuid.New()
+	scope := handler.ContextWithTenantScope(ctx, &handler.TenantScope{TenantID: uuidPtr(uuid.New()), Subject: sub})
+	req := handler.CreateJobSpecRequest{
+		PipelineRID: "ri.foundry.main.pipeline." + uuid.NewString(), BranchName: "main",
+		OutputDatasetRIDs: []string{"ri.foundry.main.dataset." + uuid.NewString(), "ri.foundry.main.dataset." + uuid.NewString()},
+		LogicPayload:      []byte(`{"transform_type":"dataset_input"}`),
+	}
+	publish := func() handler.PublishedJobSpec {
+		result, err := f.repo.PublishJobSpec(scope, "TRANSFORM", req, sub.String())
+		require.NoError(t, err)
+		for _, output := range req.OutputDatasetRIDs {
+			bound, err := f.repo.Lookup(scope, req.PipelineRID, output, "main", nil)
+			require.NoError(t, err)
+			require.NotNil(t, bound)
+			require.Equal(t, result.RID, bound.RID)
+		}
+		return result
+	}
+	first := publish()
+	req.LogicPayload = []byte(`{"transform_type":"dataset_input","changed":true}`)
+	require.NotEqual(t, first.RID, publish().RID)
+	req.LogicPayload = []byte(`{"transform_type":"dataset_input"}`)
+	require.Equal(t, first.RID, publish().RID)
+}
