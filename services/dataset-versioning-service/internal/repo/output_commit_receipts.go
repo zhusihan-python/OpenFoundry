@@ -94,56 +94,17 @@ const outputCommitReceiptSelect = `SELECT r.dataset_id, r.idempotency_key, r.req
 // single outer COMMIT (HTTP 201). See the package comment for the lock
 // ordering and failure semantics.
 func (r *Repo) WithIdempotentOutputCommit(ctx context.Context, scope TenantScope, datasetID uuid.UUID, key string, fingerprint string, build func(ctx context.Context, tx OutputCommitTxStore) (models.CommitDatasetOutputResponse, error)) (*models.OutputCommitReceipt, bool, error) {
-	tx, err := r.Pool.Begin(ctx)
+	tx, err := r.beginOutputCommit(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	committed := false
 	defer func() {
 		if !committed {
-			// Bounded, independent-context rollback of our own transaction.
-			// Never AbortTransaction (that would touch other state), never
-			// a foreign transaction.
-			rbCtx, cancel := context.WithTimeout(context.Background(), outputCommitRollbackTimeout)
-			defer cancel()
-			_ = tx.Rollback(rbCtx)
+			rollbackOutputCommit(tx)
 		}
 	}()
-
-	// Pin the isolation level explicitly (must precede the first data
-	// statement): the replay snapshot logic relies on READ COMMITTED's
-	// per-statement snapshots, whatever the server default is. The DB
-	// interface stays untouched — txRepo needs a plain pgx.Tx.
-	if _, err := tx.Exec(ctx, `SET TRANSACTION ISOLATION LEVEL READ COMMITTED`); err != nil {
-		return nil, false, err
-	}
-	// Bound the datasets-row lock wait. lock_timeout accepts no parameters;
-	// the value is formatted from an integer duration, not caller input.
-	// A sub-millisecond positive duration must not format as '0ms' — PG
-	// treats 0 as disabled (wait forever) — so it is clamped to 1ms.
-	lockTimeout := r.OutputCommitLockTimeout
-	if lockTimeout <= 0 {
-		lockTimeout = DefaultOutputCommitLockTimeout
-	}
-	ms := lockTimeout.Milliseconds()
-	if ms < 1 {
-		ms = 1
-	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", ms)); err != nil {
-		return nil, false, err
-	}
-
-	// Statement 1 — tenant-scoped row lock, taken before any new transaction
-	// INSERT and its FK share lock. Cross-tenant and missing datasets are
-	// indistinguishable (ErrNotFound).
-	var lockedID uuid.UUID
-	err = tx.QueryRow(ctx,
-		`SELECT id FROM datasets WHERE id = $1 AND `+tenantVisibility("$2", "$3")+` FOR UPDATE`,
-		datasetID, scope.OrgID, scope.Subject).Scan(&lockedID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, ErrNotFound
-	}
-	if err != nil {
+	if err := lockOutputCommitDataset(ctx, tx, scope, datasetID); err != nil {
 		return nil, false, err
 	}
 
@@ -171,6 +132,80 @@ func (r *Repo) WithIdempotentOutputCommit(ctx context.Context, scope TenantScope
 	if err != nil {
 		return nil, false, err
 	}
+	receipt, err = writeOutputCommitReceipt(ctx, tx, datasetID, key, fingerprint, response)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := commitOutputTransaction(ctx, tx); err != nil {
+		return nil, false, err
+	}
+	committed = true
+	receipt.CreatedAt = time.Now().UTC()
+	return receipt, false, nil
+}
+
+func (r *Repo) beginOutputCommit(ctx context.Context) (pgx.Tx, error) {
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Pin the isolation level explicitly (must precede the first data
+	// statement): the replay snapshot logic relies on READ COMMITTED's
+	// per-statement snapshots, whatever the server default is. The DB
+	// interface stays untouched — txRepo needs a plain pgx.Tx.
+	if _, err := tx.Exec(ctx, `SET TRANSACTION ISOLATION LEVEL READ COMMITTED`); err != nil {
+		rollbackOutputCommit(tx)
+		return nil, err
+	}
+	// Bound the datasets-row lock wait. lock_timeout accepts no parameters;
+	// the value is formatted from an integer duration, not caller input.
+	// A sub-millisecond positive duration must not format as '0ms' — PG
+	// treats 0 as disabled (wait forever) — so it is clamped to 1ms.
+	lockTimeout := r.OutputCommitLockTimeout
+	if lockTimeout <= 0 {
+		lockTimeout = DefaultOutputCommitLockTimeout
+	}
+	ms := lockTimeout.Milliseconds()
+	if ms < 1 {
+		ms = 1
+	}
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", ms)); err != nil {
+		rollbackOutputCommit(tx)
+		return nil, err
+	}
+
+	return tx, nil
+}
+
+func rollbackOutputCommit(tx pgx.Tx) {
+	ctx, cancel := context.WithTimeout(context.Background(), outputCommitRollbackTimeout)
+	defer cancel()
+	_ = tx.Rollback(ctx)
+}
+
+func lockOutputCommitDataset(ctx context.Context, tx pgx.Tx, scope TenantScope, datasetID uuid.UUID) error {
+	// Statement 1 — tenant-scoped row lock, taken before any new transaction
+	// INSERT and its FK share lock. Cross-tenant and missing datasets are
+	// indistinguishable (ErrNotFound).
+	var lockedID uuid.UUID
+	err := tx.QueryRow(ctx,
+		`SELECT id FROM datasets WHERE id = $1 AND `+tenantVisibility("$2", "$3")+` FOR UPDATE`,
+		datasetID, scope.OrgID, scope.Subject).Scan(&lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func commitOutputTransaction(ctx context.Context, tx pgx.Tx) error {
+	if err := tx.Commit(ctx); err != nil {
+		// The peer may already have committed. Retry the same bytes or read the receipt.
+		return fmt.Errorf("%w: %v", ErrCommitOutcomeUnknown, err)
+	}
+	return nil
+}
+
+func writeOutputCommitReceipt(ctx context.Context, tx pgx.Tx, datasetID uuid.UUID, key, fingerprint string, response models.CommitDatasetOutputResponse) (*models.OutputCommitReceipt, error) {
 	response.IdempotencyKey = key
 	response.RequestFingerprint = fingerprint
 
@@ -179,27 +214,20 @@ func (r *Repo) WithIdempotentOutputCommit(ctx context.Context, scope TenantScope
 	// GET returns — byte-stable by construction.
 	body, err := json.Marshal(response)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	txnBody, err := json.Marshal(response.Transaction)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	if _, err := tx.Exec(ctx, `INSERT INTO dataset_output_commit_receipts
 		(id, dataset_id, idempotency_key, request_fingerprint, branch_name, transaction_id, transaction, response_body)
 		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)`,
 		uuid.New(), datasetID, key, fingerprint, response.Branch, response.Transaction.ID, txnBody, string(body)); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		// The COMMIT result is unknown (e.g. lost ACK): the receipt may or
-		// may not be durable. Do not guess a rollback; the caller retries
-		// the same key+body or queries the receipt.
-		return nil, false, fmt.Errorf("%w: %v", ErrCommitOutcomeUnknown, err)
-	}
-	committed = true
 	return &models.OutputCommitReceipt{
 		DatasetID:          datasetID,
 		IdempotencyKey:     key,
@@ -208,7 +236,7 @@ func (r *Repo) WithIdempotentOutputCommit(ctx context.Context, scope TenantScope
 		Transaction:        response.Transaction,
 		ResponseBody:       body,
 		CreatedAt:          time.Now().UTC(),
-	}, false, nil
+	}, nil
 }
 
 // GetOutputCommitReceipt loads the committed receipt for (dataset, key)
