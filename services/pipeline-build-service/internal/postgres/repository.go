@@ -487,6 +487,12 @@ func persistResolvedBuild(ctx context.Context, db DB, resolved *models.ResolvedB
 	if err != nil {
 		return err
 	}
+	if len(resolved.ManualStagedGroup) != 0 {
+		if _, err := db.Exec(ctx, `UPDATE builds SET manual_staged_group=$2 WHERE id=$1`,
+			resolved.BuildID, resolved.ManualStagedGroup); err != nil {
+			return err
+		}
+	}
 	jobBySpec := map[string]uuid.UUID{}
 	for _, job := range resolved.Jobs {
 		jobBySpec[job.JobSpecRID] = job.ID
