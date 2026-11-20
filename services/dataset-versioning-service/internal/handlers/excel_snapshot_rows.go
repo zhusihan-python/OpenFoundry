@@ -107,5 +107,6 @@ func (h *Handlers) ReadExcelSnapshotRows(w http.ResponseWriter, r *http.Request)
 		Format        string            `json:"format"`
 		Columns       []string          `json:"columns"`
 		Rows          []json.RawMessage `json:"rows"`
-	}{datasetID, body.Branch, body.Version, target.txn.ID, body.Path, "xlsx", result.Columns, rows})
+		PhysicalRows  []int             `json:"physical_rows"`
+	}{datasetID, body.Branch, body.Version, target.txn.ID, body.Path, "xlsx", result.Columns, rows, result.PhysicalRows})
 }

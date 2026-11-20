@@ -22,13 +22,20 @@ const stagedManualGroupPath = "/internal/datasets/outputs:commit-staged-group"
 type manualStagedGroupConfig struct {
 	Manifest   batchedArtifactManifest `json:"manifest"`
 	SpecHashes map[string]string       `json:"spec_hashes"`
+	Excel      *manualExcelGroupConfig `json:"excel,omitempty"`
 }
 
 func stagedManualGroupConfig(specs []models.JobSpec) (*manualStagedGroupConfig, error) {
 	var root *models.JobSpec
 	for i := range specs {
 		var fields map[string]json.RawMessage
-		if json.Unmarshal(specs[i].LogicPayload, &fields) != nil || fields["staged_output_group"] == nil {
+		if json.Unmarshal(specs[i].LogicPayload, &fields) != nil {
+			continue
+		}
+		if fields["staged_output_group"] == nil {
+			if fields["excel_outputs"] != nil {
+				return nil, errors.New("excel_outputs requires staged_output_group")
+			}
 			continue
 		}
 		var enabled bool
@@ -41,7 +48,8 @@ func stagedManualGroupConfig(specs []models.JobSpec) (*manualStagedGroupConfig, 
 		return nil, nil
 	}
 	var options struct {
-		TransformType string `json:"transform_type"`
+		TransformType string          `json:"transform_type"`
+		ExcelOutputs  json.RawMessage `json:"excel_outputs"`
 	}
 	_ = json.Unmarshal(root.LogicPayload, &options)
 	cfg, err := parseTableRuntimeConfig(root.LogicPayload)
@@ -90,6 +98,16 @@ func stagedManualGroupConfig(specs []models.JobSpec) (*manualStagedGroupConfig, 
 		},
 		SpecHashes: make(map[string]string, len(specs)),
 	}
+	if len(options.ExcelOutputs) != 0 {
+		if len(specs) != 1 || len(pin.Excel) != 0 || pin.FlattenJSON || !strings.HasSuffix(strings.ToLower(cfg.DatasetPath), ".xlsx") {
+			return nil, errors.New("excel_outputs requires one XLSX JobSpec without a single-sheet config")
+		}
+		excel, err := parseManualExcelGroup(options.ExcelOutputs, targets)
+		if err != nil {
+			return nil, err
+		}
+		config.Excel = excel
+	}
 	for _, spec := range specs {
 		if spec.RID != root.RID {
 			var shape struct {
@@ -132,6 +150,18 @@ func (c *manualStagedGroupConfig) verifyPlan(plan executor.Plan) error {
 }
 
 func (m manualBuildExecution) stageGroup(ctx context.Context, group []manualGroupOutput, outcome executor.Outcome) error {
+	if m.staged.Excel != nil {
+		clientConfig, err := (BatchedClientConfig{BaseURL: m.dataset.BaseURL, Client: m.dataset.Client}).withDefaults()
+		if err != nil {
+			return err
+		}
+		for i := range group {
+			if err := m.stageGroupMember(ctx, batchedDatasetClient{cfg: clientConfig}, &group[i], group[i].body.Schema); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	root := outcome.Results[m.staged.Manifest.JobSpecRID]
 	source := m.staged.Manifest.Input
 	rid, _ := root.Metadata["dataset_rid"].(string)
@@ -191,6 +221,9 @@ func (m manualBuildExecution) stageGroupMember(ctx context.Context, client batch
 	file.StoragePath, file.ContentBase64 = "", nil
 	body.ManualReservation, body.PreviewRows, body.PreviewColumns = nil, nil, nil
 	body.ReservationID, body.BuildID = remote.binding.ReservationID.String(), m.buildID.String()
-	body.ArtifactManifest, body.Schema = &m.staged.Manifest, schema
+	if body.ArtifactManifest == nil {
+		body.ArtifactManifest = &m.staged.Manifest
+	}
+	body.Schema = schema
 	return nil
 }

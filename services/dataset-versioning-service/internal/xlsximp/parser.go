@@ -56,8 +56,8 @@ const (
 	// MaxCompressedBytes caps the workbook file itself (matches the
 	// UploadData multipart ceiling); the HTTP envelope adds
 	// MultipartEnvelopeMargin on top.
-	MaxCompressedBytes        = 32 << 20
-	MultipartEnvelopeMargin   = 512 << 10
+	MaxCompressedBytes      = 32 << 20
+	MultipartEnvelopeMargin = 512 << 10
 	// MaxUncompressedBytes caps total uncompressed zip content.
 	MaxUncompressedBytes = 64 << 20
 	MaxZipEntries        = 4096
@@ -158,6 +158,7 @@ type Result struct {
 	SourceColumns []SourceColumn   `json:"source_columns"` // physical source layout
 	SampleRows    []map[string]any `json:"sample_rows"`
 	RowCount      int              `json:"row_count"`
+	PhysicalRows  []int            `json:"-"`
 
 	rows      []map[string]any
 	ndjson    []byte
@@ -1139,10 +1140,10 @@ func Inspect(data []byte, filename string) (*InspectResult, error) {
 	}
 	sum := sha256.Sum256(data)
 	return &InspectResult{
-		Filename:   filename,
-		SizeBytes:  int64(len(data)),
-		SHA256:     hex.EncodeToString(sum[:]),
-		Sheets:     sheets,
+		Filename:    filename,
+		SizeBytes:   int64(len(data)),
+		SHA256:      hex.EncodeToString(sum[:]),
+		Sheets:      sheets,
 		MaxDataRows: MaxDataRows,
 	}, nil
 }
@@ -1286,6 +1287,7 @@ func Normalize(data []byte, cfg Config, sampleRows int) (*Result, error) {
 	}
 
 	rows := make([]map[string]any, 0, len(dataRows))
+	result.PhysicalRows = make([]int, 0, len(dataRows))
 	var ndjson bytes.Buffer
 	for _, dr := range dataRows {
 		row := make(map[string]any, len(mapping))
@@ -1324,6 +1326,7 @@ func Normalize(data []byte, cfg Config, sampleRows int) (*Result, error) {
 		ndjson.Write(encoded)
 		ndjson.WriteByte('\n')
 		rows = append(rows, row)
+		result.PhysicalRows = append(result.PhysicalRows, dr.pos)
 	}
 	result.rows = rows
 	result.ndjson = ndjson.Bytes()

@@ -62,6 +62,9 @@ func (m manualBuildExecution) executeGroup(w http.ResponseWriter, ctx context.Co
 	runCtx := context.WithValue(ctx, manualGroupedDatasetProducersKey{}, producers)
 	// The executor handles dependencies and retries. Its external commit
 	// and abort ports stay idle until every output has been prepared.
+	if m.staged != nil && m.staged.Excel != nil {
+		runner = manualExcelGroupRunner{dataset: m.dataset, config: m.staged}
+	}
 	outcome, executionErr := executor.Execute(runCtx, plan, runner, nil, nil, manualGroupAudit{audit, outputJobs})
 	var group []manualGroupOutput
 	if executionErr == nil && outcome.FinalState == models.BuildCompleted {
@@ -135,9 +138,22 @@ func (m manualBuildExecution) prepareGroup(ctx context.Context, plan executor.Pl
 			if err != nil {
 				return nil, err
 			}
-			body, err := remote.commitBody(ctx, output, outcome.Results[node.ID])
+			result := outcome.Results[node.ID]
+			var artifact excelGroupArtifact
+			if m.staged != nil && m.staged.Excel != nil {
+				artifacts, _ := result.Metadata["excel_artifacts"].(map[string]excelGroupArtifact)
+				var found bool
+				if artifact, found = artifacts[remote.dataset]; !found {
+					return nil, errors.New("missing prepared Excel group output")
+				}
+				result = artifact.result
+			}
+			body, err := remote.commitBody(ctx, output, result)
 			if err != nil {
 				return nil, err
+			}
+			if artifact.schema != nil {
+				body.Schema, body.ArtifactManifest = artifact.schema, &artifact.manifest
 			}
 			group = append(group, manualGroupOutput{owned, remote, body})
 		}
