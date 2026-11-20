@@ -117,7 +117,21 @@ result = {"status": "ok", "kind": "trail_parse"}
 	if got.RowsAffected == nil || *got.RowsAffected != 1 {
 		t.Fatalf("rows_affected = %v, want 1", got.RowsAffected)
 	}
-	if len(got.ResultRows) != 1 || !strings.Contains(string(got.ResultRows[0]), `"distance_miles":5`) || !strings.Contains(string(got.ResultRows[0]), `"gpx_points":3`) {
-		t.Fatalf("trail result rows drift: %s", got.ResultRows)
+	if len(got.ResultRows) != 1 {
+		t.Fatalf("trail result row count = %d, want 1", len(got.ResultRows))
+	}
+	type trailRow struct {
+		ActivityID      string  `json:"activity_id"`
+		DistanceMiles   float64 `json:"distance_miles"`
+		ElevationGainFT float64 `json:"elevation_gain_ft"`
+		GPXPoints       int     `json:"gpx_points"`
+	}
+	var row trailRow
+	if err := json.Unmarshal(got.ResultRows[0], &row); err != nil {
+		t.Fatalf("decode trail result row: %v", err)
+	}
+	want := trailRow{ActivityID: "987", DistanceMiles: 5, ElevationGainFT: 32.8, GPXPoints: 3}
+	if row != want {
+		t.Fatalf("trail result row = %+v, want %+v", row, want)
 	}
 }
