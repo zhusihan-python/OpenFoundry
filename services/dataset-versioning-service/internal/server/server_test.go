@@ -108,6 +108,25 @@ func TestRustParityRoutesRequireAuth(t *testing.T) {
 	}
 }
 
+func TestStagedOutputGroupRouteIsInternal(t *testing.T) {
+	jwt := authmw.NewJWTConfig("dataset-versioning-router-test-secret")
+	srv := newTestServerWithJWT(t, jwt)
+	route := "/datasets/outputs:commit-staged-group"
+
+	unsigned := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(unsigned, httptest.NewRequest(http.MethodPost, "/internal"+route, nil))
+	require.Equal(t, http.StatusUnauthorized, unsigned.Code)
+
+	token := tokenFor(t, jwt)
+	for _, prefix := range []string{"/v1", "/api/v1"} {
+		req := httptest.NewRequest(http.MethodPost, prefix+route, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusNotFound, rec.Code, prefix)
+	}
+}
+
 func TestExcelSnapshotRouteIsInternal(t *testing.T) {
 	jwt := authmw.NewJWTConfig("dataset-versioning-router-test-secret")
 	srv := newTestServerWithJWT(t, jwt)

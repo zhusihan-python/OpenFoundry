@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -388,13 +389,20 @@ func (h *Handlers) commitDatasetOutputKeyed(w http.ResponseWriter, r *http.Reque
 	scope := tenantScopeFromClaims(claims)
 	fingerprint := requestFingerprint(raw)
 	var build func(context.Context, repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error)
+	var links stagedCommitLinks
+	defer links.close()
 	if staged {
-		build = h.stagedKeyedOutputCommitBuild(r, body, branchName, datasetID, scope, claims)
+		build = h.stagedKeyedOutputCommitBuild(datasetIDParam(r), body, branchName, datasetID, scope, claims, &links)
 	} else {
 		build = h.keyedOutputCommitBuild(datasetIDParam(r), body, branchName, datasetID, scope, claims, h.writeOutputCommitObjects)
 	}
 	receipt, replayed, err := h.Repo.WithIdempotentOutputCommit(r.Context(), scope, datasetID, key, fingerprint, build)
 	if err != nil {
+		if !errors.Is(err, repo.ErrCommitOutcomeUnknown) {
+			if cleanupErr := links.remove(); cleanupErr != nil {
+				slog.ErrorContext(r.Context(), "staged output file cleanup failed", "error", cleanupErr)
+			}
+		}
 		writeKeyedCommitError(w, err)
 		return
 	}

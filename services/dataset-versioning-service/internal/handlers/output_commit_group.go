@@ -30,6 +30,14 @@ type outputCommitGroupMember struct {
 }
 
 func (h *Handlers) CommitDatasetOutputGroup(w http.ResponseWriter, r *http.Request) {
+	h.commitOutputGroup(w, r, false)
+}
+
+func (h *Handlers) CommitStagedDatasetOutputGroup(w http.ResponseWriter, r *http.Request) {
+	h.commitOutputGroup(w, r, true)
+}
+
+func (h *Handlers) commitOutputGroup(w http.ResponseWriter, r *http.Request, staged bool) {
 	claims, ok := authmw.FromContext(r.Context())
 	if !ok {
 		writeJSONErr(w, http.StatusUnauthorized, "authentication required")
@@ -56,8 +64,14 @@ func (h *Handlers) CommitDatasetOutputGroup(w http.ResponseWriter, r *http.Reque
 		writeJSONErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if err := validateOutputCommitGroup(request.Members, claims.Sub, h.outputCommitContentLimit()); err != nil {
-		writeOutputCommitFileError(w, err)
+	var validationErr error
+	if staged {
+		validationErr = validateStagedOutputCommitGroup(request.Members)
+	} else {
+		validationErr = validateOutputCommitGroup(request.Members, claims.Sub, h.outputCommitContentLimit())
+	}
+	if validationErr != nil {
+		writeOutputCommitFileError(w, validationErr)
 		return
 	}
 	store, ok := h.Repo.(groupOutputCommitStore)
@@ -67,6 +81,8 @@ func (h *Handlers) CommitDatasetOutputGroup(w http.ResponseWriter, r *http.Reque
 	}
 	objects := groupOutputObjects{backing: h.BackingFS}
 	defer objects.close()
+	var links stagedCommitLinks
+	defer links.close()
 	scope := tenantScopeFromClaims(claims)
 	members := make([]repo.OutputCommitMember, 0, len(request.Members))
 	for _, member := range request.Members {
@@ -76,7 +92,13 @@ func (h *Handlers) CommitDatasetOutputGroup(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		body := member.Output
-		build := h.keyedOutputCommitBuild(member.DatasetRID, body, strings.TrimSpace(body.Branch), id, scope, claims, objects.write)
+		branch := strings.TrimSpace(body.Branch)
+		var build func(context.Context, repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error)
+		if staged {
+			build = h.stagedKeyedOutputCommitBuild(member.DatasetRID, body, branch, id, scope, claims, &links)
+		} else {
+			build = h.keyedOutputCommitBuild(member.DatasetRID, body, branch, id, scope, claims, objects.write)
+		}
 		members = append(members, repo.OutputCommitMember{DatasetID: id, Key: body.IdempotencyKey, Build: build})
 	}
 	receipts, replay, err := store.WithIdempotentOutputCommitGroup(r.Context(), scope, requestFingerprint(raw), members)
@@ -84,7 +106,7 @@ func (h *Handlers) CommitDatasetOutputGroup(w http.ResponseWriter, r *http.Reque
 		// A lost COMMIT response is not proof of rollback. Its file bytes
 		// may already be published and must survive an exact replay.
 		if !errors.Is(err, repo.ErrCommitOutcomeUnknown) {
-			if cleanupErr := objects.remove(); cleanupErr != nil {
+			if cleanupErr := errors.Join(objects.remove(), links.remove()); cleanupErr != nil {
 				slog.ErrorContext(r.Context(), "output group file cleanup failed", "error", cleanupErr)
 				writeJSONErr(w, http.StatusInternalServerError, "output group rolled back but file cleanup failed")
 				return
@@ -146,6 +168,42 @@ func validateOutputCommitGroup(members []outputCommitGroupMember, subject uuid.U
 			total += int64(len(file.ContentBase64))
 			if total > contentLimit {
 				return errOutputCommitContentTooLarge
+			}
+		}
+	}
+	return nil
+}
+
+func validateStagedOutputCommitGroup(members []outputCommitGroupMember) error {
+	if len(members) < 2 || len(members) > 16 {
+		return errors.New("output group requires 2 to 16 datasets")
+	}
+	var buildID uuid.UUID
+	var source models.PipelineArtifactManifestInput
+	for i, member := range members {
+		body := member.Output
+		if !validIdempotencyKey(body.IdempotencyKey) || body.CreateIfMissing ||
+			strings.TrimSpace(body.Branch) == "" || body.ManualReservation != nil ||
+			body.OutputSchemaVersion != nil || body.ArtifactManifest == nil {
+			return errors.New("staged group members require keyed staged snapshot publication with a manifest")
+		}
+		if err := validateStagedCommitRequest(body); err != nil {
+			return err
+		}
+		memberBuild, _ := uuid.Parse(body.BuildID)
+		if memberBuild == uuid.Nil {
+			return errors.New("staged group members require a nonzero build ID")
+		}
+		if i == 0 {
+			buildID = memberBuild
+			source = *body.ArtifactManifest
+		}
+		if memberBuild != buildID || *body.ArtifactManifest != source {
+			return errors.New("staged group members must use the same build, input pin and JobSpec")
+		}
+		for _, link := range body.LineageLinks {
+			if err := validateLineageLink(link.Direction, link.TargetRID); err != nil {
+				return err
 			}
 		}
 	}

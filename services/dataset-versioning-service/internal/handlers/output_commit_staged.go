@@ -130,7 +130,7 @@ func validateStagedCommitRequest(body models.CommitDatasetOutputRequest) error {
 // row locks (reservation, staged object) are taken inside the outer keyed
 // transaction after its datasets row lock, and the sealed file is
 // installed with a no-replace hard link from the private staging root.
-func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.CommitDatasetOutputRequest, branchName string, datasetID uuid.UUID, scope repo.TenantScope, claims *authmw.Claims) func(context.Context, repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error) {
+func (h *Handlers) stagedKeyedOutputCommitBuild(rawRef string, body models.CommitDatasetOutputRequest, branchName string, datasetID uuid.UUID, scope repo.TenantScope, claims *authmw.Claims, links *stagedCommitLinks) func(context.Context, repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error) {
 	file := body.Files[0]
 	reservationID, _ := uuid.Parse(body.ReservationID)
 	buildID, _ := uuid.Parse(body.BuildID)
@@ -141,7 +141,6 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.Com
 	if summary == "" {
 		summary = "Pipeline staged dataset output commit"
 	}
-	rawRef := datasetIDParam(r)
 	binding := repo.StagedBinding{
 		DatasetID:      datasetID,
 		BranchName:     branchName,
@@ -299,25 +298,11 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.Com
 			}
 			return zero, errStagedSealedFileMissing
 		}
-		dstAbs, ierr := installSealedArtifact(paths, srcAbs, storageKey)
+		dstAbs, ierr := installSealedArtifact(paths, srcAbs, storageKey, links)
 		if ierr != nil {
 			slog.ErrorContext(ctx, "staged install failed", slog.String("staged_object", obj.ID.String()), slog.String("error", ierr.Error()))
 			return zero, errStagedInstallFailed
 		}
-		// A failure from here on rolls the outer transaction back BEFORE
-		// its COMMIT: this attempt's freshly installed target is uniquely
-		// ours and unreferenced, so it is removed again. Once the build
-		// succeeds (or the outer COMMIT's outcome is unknown) nothing is
-		// ever deleted — a residue that survives is bounded and listed.
-		installed := dstAbs
-		buildSucceeded := false
-		defer func() {
-			if installed != "" && !buildSucceeded {
-				if rmErr := os.Remove(installed); rmErr != nil {
-					slog.ErrorContext(ctx, "staged install orphan cleanup failed (bounded residue, kept)", slog.String("error", rmErr.Error()))
-				}
-			}
-		}()
 
 		// Verify the linked bytes before reporting a manifest digest.
 		if isParquet || body.ArtifactManifest != nil {
@@ -358,7 +343,6 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(r *http.Request, body models.Com
 		if err != nil {
 			return zero, err
 		}
-		buildSucceeded = true
 		return models.CommitDatasetOutputResponse{
 			DatasetID:    dataset.ID,
 			DatasetRID:   "ri.foundry.main.dataset." + dataset.ID.String(),
@@ -446,6 +430,31 @@ func stagedCommitMetadata(body models.CommitDatasetOutputRequest, manifest *arti
 	return models.JSONValue(raw), err
 }
 
+// stagedCommitLinks holds this request's new links until the outer
+// transaction reports its outcome. It never tracks sealed source files.
+type stagedCommitLink struct {
+	root *os.Root
+	path string
+}
+
+type stagedCommitLinks []stagedCommitLink
+
+func (links stagedCommitLinks) remove() error {
+	var failure error
+	for _, link := range links {
+		if err := link.root.Remove(link.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			failure = errors.Join(failure, err)
+		}
+	}
+	return failure
+}
+
+func (links *stagedCommitLinks) close() {
+	for _, link := range *links {
+		_ = link.root.Close()
+	}
+}
+
 // installSealedArtifact hard-links the verified sealed file into the
 // backing namespace at storageKey under strict containment:
 //  1. the destination directory is created through an os.Root anchored at
@@ -459,13 +468,18 @@ func stagedCommitMetadata(body models.CommitDatasetOutputRequest, manifest *arti
 //     linked target is re-checked as a regular file of the sealed size.
 //
 // It returns the absolute installed path. Errors carry no absolute paths.
-func installSealedArtifact(paths *stagedOutputPaths, srcAbs string, storageKey string) (string, error) {
+func installSealedArtifact(paths *stagedOutputPaths, srcAbs, storageKey string, links *stagedCommitLinks) (string, error) {
 	common := commonParentDir(paths.backingRoot, paths.stageRootAbs)
 	root, err := os.OpenRoot(common)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = root.Close() }()
+	tracked := false
+	defer func() {
+		if !tracked {
+			_ = root.Close()
+		}
+	}()
 	toRel := func(abs string) (string, error) {
 		rel, err := filepath.Rel(common, abs)
 		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
@@ -502,7 +516,9 @@ func installSealedArtifact(paths *stagedOutputPaths, srcAbs string, storageKey s
 	if err := root.Link(srcRel, dstRel); err != nil {
 		return "", err
 	}
-	fi, err := os.Lstat(dstAbs)
+	*links = append(*links, stagedCommitLink{root: root, path: dstRel})
+	tracked = true
+	fi, err := root.Lstat(dstRel)
 	if err != nil || !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("installed target is not a regular file")
 	}
