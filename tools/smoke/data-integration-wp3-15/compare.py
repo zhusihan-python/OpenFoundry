@@ -9,7 +9,7 @@ from subprocess import check_output, CalledProcessError
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from evidence import ROOT, command, digest, read_json, require, check_benchmark
+from evidence import BINARIES, ROOT, command, digest, read_json, require, check_benchmark
 
 WORKLOAD = ("benchmark.py", "fixture.py", "published.py", "run.sh")
 PARENT_FILES = {"../fingerprint.json", "../binary-sha256.txt", "../build.log"}
@@ -39,7 +39,8 @@ def load_run(root):
     source, runtime = verdict["source"], verdict["runtime"]
     require(verdict["status"] == "passed" and source["dirty"] is False, "run requires a clean passing verdict")
     hashes = verdict["evidence_sha256"]
-    required = {"benchmark.json", "source-before.json", "source-after.json", "runtime-after.json"}
+    required = PARENT_FILES | {"benchmark.json", "source-before.json", "source-after.json",
+                               "runtime-before.json", "runtime-after.json"}
     require(required <= hashes.keys(), "verdict is missing benchmark provenance")
     for relative, expected in hashes.items():
         path = (root / relative).resolve()
@@ -54,6 +55,18 @@ def load_run(root):
     require(source == read_json(root / "source-before.json") == read_json(root / "source-after.json"),
             "source provenance mismatch")
     require(runtime == read_json(root / "runtime-after.json"), "runtime provenance mismatch")
+    require(read_json(root.parent / "fingerprint.json")["head"] == revision, "build source does not match verdict")
+    compiled = dict((Path(filename).name, checksum) for checksum, filename in (
+        line.split(maxsplit=1) for line in (root.parent / "binary-sha256.txt").read_text().splitlines()
+    ))
+    before = read_json(root / "runtime-before.json")
+    require(compiled.keys() == set(BINARIES.values()) and compiled == verdict["binary_sha256"] and all(
+        re.fullmatch(r"[0-9a-f]{64}", compiled[binary]) and
+        before["services"][service]["binary_sha256"] == runtime["services"][service]["binary_sha256"] == compiled[binary]
+        for service, binary in BINARIES.items()
+    ), "binary digests disagree between the build, runtime and verdict")
+    toolchain = re.search(r"^go version (go\S+) linux/arm64$", (root.parent / "build.log").read_text(), re.MULTILINE)
+    require(toolchain and toolchain.group(1) == verdict["go"], "Go version does not match the build log")
     benchmark = read_json(root / "benchmark.json")
     check_benchmark(root, benchmark, runtime["services"])
 
