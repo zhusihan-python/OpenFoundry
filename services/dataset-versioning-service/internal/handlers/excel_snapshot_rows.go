@@ -37,9 +37,9 @@ func (h *Handlers) ReadExcelSnapshotRows(w http.ResponseWriter, r *http.Request)
 	}
 	format := strings.ToLower(strings.TrimPrefix(path.Ext(body.Path), "."))
 	if strings.TrimSpace(body.Branch) == "" || body.Version < 1 || body.TransactionID == uuid.Nil ||
-		(format != "xlsx" && format != "xltx") || body.Limit < 1 || body.Limit > xlsximp.MaxDataRows ||
+		(format != "xlsx" && format != "xltx" && format != "xls" && format != "xlt") || body.Limit < 1 || body.Limit > xlsximp.MaxDataRows ||
 		strings.TrimSpace(body.Excel.Sheet) == "" || len(body.Excel.Mapping) == 0 {
-		writeJSONErr(w, http.StatusBadRequest, "dataset_excel_snapshot_invalid: branch, version, transaction_id, XLSX or XLTX path, row limit, sheet and mapping are required")
+		writeJSONErr(w, http.StatusBadRequest, "dataset_excel_snapshot_invalid: branch, version, transaction_id, Excel workbook path, row limit, sheet and mapping are required")
 		return
 	}
 	if !validScanRequestPath(w, body.Path) {

@@ -1203,6 +1203,8 @@ func NormalizeSnapshot(data []byte, cfg Config, format string) (*Result, error) 
 		return normalize(data, cfg, 0, xlsxWorkbookType)
 	case "xltx":
 		return normalize(data, cfg, 0, xltxWorkbookType)
+	case "xls", "xlt":
+		return normalizeBIFF8(data, cfg, format)
 	default:
 		return nil, errKind(ErrInvalid, "unsupported workbook format %q", format)
 	}

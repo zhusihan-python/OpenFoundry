@@ -16,7 +16,8 @@ import (
 
 func excelSnapshotFormat(logicalPath string) string {
 	format := strings.ToLower(strings.TrimPrefix(path.Ext(logicalPath), "."))
-	if format == "xlsx" || format == "xltx" {
+	switch format {
+	case "xlsx", "xltx", "xls", "xlt":
 		return format
 	}
 	return ""
@@ -25,7 +26,7 @@ func excelSnapshotFormat(logicalPath string) string {
 func (c batchedDatasetClient) readExcelSnapshotRows(ctx context.Context, rid string, datasetID uuid.UUID, req DatasetRowsRequest, limit int, maxBytes int64) (DatasetRowsResult, error) {
 	format := excelSnapshotFormat(req.Path)
 	if !validBatchedObjectPath(req.Path) || format == "" {
-		return DatasetRowsResult{}, fmt.Errorf("dataset_excel_snapshot_invalid: dataset_path must identify one registered XLSX or XLTX file")
+		return DatasetRowsResult{}, fmt.Errorf("dataset_excel_snapshot_invalid: dataset_path must identify one registered XLSX, XLTX, XLS or XLT file")
 	}
 	pin := req.Snapshot
 	body, err := json.Marshal(struct {

@@ -238,6 +238,12 @@ reads, a smaller node row limit also rejects the input. Workbook reads do not
 change the source dataset or create an import. The published output uses the
 ordinary single-output manual commit path.
 
+Pinned single-worksheet builds also read BIFF8 `.xls` workbooks and `.xlt`
+templates. The file extension must match the workbook's BIFF template marker.
+Encrypted or macro-bearing files, legacy versions before BIFF8, and
+worksheets containing formulas are rejected in this path. BIFF8 numeric
+values are represented as stored decimal text.
+
 For a staged multi-worksheet output, the worksheet entry in
 `excel_outputs.worksheets` can declare `long_fields` as a list of mapped
 target names. These cells accept signed base-10 integers in the 64-bit
