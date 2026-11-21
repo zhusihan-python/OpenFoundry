@@ -550,6 +550,9 @@ func evalCall(name string, args []Expr, row Row) (EvalValue, error) {
 		}
 		switch v.Kind {
 		case EvalKindInteger:
+			if v.Int == math.MinInt64 {
+				return EvalValue{}, &EvalError{Kind: EvalErrTypeMismatch, Message: "abs integer overflow"}
+			}
 			abs := v.Int
 			if abs < 0 {
 				abs = -abs
