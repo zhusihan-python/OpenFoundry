@@ -53,3 +53,48 @@ func TestPinnedEmptyStagedNDJSONPreviewColumns(t *testing.T) {
 	require.Nil(t, emptyStagedNDJSONSchema(models.JSONValue(`{"schema":{"fields":[{"name":"old"}]}}`)))
 	require.Nil(t, emptyStagedNDJSONSchema(models.JSONValue(`{"staged_output":{"record_count":1},"schema":{"fields":[{"name":"old"}]}}`)))
 }
+
+func TestPinnedWorksheetPreviewPreservesLongPrecision(t *testing.T) {
+	metadata := models.JSONValue(`{
+		"artifact_manifest":{"output":{"role":"worksheet","format":"ndjson"}},
+		"schema":{"fields":[{"name":"code","type":"LONG","nullable":true},{"name":"text","type":"STRING"}]}
+	}`)
+	schema := pinnedWorksheetLongSchema(metadata)
+	require.NotNil(t, schema)
+
+	raw := []json.RawMessage{
+		json.RawMessage(`{"code":9223372036854775807,"text":"007","extra":9223372036854775807}`),
+		json.RawMessage(`{"code":-9223372036854775808}`),
+		json.RawMessage(`{"code":9007199254740991}`),
+		json.RawMessage(`{"code":-9007199254740991}`),
+		json.RawMessage(`{"code":9007199254740992}`),
+		json.RawMessage(`{"code":-9007199254740992}`),
+		json.RawMessage(`{"code":null}`),
+		json.RawMessage(`{"code":"007"}`),
+		json.RawMessage(`{"text":"008"}`),
+	}
+	page := datasetScanAllFilesResponse{Format: "ndjson", Schema: schema, Rows: raw}
+	columns, rows, err := pinnedPreviewRows(page)
+	require.NoError(t, err)
+	require.Len(t, columns, 2)
+	require.Equal(t, models.FieldTypeLong, columns[0].FieldType)
+	require.Len(t, rows, len(raw))
+	require.JSONEq(t, `{"code":"9223372036854775807","text":"007","extra":9223372036854775807}`, string(rows[0]))
+	require.JSONEq(t, `{"code":"-9223372036854775808"}`, string(rows[1]))
+	require.Equal(t, raw[2:4], rows[2:4])
+	require.JSONEq(t, `{"code":"9007199254740992"}`, string(rows[4]))
+	require.JSONEq(t, `{"code":"-9007199254740992"}`, string(rows[5]))
+	require.Equal(t, raw[6:], rows[6:])
+	require.Contains(t, string(raw[0]), `"code":9223372036854775807`)
+	require.Contains(t, string(raw[1]), `"code":-9223372036854775808`)
+
+	require.Nil(t, pinnedWorksheetLongSchema(models.JSONValue(`{"schema":{"fields":[{"name":"code","type":"LONG"}]}}`)))
+	require.Nil(t, pinnedWorksheetLongSchema(models.JSONValue(`{
+		"artifact_manifest":{"output":{"role":"errors","format":"ndjson"}},
+		"schema":{"fields":[{"name":"code","type":"LONG"}]}
+	}`)))
+	require.Nil(t, pinnedWorksheetLongSchema(models.JSONValue(`{
+		"artifact_manifest":{"output":{"role":"worksheet","format":"ndjson"}},
+		"schema":{"fields":[{"name":"code","type":"STRING"}]}
+	}`)))
+}
