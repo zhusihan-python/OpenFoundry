@@ -249,6 +249,14 @@ Encrypted or macro-bearing files, legacy versions before BIFF8, and
 worksheets containing formulas are rejected in this path. BIFF8 numeric
 values are represented as stored decimal text.
 
+For pinned OOXML inputs, set `cell_range` to an inclusive A1 rectangle
+such as `C5:E12` to extract a region from a worksheet. Use it in
+`dataset_snapshot.excel` for a single read or in each worksheet entry under
+`excel_outputs.worksheets`. Mapping indexes still refer to physical columns
+of the worksheet, so C uses index 2. A configured header row must lie
+inside the rectangle. Blank selected cells are returned as null, and errors
+keep the original worksheet row number.
+
 Staged multi-worksheet builds apply the row and byte budget across the
 selected worksheets. The worksheet entry in
 `excel_outputs.worksheets` can declare `long_fields` as a list of mapped

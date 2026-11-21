@@ -785,7 +785,7 @@ type scannedRow struct {
 // span relative to the configured header row. Sequential coordinates are
 // inferred only when the r attribute is entirely absent. Only the header
 // row and in-range data rows survive.
-func scanWorksheet(zr *zip.Reader, ref sheetRef, headerAt int, shared []string) (header map[int]cellInfo, data []scannedRow, maxLen int, err error) {
+func scanWorksheet(zr *zip.Reader, ref sheetRef, headerAt int, shared []string, selection *cellRectangle) (header map[int]cellInfo, data []scannedRow, maxLen int, err error) {
 	entry := zipEntry(zr, ref.entry)
 	if entry == nil {
 		return nil, nil, 0, errKind(ErrInvalid, "worksheet part %s is missing from the workbook", ref.entry)
@@ -828,7 +828,7 @@ func scanWorksheet(zr *zip.Reader, ref sheetRef, headerAt int, shared []string) 
 		if !hasContent {
 			return nil
 		}
-		if rowPos > headerAt+MaxDataRows+contentRowSlack {
+		if selection == nil && rowPos > headerAt+MaxDataRows+contentRowSlack {
 			return errKind(ErrRowLimit, "sheet %q has content at row %d beyond the configured range (header %d + %d data rows + %d slack)", ref.name, rowPos, headerAt, MaxDataRows, contentRowSlack)
 		}
 		if headerAt > 0 && rowPos == headerAt {
@@ -1029,6 +1029,9 @@ func scanWorksheet(zr *zip.Reader, ref sheetRef, headerAt int, shared []string) 
 					}
 					ci.raw = decoded
 				}
+				if selection != nil && !selection.includes(currentPos, curCol) {
+					continue
+				}
 				if ci.raw != "" || ci.hasF || ci.hasV {
 					rowCells[curCol-1] = ci
 					if ci.raw != "" || ci.hasF {
@@ -1196,7 +1199,7 @@ func (c Config) normalizedMapping() ([]ColumnMap, error) {
 // rows reader could not read back. A nil cfg.Mapping yields source columns
 // only.
 func Normalize(data []byte, cfg Config, sampleRows int) (*Result, error) {
-	return normalize(data, cfg, sampleRows, xlsxWorkbookType)
+	return normalize(data, cfg, sampleRows, xlsxWorkbookType, nil)
 }
 
 func pinnedOOXMLWorkbookType(format string) string {
@@ -1221,8 +1224,24 @@ func SupportsSnapshotFormat(format string) bool {
 
 // NormalizeSnapshot decodes rows from an explicitly typed pinned file.
 func NormalizeSnapshot(data []byte, cfg Config, format string) (*Result, error) {
+	return NormalizeSnapshotRange(data, cfg, format, nil)
+}
+
+// NormalizeSnapshotRange optionally limits a pinned OOXML read to an A1 rectangle.
+func NormalizeSnapshotRange(data []byte, cfg Config, format string, cellRange *string) (*Result, error) {
 	if workbookType := pinnedOOXMLWorkbookType(format); workbookType != "" {
-		return normalize(data, cfg, 0, workbookType)
+		var selection *cellRectangle
+		if cellRange != nil {
+			var err error
+			selection, err = parseCellRectangle(*cellRange, cfg.HeaderRow)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return normalize(data, cfg, 0, workbookType, selection)
+	}
+	if cellRange != nil {
+		return nil, errKind(ErrConfig, "cell_range requires an OOXML workbook")
 	}
 	if format == "xls" || format == "xlt" {
 		return normalizeBIFF8(data, cfg, format)
@@ -1230,7 +1249,7 @@ func NormalizeSnapshot(data []byte, cfg Config, format string) (*Result, error) 
 	return nil, errKind(ErrInvalid, "unsupported workbook format %q", format)
 }
 
-func normalize(data []byte, cfg Config, sampleRows int, workbookType string) (*Result, error) {
+func normalize(data []byte, cfg Config, sampleRows int, workbookType string, selection *cellRectangle) (*Result, error) {
 	zr, err := openZip(data, workbookType)
 	if err != nil {
 		return nil, err
@@ -1269,13 +1288,25 @@ func normalize(data []byte, cfg Config, sampleRows int, workbookType string) (*R
 		return nil, err
 	}
 
+	if selection != nil {
+		for _, column := range mapping {
+			if column.SourceIndex+1 < selection.firstCol || column.SourceIndex+1 > selection.lastCol {
+				return nil, errKind(ErrMapping, "source_index %d is outside cell_range", column.SourceIndex)
+			}
+		}
+	}
+
 	var shared []string
 	if shared, err = loadSharedStrings(zr); err != nil {
 		return nil, err
 	}
-	headerCells, dataRows, maxLen, err := scanWorksheet(zr, ref, headerAt, shared)
+	headerCells, dataRows, maxLen, err := scanWorksheet(zr, ref, headerAt, shared, selection)
 	if err != nil {
 		return nil, err
+	}
+
+	if selection != nil {
+		maxLen = selection.lastCol
 	}
 
 	result := &Result{

@@ -22,12 +22,15 @@ func (h *Handlers) ReadExcelSnapshotRows(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var body struct {
-		Branch        string         `json:"branch"`
-		Version       int32          `json:"version"`
-		TransactionID uuid.UUID      `json:"transaction_id"`
-		Path          string         `json:"path"`
-		Limit         int            `json:"limit"`
-		Excel         xlsximp.Config `json:"excel"`
+		Branch        string    `json:"branch"`
+		Version       int32     `json:"version"`
+		TransactionID uuid.UUID `json:"transaction_id"`
+		Path          string    `json:"path"`
+		Limit         int       `json:"limit"`
+		Excel         struct {
+			xlsximp.Config
+			CellRange *string `json:"cell_range"`
+		} `json:"excel"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
@@ -85,7 +88,7 @@ func (h *Handlers) ReadExcelSnapshotRows(w http.ResponseWriter, r *http.Request)
 		writeJSONErr(w, http.StatusUnprocessableEntity, "dataset_excel_file_size_mismatch: workbook bytes do not match the committed size")
 		return
 	}
-	result, err := xlsximp.NormalizeSnapshot(data, body.Excel, format)
+	result, err := xlsximp.NormalizeSnapshotRange(data, body.Excel.Config, format, body.Excel.CellRange)
 	if err != nil {
 		writeExcelErr(w, err)
 		return

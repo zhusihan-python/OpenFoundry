@@ -17,6 +17,7 @@ import (
 type manualExcelSheetSelection struct {
 	Sheet     string              `json:"sheet"`
 	HeaderRow *int                `json:"header_row,omitempty"`
+	CellRange *string             `json:"cell_range,omitempty"`
 	Mapping   []manualExcelColumn `json:"mapping"`
 }
 
