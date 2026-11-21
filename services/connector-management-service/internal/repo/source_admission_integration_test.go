@@ -1833,9 +1833,10 @@ func TestPGSourceAdmissionRollbackAndMigrationReplay(t *testing.T) {
 		waitBackendLocksCleared(t, r.Pool, enqPID, "transactionid")
 		waitBackendLocksCleared(t, r.Pool, enqPID, "relation")
 		bar.release(t)
-		// Only AFTER the barrier released (it is legitimately idle-in-tx
-		// while holding the lock) may no connection linger in a transaction.
-		p23AssertNoIdleInTx(t, r.Pool)
+		// The barrier is legitimately idle in its transaction until released.
+		// Wait for PostgreSQL to report both participants outside a transaction
+		// and fail immediately if any other session is left in one.
+		require.NoError(t, waitForAdmissionCleanup(t, r.Pool, admissionRollbackBudget, enqPID, bar.pid))
 
 		// The SAME pool admits under a fresh context once the row is free.
 		run, err := enq.EnqueueSyncRun(context.Background(), def1, sourceID, tenant, uuid.New())
