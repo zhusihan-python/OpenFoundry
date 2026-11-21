@@ -126,10 +126,6 @@ func pinnedPreviewRows(page datasetScanAllFilesResponse) ([]pinnedPreviewColumn,
 		if page.Schema == nil || page.SchemaVersion != stagedParquetSchemaVersion {
 			return nil, nil, errors.New("unsupported Parquet preview schema")
 		}
-		columns := make([]pinnedPreviewColumn, 0, len(page.Schema.Fields))
-		for _, field := range page.Schema.Fields {
-			columns = append(columns, pinnedPreviewColumn{Name: field.Name, FieldType: field.Type, Nullable: &field.Nullable})
-		}
 
 		rows := make([]json.RawMessage, 0, len(page.Rows))
 		for _, raw := range page.Rows {
@@ -150,7 +146,10 @@ func pinnedPreviewRows(page datasetScanAllFilesResponse) ([]pinnedPreviewColumn,
 			}
 			rows = append(rows, encoded)
 		}
-		return columns, rows, nil
+		return pinnedSchemaColumns(page.Schema), rows, nil
+	}
+	if page.Schema != nil {
+		return pinnedSchemaColumns(page.Schema), page.Rows, nil
 	}
 
 	columnsByName := make(map[string]struct{})
@@ -173,4 +172,12 @@ func pinnedPreviewRows(page datasetScanAllFilesResponse) ([]pinnedPreviewColumn,
 		columns = append(columns, pinnedPreviewColumn{Name: name})
 	}
 	return columns, page.Rows, nil
+}
+
+func pinnedSchemaColumns(schema *models.DatasetSchema) []pinnedPreviewColumn {
+	columns := make([]pinnedPreviewColumn, 0, len(schema.Fields))
+	for _, field := range schema.Fields {
+		columns = append(columns, pinnedPreviewColumn{Name: field.Name, FieldType: field.Type, Nullable: &field.Nullable})
+	}
+	return columns
 }
