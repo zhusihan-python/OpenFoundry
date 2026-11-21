@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	geospatialcore "github.com/openfoundry/openfoundry-go/libs/geospatial-core"
@@ -25,6 +26,8 @@ const (
 	EvalKindString
 	// EvalKindNull — null marker.
 	EvalKindNull
+	EvalKindDate
+	EvalKindTimestamp
 )
 
 // EvalValue is a runtime value produced by the row evaluator.
@@ -34,6 +37,7 @@ type EvalValue struct {
 	Int    int64
 	Double float64
 	Str    string
+	Time   time.Time
 }
 
 // EvalBool builds a boolean EvalValue.
@@ -65,6 +69,8 @@ func (v EvalValue) Equal(other EvalValue) bool {
 		return v.Double == other.Double
 	case EvalKindString:
 		return v.Str == other.Str
+	case EvalKindDate, EvalKindTimestamp:
+		return v.Time.Equal(other.Time)
 	}
 	return true
 }
@@ -90,12 +96,10 @@ func EvalValueFromJSON(raw json.RawMessage) EvalValue {
 	case bool:
 		return EvalBool(v)
 	case float64:
-		// json.Unmarshal decodes all numbers as float64. We promote
-		// integral-valued floats back to Integer so downstream
-		// arithmetic stays in the integer lane (matches the Rust
-		// behaviour where serde_json exposes both as_i64 and as_f64).
-		if v == math.Trunc(v) && v >= math.MinInt64 && v <= math.MaxInt64 && !looksLikeFloatJSON(raw) {
-			return EvalInt(int64(v))
+		if !looksLikeFloatJSON(raw) {
+			if value, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64); err == nil {
+				return EvalInt(value)
+			}
 		}
 		return EvalDouble(v)
 	case string:
@@ -136,6 +140,10 @@ func (v EvalValue) ToJSON() json.RawMessage {
 		// json.Marshal handles escaping for free.
 		out, _ := json.Marshal(v.Str)
 		return out
+	case EvalKindDate:
+		return strconv.AppendQuote(nil, v.Time.Format(time.DateOnly))
+	case EvalKindTimestamp:
+		return strconv.AppendQuote(nil, v.Time.Format(time.RFC3339Nano))
 	}
 	return json.RawMessage("null")
 }
@@ -160,6 +168,10 @@ func (v EvalValue) TypeHint() PipelineType {
 		return DoubleType()
 	case EvalKindString:
 		return StringType()
+	case EvalKindDate:
+		return DateType()
+	case EvalKindTimestamp:
+		return TimestampType()
 	}
 	return StringType()
 }
@@ -369,6 +381,8 @@ func arith(l, r EvalValue, fi func(int64, int64) int64, fd func(float64, float64
 
 func compareValues(l, r EvalValue) (int, error) {
 	switch {
+	case l.isTemporal() && r.isTemporal():
+		return l.Time.Compare(r.Time), nil
 	case l.Kind == EvalKindInteger && r.Kind == EvalKindInteger:
 		return cmpInt64(l.Int, r.Int), nil
 	case l.Kind == EvalKindInteger && r.Kind == EvalKindDouble:
@@ -425,6 +439,8 @@ const f64Epsilon = 2.220446049250313e-16
 
 func valueEq(l, r EvalValue) bool {
 	switch {
+	case l.isTemporal() && r.isTemporal():
+		return l.Time.Equal(r.Time)
 	case l.Kind == EvalKindInteger && r.Kind == EvalKindDouble:
 		return math.Abs(float64(l.Int)-r.Double) < f64Epsilon
 	case l.Kind == EvalKindDouble && r.Kind == EvalKindInteger:
@@ -546,6 +562,18 @@ func evalCall(name string, args []Expr, row Row) (EvalValue, error) {
 			Kind:    EvalErrTypeMismatch,
 			Message: fmt.Sprintf("abs expects numeric, got %s", typeHintDebug(v.TypeHint())),
 		}
+	case "ceil":
+		return evalRounding(name, args, row, math.Ceil)
+	case "floor":
+		return evalRounding(name, args, row, math.Floor)
+	case "round":
+		return evalRounding(name, args, row, math.Round)
+	case "to_date":
+		return evalTemporal(name, args, row, EvalKindDate, time.DateOnly)
+	case "to_timestamp":
+		return evalTemporal(name, args, row, EvalKindTimestamp, time.RFC3339Nano)
+	case "geom_within":
+		return evalGeomWithin(name, args, row)
 	case "haversine_meters":
 		return evalHaversineDistance(name, args, row, "meters")
 	case "haversine_km":

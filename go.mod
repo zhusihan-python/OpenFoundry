@@ -26,6 +26,7 @@ require (
 	github.com/knadh/koanf/v2 v2.1.2
 	github.com/nats-io/nats.go v1.37.0
 	github.com/pashagolub/pgxmock/v4 v4.9.0
+	github.com/peterstace/simplefeatures v0.59.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/client_model v0.6.1
 	github.com/redis/go-redis/v9 v9.19.0
