@@ -64,18 +64,24 @@ func parseManualExcelGroup(raw json.RawMessage, targets map[string]bool) (*manua
 		usedSheets[sheet.Sheet], usedTargets[id] = true, true
 		sheet.DatasetRID = datasetRIDPrefix + id
 		columns := make(map[string]bool, len(sheet.Mapping))
-		for _, col := range sheet.Mapping {
-			columns[col.Target] = true
+		for i := range sheet.Mapping {
+			target := strings.TrimSpace(sheet.Mapping[i].Target)
+			sheet.Mapping[i].Target = target
+			columns[target] = true
 		}
 		required := make(map[string]bool, len(sheet.RequiredFields))
-		for _, field := range sheet.RequiredFields {
+		for i, name := range sheet.RequiredFields {
+			field := strings.TrimSpace(name)
+			sheet.RequiredFields[i] = field
 			if required[field] || !columns[field] {
 				return nil, fmt.Errorf("worksheet %q required fields must be distinct mapped columns", sheet.Sheet)
 			}
 			required[field] = true
 		}
 		longFields := make(map[string]bool, len(sheet.LongFields))
-		for _, field := range sheet.LongFields {
+		for i, name := range sheet.LongFields {
+			field := strings.TrimSpace(name)
+			sheet.LongFields[i] = field
 			if longFields[field] || !columns[field] {
 				return nil, fmt.Errorf("worksheet %q long fields must be distinct mapped columns", sheet.Sheet)
 			}
