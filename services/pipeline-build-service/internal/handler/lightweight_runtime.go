@@ -717,10 +717,23 @@ func applyExpressionFunction(rows []pipelineexpression.Row, def PipelineFunction
 	if err != nil {
 		return nil, err
 	}
+	geometryArguments := make(map[string]bool)
+	for _, parameter := range def.Parameters {
+		if strings.EqualFold(strings.TrimSpace(parameter.Type), "GEOMETRY") {
+			geometryArguments[strings.TrimSpace(parameter.Name)] = true
+		}
+	}
 	out := make([]pipelineexpression.Row, 0, len(rows))
 	for _, row := range rows {
 		scope := cloneRow(row)
 		for name, argExpr := range argExprs {
+			// A GEOMETRY column must reach the expression as the original JSON value.
+			if geometryArguments[name] && argExpr.Kind == pipelineexpression.ExprColumn {
+				if raw, ok := row[argExpr.Name]; ok {
+					scope[name] = raw
+					continue
+				}
+			}
 			value, err := pipelineexpression.Eval(argExpr, row)
 			if err != nil {
 				return nil, fmt.Errorf("pipeline_function_argument_eval:%s:%w", name, err)
