@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/domain/executor"
@@ -27,6 +29,7 @@ type manualExcelGroupSheet struct {
 	manualExcelSheetSelection
 	DatasetRID     string   `json:"dataset_rid"`
 	RequiredFields []string `json:"required_fields,omitempty"`
+	LongFields     []string `json:"long_fields,omitempty"`
 }
 
 type manualExcelGroupConfig struct {
@@ -70,6 +73,13 @@ func parseManualExcelGroup(raw json.RawMessage, targets map[string]bool) (*manua
 				return nil, fmt.Errorf("worksheet %q required fields must be distinct mapped columns", sheet.Sheet)
 			}
 			required[field] = true
+		}
+		longFields := make(map[string]bool, len(sheet.LongFields))
+		for _, field := range sheet.LongFields {
+			if longFields[field] || !columns[field] {
+				return nil, fmt.Errorf("worksheet %q long fields must be distinct mapped columns", sheet.Sheet)
+			}
+			longFields[field] = true
 		}
 	}
 	return &cfg, nil
@@ -141,13 +151,8 @@ func (r manualExcelGroupRunner) Run(ctx context.Context, node executor.NodeConte
 				return result, errors.New("excel_group_input_binding: worksheet row positions must increase")
 			}
 			previous = rows.PhysicalRows[i]
-			admitted := true
-			for _, field := range sheet.RequiredFields {
-				value := bytes.TrimSpace(row[field])
-				if len(value) != 0 && !bytes.Equal(value, []byte("null")) {
-					continue
-				}
-				admitted = false
+			issues := validateExcelGroupRow(row, sheet)
+			for _, issue := range issues {
 				if len(failures) == maxDatasetInputRows {
 					return result, errors.New("excel_group_error_limit: too many rejected fields")
 				}
@@ -155,10 +160,10 @@ func (r manualExcelGroupRunner) Run(ctx context.Context, node executor.NodeConte
 					"source_dataset_rid": source.DatasetRID, "source_branch": source.Branch,
 					"source_version": source.Version, "source_transaction_id": source.TransactionID.String(),
 					"source_path": source.Path, "sheet": sheet.Sheet, "physical_row": previous,
-					"field": field, "error_code": "REQUIRED_VALUE_MISSING",
+					"field": issue.field, "error_code": issue.code,
 				}))
 			}
-			if admitted {
+			if len(issues) == 0 {
 				valid = append(valid, row)
 			}
 		}
@@ -167,7 +172,11 @@ func (r manualExcelGroupRunner) Run(ctx context.Context, node executor.NodeConte
 		}
 		fields := make([]datasetOutputField, 0, len(rows.Columns))
 		for _, col := range rows.Columns {
-			fields = append(fields, datasetOutputField{Name: col, Type: "STRING", Nullable: true})
+			fieldType := "STRING"
+			if slices.Contains(sheet.LongFields, col) {
+				fieldType = "LONG"
+			}
+			fields = append(fields, datasetOutputField{Name: col, Type: fieldType, Nullable: true})
 		}
 		manifest := r.config.Manifest
 		manifest.Role, manifest.Worksheet = "worksheet", sheet.Sheet
@@ -178,6 +187,42 @@ func (r manualExcelGroupRunner) Run(ctx context.Context, node executor.NodeConte
 	artifacts[config.ErrorDatasetRID] = newExcelGroupArtifact(failures, excelErrorColumns, manifest)
 	result.Metadata = map[string]any{"excel_artifacts": artifacts}
 	return result, nil
+}
+
+type excelGroupRowIssue struct {
+	field string
+	code  string
+}
+
+// Validate required values before attempting conversions. A missing required
+// LONG yields just the missing-value error, while an optional empty cell
+// stays null. All other fields retain their original normalized text.
+func validateExcelGroupRow(row map[string]json.RawMessage, sheet manualExcelGroupSheet) []excelGroupRowIssue {
+	var issues []excelGroupRowIssue
+	for _, field := range sheet.RequiredFields {
+		if excelGroupFieldMissing(row[field]) {
+			issues = append(issues, excelGroupRowIssue{field: field, code: "REQUIRED_VALUE_MISSING"})
+		}
+	}
+	for _, field := range sheet.LongFields {
+		if excelGroupFieldMissing(row[field]) {
+			continue
+		}
+		var text string
+		decodeErr := json.Unmarshal(row[field], &text)
+		number, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+		if decodeErr != nil || err != nil {
+			issues = append(issues, excelGroupRowIssue{field: field, code: "INVALID_LONG"})
+			continue
+		}
+		row[field] = json.RawMessage(strconv.FormatInt(number, 10))
+	}
+	return issues
+}
+
+func excelGroupFieldMissing(value json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(value)
+	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
 }
 
 func newExcelGroupArtifact(rows []map[string]json.RawMessage, fields []datasetOutputField, manifest batchedArtifactManifest) excelGroupArtifact {
