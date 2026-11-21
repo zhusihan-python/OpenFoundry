@@ -229,7 +229,11 @@ func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputT
 		}
 		sum := sha256.Sum256(payload)
 		digest = hex.EncodeToString(sum[:])
-		schema = inferOutputSchema(columns, rows, format)
+		if workbookSchema, ok := result.Metadata["excel_files_output_schema"].(*datasetOutputSchema); ok && hasFullRows {
+			schema = workbookSchema
+		} else {
+			schema = inferOutputSchema(columns, rows, format)
+		}
 	}
 	fileMetadata := map[string]any{
 		"sha256":              digest,

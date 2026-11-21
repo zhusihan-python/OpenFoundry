@@ -46,6 +46,7 @@ type datasetInputSnapshot struct {
 	TransactionID uuid.UUID
 	FlattenJSON   bool
 	Excel         json.RawMessage
+	ExcelFiles    []excelSnapshotFile
 }
 
 // PayloadDeclaresDatasetSnapshot reports whether a logic_payload declares
@@ -133,7 +134,14 @@ func parseDatasetInputSnapshot(raw json.RawMessage) (*datasetInputSnapshot, erro
 	if len(excel) > 0 && (excel[0] != '{' || flatten) {
 		return nil, bad("excel must be an object and cannot be combined with flatten_json")
 	}
-	return &datasetInputSnapshot{Branch: strings.TrimSpace(branch), Version: int32(version), TransactionID: txnID, FlattenJSON: flatten, Excel: excel}, nil
+	files, err := parseExcelSnapshotFiles(fields["excel_files"])
+	if err != nil {
+		return nil, bad("%v", err)
+	}
+	if len(files) != 0 && (len(excel) != 0 || flatten) {
+		return nil, bad("excel_files cannot be combined with excel or flatten_json")
+	}
+	return &datasetInputSnapshot{Branch: strings.TrimSpace(branch), Version: int32(version), TransactionID: txnID, FlattenJSON: flatten, Excel: excel, ExcelFiles: files}, nil
 }
 
 // readDatasetSnapshotRows materializes the pinned snapshot through the
@@ -171,6 +179,9 @@ func (r DatasetServiceRowReader) readDatasetSnapshotRows(ctx context.Context, re
 	}
 	limit := clampDatasetInputRows(req.Limit)
 	expectedTxn := req.Snapshot.TransactionID
+	if len(req.Snapshot.ExcelFiles) > 0 {
+		return client.readExcelSnapshotFiles(ctx, rid, datasetUUID, req, limit, maxTotalBytes)
+	}
 	if len(req.Snapshot.Excel) > 0 {
 		return client.readExcelSnapshotRows(ctx, rid, datasetUUID, req, limit, maxTotalBytes)
 	}

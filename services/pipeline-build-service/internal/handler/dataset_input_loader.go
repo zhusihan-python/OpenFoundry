@@ -60,6 +60,7 @@ type DatasetRowsResult struct {
 	Rows          []map[string]json.RawMessage `json:"rows"`
 	Truncated     bool                         `json:"truncated"`
 	PhysicalRows  []int                        `json:"physical_rows,omitempty"`
+	responseBytes int64
 }
 
 // DatasetServiceRowReader reads parsed rows from dataset-versioning-service.
@@ -248,6 +249,9 @@ func datasetInputReferenceFrom(node executor.NodeContext, cfg tableRuntimeConfig
 		Branch:   strings.TrimSpace(cfg.DatasetBranch),
 		Version:  strings.TrimSpace(cfg.DatasetVersion),
 		Snapshot: snapshot,
+	}
+	if snapshot != nil && len(snapshot.ExcelFiles) > 0 && ref.Path != "" {
+		return datasetInputReference{}, false, fmt.Errorf("dataset_snapshot_conflict: excel_files provides file paths; omit dataset_path")
 	}
 	if snapshot != nil && ref.Branch != "" && ref.Branch != snapshot.Branch {
 		return datasetInputReference{}, false, fmt.Errorf("dataset_snapshot_conflict: node %q pins dataset_branch %q but dataset_snapshot.branch is %q", node.Node.ID, ref.Branch, snapshot.Branch)
