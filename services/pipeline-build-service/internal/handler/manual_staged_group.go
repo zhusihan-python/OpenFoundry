@@ -17,11 +17,6 @@ import (
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/models"
 )
 
-func isStagedExcelPath(path string) bool {
-	format := excelSnapshotFormat(path)
-	return format == "xlsx" || format == "xltx"
-}
-
 const stagedManualGroupPath = "/internal/datasets/outputs:commit-staged-group"
 
 type manualStagedGroupConfig struct {
@@ -104,8 +99,8 @@ func stagedManualGroupConfig(specs []models.JobSpec) (*manualStagedGroupConfig, 
 		SpecHashes: make(map[string]string, len(specs)),
 	}
 	if len(options.ExcelOutputs) != 0 {
-		if len(specs) != 1 || len(pin.Excel) != 0 || pin.FlattenJSON || !isStagedExcelPath(cfg.DatasetPath) {
-			return nil, errors.New("excel_outputs requires one XLSX or XLTX JobSpec without a single-sheet config")
+		if len(specs) != 1 || len(pin.Excel) != 0 || pin.FlattenJSON || excelSnapshotFormat(cfg.DatasetPath) == "" {
+			return nil, errors.New("excel_outputs requires one XLSX, XLTX, XLS or XLT JobSpec without a single-sheet config")
 		}
 		declared, err := canonicalDatasetRIDForComparison(cfg.DatasetRID)
 		if err != nil || (declared != "" && declared != source) || cfg.DatasetID != "" ||
