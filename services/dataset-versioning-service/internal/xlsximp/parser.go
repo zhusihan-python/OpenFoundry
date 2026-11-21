@@ -12,7 +12,7 @@
 // bounded scan that collects values. Structural problems fail closed
 // (invalid or inconsistent coordinates, duplicate rows/cells, CRC or
 // truncation errors, path traversal in relationship targets, macro or
-// non-.xlsx content types); sequential coordinates are inferred only when
+// mismatched workbook content types); sequential coordinates are inferred only when
 // the r attribute is entirely absent.
 //
 // String semantics match OpenXML ST_Xstring: shared and inline text
@@ -56,8 +56,8 @@ const (
 	// MaxCompressedBytes caps the workbook file itself (matches the
 	// UploadData multipart ceiling); the HTTP envelope adds
 	// MultipartEnvelopeMargin on top.
-	MaxCompressedBytes        = 32 << 20
-	MultipartEnvelopeMargin   = 512 << 10
+	MaxCompressedBytes      = 32 << 20
+	MultipartEnvelopeMargin = 512 << 10
 	// MaxUncompressedBytes caps total uncompressed zip content.
 	MaxUncompressedBytes = 64 << 20
 	MaxZipEntries        = 4096
@@ -95,6 +95,7 @@ const (
 	maxSharedStrings = 2 << 20
 	maxMetaTokens    = 262144
 
+	xltxWorkbookType = "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml"
 	xlsxWorkbookType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
 	// vbaContentType matches the VBA project part content types
 	// (application/vnd.ms-office.vbaProject and its
@@ -158,6 +159,7 @@ type Result struct {
 	SourceColumns []SourceColumn   `json:"source_columns"` // physical source layout
 	SampleRows    []map[string]any `json:"sample_rows"`
 	RowCount      int              `json:"row_count"`
+	PhysicalRows  []int            `json:"-"`
 
 	rows      []map[string]any
 	ndjson    []byte
@@ -325,10 +327,9 @@ func forbiddenEntry(name string) (bool, string) {
 	return false, ""
 }
 
-// checkContentTypes enforces the this-round contract: plain .xlsx workbooks
-// only. A macro-enabled main part type rejects the workbook; a missing
-// standard workbook part type makes it invalid.
-func checkContentTypes(zr *zip.Reader) error {
+// checkContentTypes verifies the effective type of the part the parser
+// reads as the workbook and rejects macro-enabled packages.
+func checkContentTypes(zr *zip.Reader, workbookType string) error {
 	entry := zipEntry(zr, "[Content_Types].xml")
 	if entry == nil {
 		return errKind(ErrInvalid, "workbook is missing [Content_Types].xml")
@@ -338,7 +339,6 @@ func checkContentTypes(zr *zip.Reader) error {
 		return err
 	}
 	defer closer.Close()
-	sawWorkbook := false
 	rootChecked := false
 	overrides := map[string]string{} // "/xl/..." part name → content type
 	defaults := map[string]string{}  // extension (lowercased, no dot) → content type
@@ -377,12 +377,12 @@ func checkContentTypes(zr *zip.Reader) error {
 				}
 				// A macro-enabled main part makes this an .xlsm: reject.
 				if strings.Contains(partType, "macroenabled") {
-					return errKind(ErrMacro, "macro-enabled content type %q is not allowed (plain .xlsx only)", partType)
-				}
-				if partType == strings.ToLower(xlsxWorkbookType) {
-					sawWorkbook = true
+					return errKind(ErrMacro, "macro-enabled content type %q is not allowed", partType)
 				}
 				if el.Name.Local == "Override" && partName != "" {
+					if _, duplicate := overrides[partName]; duplicate && partName == "/xl/workbook.xml" {
+						return errKind(ErrInvalid, "workbook has duplicate main part type declarations")
+					}
 					overrides[partName] = partType
 				}
 				if el.Name.Local == "Default" && ext != "" {
@@ -391,9 +391,7 @@ func checkContentTypes(zr *zip.Reader) error {
 			}
 		}
 	}
-	if !sawWorkbook {
-		return errKind(ErrInvalid, "workbook does not declare the standard .xlsx main part type")
-	}
+	matchedWorkbook := false
 	// Effective content types decide on the REAL parts: an Override wins;
 	// a Default only applies to extensions that actually have an entry. An
 	// actual VBA part is rejected however it is named — a fixed-name check
@@ -408,9 +406,15 @@ func checkContentTypes(zr *zip.Reader) error {
 				eff, ok = defaults[lower[dot+1:]]
 			}
 		}
+		if lower == "/xl/workbook.xml" {
+			matchedWorkbook = eff == workbookType
+		}
 		if ok && strings.Contains(eff, vbaContentType) {
 			return errKind(ErrMacro, "part %s has VBA content type %q (plain .xlsx only)", f.Name, eff)
 		}
+	}
+	if !matchedWorkbook {
+		return errKind(ErrInvalid, "workbook main part does not match the expected content type %q", workbookType)
 	}
 	return nil
 }
@@ -418,7 +422,7 @@ func checkContentTypes(zr *zip.Reader) error {
 // openZip validates the container and returns a reader whose entries obey
 // the count and uncompressed-size caps (zip-bomb precheck via the central
 // directory, before any entry is decompressed).
-func openZip(data []byte) (*zip.Reader, error) {
+func openZip(data []byte, workbookType string) (*zip.Reader, error) {
 	if int64(len(data)) > MaxCompressedBytes {
 		return nil, errKind(ErrOversized, "workbook is %d bytes, max %d", len(data), MaxCompressedBytes)
 	}
@@ -448,7 +452,7 @@ func openZip(data []byte) (*zip.Reader, error) {
 	if total > MaxUncompressedBytes {
 		return nil, errKind(ErrZipUnsafe, "workbook decompresses to %d bytes total, max %d", total, MaxUncompressedBytes)
 	}
-	if err := checkContentTypes(zr); err != nil {
+	if err := checkContentTypes(zr, workbookType); err != nil {
 		return nil, err
 	}
 	return zr, nil
@@ -1121,7 +1125,7 @@ func jsonEscapedLenUpperBound(s string) int {
 // (chart/dialog sheets excluded by relationship type), bounded sizes, and
 // the source sha256 used for provenance metadata.
 func Inspect(data []byte, filename string) (*InspectResult, error) {
-	zr, err := openZip(data)
+	zr, err := openZip(data, xlsxWorkbookType)
 	if err != nil {
 		return nil, err
 	}
@@ -1139,10 +1143,10 @@ func Inspect(data []byte, filename string) (*InspectResult, error) {
 	}
 	sum := sha256.Sum256(data)
 	return &InspectResult{
-		Filename:   filename,
-		SizeBytes:  int64(len(data)),
-		SHA256:     hex.EncodeToString(sum[:]),
-		Sheets:     sheets,
+		Filename:    filename,
+		SizeBytes:   int64(len(data)),
+		SHA256:      hex.EncodeToString(sum[:]),
+		Sheets:      sheets,
 		MaxDataRows: MaxDataRows,
 	}, nil
 }
@@ -1189,7 +1193,23 @@ func (c Config) normalizedMapping() ([]ColumnMap, error) {
 // rows reader could not read back. A nil cfg.Mapping yields source columns
 // only.
 func Normalize(data []byte, cfg Config, sampleRows int) (*Result, error) {
-	zr, err := openZip(data)
+	return normalize(data, cfg, sampleRows, xlsxWorkbookType)
+}
+
+// NormalizeSnapshot decodes rows from an explicitly typed pinned file.
+func NormalizeSnapshot(data []byte, cfg Config, format string) (*Result, error) {
+	switch format {
+	case "xlsx":
+		return normalize(data, cfg, 0, xlsxWorkbookType)
+	case "xltx":
+		return normalize(data, cfg, 0, xltxWorkbookType)
+	default:
+		return nil, errKind(ErrInvalid, "unsupported workbook format %q", format)
+	}
+}
+
+func normalize(data []byte, cfg Config, sampleRows int, workbookType string) (*Result, error) {
+	zr, err := openZip(data, workbookType)
 	if err != nil {
 		return nil, err
 	}
@@ -1286,6 +1306,7 @@ func Normalize(data []byte, cfg Config, sampleRows int) (*Result, error) {
 	}
 
 	rows := make([]map[string]any, 0, len(dataRows))
+	result.PhysicalRows = make([]int, 0, len(dataRows))
 	var ndjson bytes.Buffer
 	for _, dr := range dataRows {
 		row := make(map[string]any, len(mapping))
@@ -1324,6 +1345,7 @@ func Normalize(data []byte, cfg Config, sampleRows int) (*Result, error) {
 		ndjson.Write(encoded)
 		ndjson.WriteByte('\n')
 		rows = append(rows, row)
+		result.PhysicalRows = append(result.PhysicalRows, dr.pos)
 	}
 	result.rows = rows
 	result.ndjson = ndjson.Bytes()

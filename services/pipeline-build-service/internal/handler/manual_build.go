@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -32,6 +33,9 @@ type manualBuildStore interface {
 	SettleManualBuildOutputs(context.Context, uuid.UUID, []ManualBuildPublication) error
 	FinishManualBuild(context.Context, uuid.UUID, models.BuildState, executor.Outcome) (bool, error)
 	RecoverManualBuildCompletion(context.Context, uuid.UUID) (bool, error)
+	ManualGroupPublishFingerprint(context.Context, uuid.UUID) (string, error)
+	SetManualGroupPublishFingerprint(context.Context, uuid.UUID, string, string, []byte) (bool, error)
+	ManualStagedGroupConfig(context.Context, uuid.UUID) (json.RawMessage, error)
 }
 
 func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts, buildID uuid.UUID) {
@@ -94,6 +98,27 @@ func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts
 	if len(outputs) > maxManualDatasetGroup {
 		writeManualBuildError(w, http.StatusConflict, "manual_build_output_limit_exceeded", nil)
 		return
+	}
+	rawStaged, err := store.ManualStagedGroupConfig(ctx, buildID)
+	if err != nil {
+		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_staged_group_unavailable", err)
+		return
+	}
+	if len(rawStaged) != 0 {
+		if len(outputs) < 2 {
+			writeManualBuildError(w, http.StatusConflict, "manual_staged_group_outputs_missing", nil)
+			return
+		}
+		var staged manualStagedGroupConfig
+		if err := json.Unmarshal(rawStaged, &staged); err != nil {
+			writeManualBuildError(w, http.StatusInternalServerError, "manual_staged_group_invalid", err)
+			return
+		}
+		if err := staged.verifyPlan(plan); err != nil {
+			writeManualBuildError(w, http.StatusConflict, "manual_staged_group_plan_changed", err)
+			return
+		}
+		run.staged = &staged
 	}
 	started, err := store.MoveManualBuild(ctx, buildID, models.BuildResolution, models.BuildRunning)
 	if err != nil {
@@ -204,6 +229,21 @@ func abortManualBuildIfConfigured(w http.ResponseWriter, r *http.Request, id str
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
 	defer cancelCleanup()
 	run := manualBuildExecution{base: ctx, store: store, dataset: *ports.ManualDataset, buildID: build.ID, subject: subject}
+	fingerprint, err := store.ManualGroupPublishFingerprint(cleanupCtx, build.ID)
+	if err != nil {
+		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_recovery_pending", err)
+		return true
+	}
+	if fingerprint != "" {
+		// Once an exact request may have reached DVS, abort must not
+		// invalidate reservations while its outcome is still unknown.
+		if err := run.reconcileReceipts(cleanupCtx); err != nil {
+			writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_recovery_pending", err)
+			return true
+		}
+		w.WriteHeader(http.StatusConflict)
+		return true
+	}
 	outputs, err := store.ListManualBuildOutputs(cleanupCtx, build.ID)
 	if err != nil {
 		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_recovery_pending", err)
@@ -301,6 +341,7 @@ type manualBuildExecution struct {
 	subject      uuid.UUID
 	outputs      map[string]ManualBuildOutput
 	fingerprints *sync.Map
+	staged       *manualStagedGroupConfig
 }
 
 func (m manualBuildExecution) Commit(ctx context.Context, output executor.OutputTransaction, result executor.NodeResult) error {
@@ -375,6 +416,10 @@ func (m manualBuildExecution) settle(ctx context.Context, output ManualBuildOutp
 }
 
 func (m manualBuildExecution) reconcileReceipts(ctx context.Context) error {
+	fingerprint, err := m.store.ManualGroupPublishFingerprint(ctx, m.buildID)
+	if err != nil {
+		return err
+	}
 	outputs, err := m.store.ListManualBuildOutputs(ctx, m.buildID)
 	if err != nil {
 		return err
@@ -387,12 +432,26 @@ func (m manualBuildExecution) reconcileReceipts(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		published, err := remote.receipt(ctx, "")
+		published, err := remote.receipt(ctx, fingerprint)
 		if err != nil {
 			return err
 		}
 		if published != "" {
 			publications = append(publications, ManualBuildPublication{output, published})
+		}
+	}
+	if len(outputs) > 0 && fingerprint != "" && len(publications) != len(outputs) {
+		return errManualGroupReceiptsPending
+	}
+	if len(outputs) > 1 && len(publications) > 0 && fingerprint == "" {
+		// The publisher may have persisted its intent after the first
+		// read. Do not settle receipts read without that fingerprint.
+		current, err := m.store.ManualGroupPublishFingerprint(ctx, m.buildID)
+		if err != nil {
+			return err
+		}
+		if current != "" || len(publications) != len(outputs) {
+			return errManualGroupReceiptsPending
 		}
 	}
 	if len(publications) > 0 {

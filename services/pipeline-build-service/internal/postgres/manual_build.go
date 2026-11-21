@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -65,6 +66,41 @@ func (r *Repository) MoveManualBuild(ctx context.Context, buildID uuid.UUID, fro
 	tag, err := r.db.Exec(ctx, `UPDATE builds b SET state=`+next+`,
 started_at=CASE WHEN `+next+`='BUILD_RUNNING' THEN NOW() ELSE started_at END
 WHERE b.id=$1 AND b.state=`+current+sb.whereSQL(), sb.args...)
+	return tag.RowsAffected() == 1, err
+}
+
+func (r *Repository) ManualGroupPublishFingerprint(ctx context.Context, buildID uuid.UUID) (string, error) {
+	sb, err := manualBuildOwner(ctx, buildID)
+	if err != nil {
+		return "", err
+	}
+	var fingerprint string
+	err = r.db.QueryRow(ctx, `SELECT COALESCE(b.manual_group_publish_fingerprint,'')
+FROM builds b WHERE b.id=$1`+sb.whereSQL(), sb.args...).Scan(&fingerprint)
+	return fingerprint, err
+}
+
+func (r *Repository) ManualStagedGroupConfig(ctx context.Context, buildID uuid.UUID) (json.RawMessage, error) {
+	sb, err := manualBuildOwner(ctx, buildID)
+	if err != nil {
+		return nil, err
+	}
+	var raw []byte
+	err = r.db.QueryRow(ctx, `SELECT b.manual_staged_group FROM builds b WHERE b.id=$1`+sb.whereSQL(), sb.args...).Scan(&raw)
+	return json.RawMessage(raw), err
+}
+
+func (r *Repository) SetManualGroupPublishFingerprint(ctx context.Context, buildID uuid.UUID, current, next string, body []byte) (bool, error) {
+	sb, err := manualBuildOwner(ctx, buildID)
+	if err != nil {
+		return false, err
+	}
+	oldValue := sb.placeholder(current)
+	newValue := sb.placeholder(next)
+	request := sb.placeholder(body)
+	tag, err := r.db.Exec(ctx, `UPDATE builds b SET manual_group_publish_fingerprint=NULLIF(`+newValue+`,''), manual_group_publish_body=`+request+`
+WHERE b.id=$1 AND COALESCE(b.manual_group_publish_fingerprint,'')=`+oldValue+`
+AND (b.state='BUILD_RUNNING' OR (b.state='BUILD_ABORTING' AND `+newValue+`=''))`+sb.whereSQL(), sb.args...)
 	return tag.RowsAffected() == 1, err
 }
 

@@ -31,9 +31,23 @@ type artifactManifestOutput struct {
 	SizeBytes     int64     `json:"size_bytes"`
 	SHA256        string    `json:"sha256"`
 	RecordCount   int64     `json:"record_count"`
+	Role          string    `json:"role,omitempty"`
+	Worksheet     string    `json:"worksheet,omitempty"`
 }
 
 func validateManifestSource(ctx context.Context, tx repo.OutputCommitTxStore, scope repo.TenantScope, manifest *models.PipelineArtifactManifestInput) error {
+	switch manifest.Role {
+	case "", "errors":
+		if manifest.Worksheet != "" {
+			return keyedFileError{errString("artifact_manifest_invalid: worksheet requires worksheet role")}
+		}
+	case "worksheet":
+		if strings.TrimSpace(manifest.Worksheet) == "" || len(manifest.Worksheet) > 512 {
+			return keyedFileError{errString("artifact_manifest_invalid: invalid worksheet name")}
+		}
+	default:
+		return keyedFileError{errString("artifact_manifest_invalid: invalid output role")}
+	}
 	src := manifest.Input
 	if strings.TrimSpace(manifest.JobSpecRID) == "" || len(manifest.JobSpecRID) > 512 || len(manifest.JobSpecContentHash) > 256 ||
 		strings.TrimSpace(src.DatasetRID) == "" || len(src.DatasetRID) > 512 || strings.TrimSpace(src.Branch) == "" || len(src.Branch) > 512 ||
@@ -97,7 +111,7 @@ func txArtifactManifest(datasetID, txnID uuid.UUID, obj *repo.StagedOutputObject
 		Version: 1, BuildID: obj.BuildID, JobSpecRID: input.JobSpecRID, JobSpecContentHash: input.JobSpecContentHash, Input: input.Input,
 		Output: artifactManifestOutput{
 			DatasetID: datasetID, Branch: obj.BranchName, TransactionID: txnID, Path: obj.LogicalPath,
-			Format: format, SizeBytes: obj.SizeBytes, SHA256: obj.SHA256, RecordCount: obj.RecordCount,
+			Format: format, SizeBytes: obj.SizeBytes, SHA256: obj.SHA256, RecordCount: obj.RecordCount, Role: input.Role, Worksheet: input.Worksheet,
 		},
 	}
 }

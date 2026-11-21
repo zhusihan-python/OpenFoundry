@@ -59,6 +59,7 @@ type DatasetRowsResult struct {
 	Columns       []string                     `json:"columns"`
 	Rows          []map[string]json.RawMessage `json:"rows"`
 	Truncated     bool                         `json:"truncated"`
+	PhysicalRows  []int                        `json:"physical_rows,omitempty"`
 }
 
 // DatasetServiceRowReader reads parsed rows from dataset-versioning-service.

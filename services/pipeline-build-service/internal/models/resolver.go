@@ -77,5 +77,6 @@ type ResolvedBuild struct {
 	// PersistResolvedBuild moves it to PENDING in the same transaction as
 	// the jobs. Execute reads the persisted configuration, never the
 	// current job_specs mapping.
-	BatchConfig *BatchedBuildConfig `json:"batched_config,omitempty"`
+	BatchConfig       *BatchedBuildConfig `json:"batched_config,omitempty"`
+	ManualStagedGroup json.RawMessage     `json:"-"`
 }

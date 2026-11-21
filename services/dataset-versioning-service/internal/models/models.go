@@ -1113,6 +1113,8 @@ type PipelineArtifactManifestInput struct {
 	JobSpecRID         string                 `json:"job_spec_rid"`
 	JobSpecContentHash string                 `json:"job_spec_content_hash,omitempty"`
 	Input              PipelineArtifactSource `json:"input"`
+	Role               string                 `json:"role,omitempty"`
+	Worksheet          string                 `json:"worksheet,omitempty"`
 }
 
 type PipelineArtifactSource struct {

@@ -75,6 +75,9 @@ func (h *Handlers) previewPinnedDataset(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
+	if page.Format == "ndjson" && page.Schema == nil {
+		page.Schema = pinnedWorksheetLongSchema(target.txn.Metadata)
+	}
 	columns, rows, err := pinnedPreviewRows(page)
 	if err != nil {
 		writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity, "dataset_preview_invalid_rows: %v", err))
@@ -126,10 +129,6 @@ func pinnedPreviewRows(page datasetScanAllFilesResponse) ([]pinnedPreviewColumn,
 		if page.Schema == nil || page.SchemaVersion != stagedParquetSchemaVersion {
 			return nil, nil, errors.New("unsupported Parquet preview schema")
 		}
-		columns := make([]pinnedPreviewColumn, 0, len(page.Schema.Fields))
-		for _, field := range page.Schema.Fields {
-			columns = append(columns, pinnedPreviewColumn{Name: field.Name, FieldType: field.Type, Nullable: &field.Nullable})
-		}
 
 		rows := make([]json.RawMessage, 0, len(page.Rows))
 		for _, raw := range page.Rows {
@@ -150,7 +149,11 @@ func pinnedPreviewRows(page datasetScanAllFilesResponse) ([]pinnedPreviewColumn,
 			}
 			rows = append(rows, encoded)
 		}
-		return columns, rows, nil
+		return pinnedSchemaColumns(page.Schema), rows, nil
+	}
+	if page.Schema != nil {
+		rows, err := pinnedWorksheetRows(page.Rows, page.Schema)
+		return pinnedSchemaColumns(page.Schema), rows, err
 	}
 
 	columnsByName := make(map[string]struct{})
@@ -173,4 +176,70 @@ func pinnedPreviewRows(page datasetScanAllFilesResponse) ([]pinnedPreviewColumn,
 		columns = append(columns, pinnedPreviewColumn{Name: name})
 	}
 	return columns, page.Rows, nil
+}
+
+// Use the worksheet declaration committed with this snapshot, never the branch head.
+func pinnedWorksheetLongSchema(metadata models.JSONValue) *models.DatasetSchema {
+	var commit struct {
+		Schema   *models.DatasetSchema `json:"schema"`
+		Manifest *artifactManifest     `json:"artifact_manifest"`
+	}
+	if json.Unmarshal(metadata, &commit) != nil || commit.Manifest == nil ||
+		commit.Manifest.Output.Role != "worksheet" || commit.Manifest.Output.Format != "ndjson" ||
+		commit.Schema == nil {
+		return nil
+	}
+	for _, field := range commit.Schema.Fields {
+		if field.Type == models.FieldTypeLong {
+			return commit.Schema
+		}
+	}
+	return nil
+}
+
+func pinnedWorksheetRows(rawRows []json.RawMessage, schema *models.DatasetSchema) ([]json.RawMessage, error) {
+	const maxSafeInteger = 1<<53 - 1
+	var longFields []string
+	for _, field := range schema.Fields {
+		if field.Type == models.FieldTypeLong {
+			longFields = append(longFields, field.Name)
+		}
+	}
+	if len(longFields) == 0 || len(rawRows) == 0 {
+		return rawRows, nil
+	}
+
+	rows := make([]json.RawMessage, 0, len(rawRows))
+	for _, raw := range rawRows {
+		var row map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return nil, errors.New("invalid NDJSON preview row")
+		}
+		changed := false
+		for _, field := range longFields {
+			value := string(row[field])
+			integer, err := strconv.ParseInt(value, 10, 64)
+			if err == nil && (integer < -maxSafeInteger || integer > maxSafeInteger) {
+				row[field] = json.RawMessage(strconv.Quote(value))
+				changed = true
+			}
+		}
+		if changed {
+			encoded, err := json.Marshal(row)
+			if err != nil {
+				return nil, errors.New("invalid NDJSON preview row")
+			}
+			raw = encoded
+		}
+		rows = append(rows, raw)
+	}
+	return rows, nil
+}
+
+func pinnedSchemaColumns(schema *models.DatasetSchema) []pinnedPreviewColumn {
+	columns := make([]pinnedPreviewColumn, 0, len(schema.Fields))
+	for _, field := range schema.Fields {
+		columns = append(columns, pinnedPreviewColumn{Name: field.Name, FieldType: field.Type, Nullable: &field.Nullable})
+	}
+	return columns
 }

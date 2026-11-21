@@ -14,9 +14,18 @@ import (
 	"github.com/google/uuid"
 )
 
+func excelSnapshotFormat(logicalPath string) string {
+	format := strings.ToLower(strings.TrimPrefix(path.Ext(logicalPath), "."))
+	if format == "xlsx" || format == "xltx" {
+		return format
+	}
+	return ""
+}
+
 func (c batchedDatasetClient) readExcelSnapshotRows(ctx context.Context, rid string, datasetID uuid.UUID, req DatasetRowsRequest, limit int, maxBytes int64) (DatasetRowsResult, error) {
-	if !validBatchedObjectPath(req.Path) || !strings.EqualFold(path.Ext(req.Path), ".xlsx") {
-		return DatasetRowsResult{}, fmt.Errorf("dataset_excel_snapshot_invalid: dataset_path must identify one registered XLSX file")
+	format := excelSnapshotFormat(req.Path)
+	if !validBatchedObjectPath(req.Path) || format == "" {
+		return DatasetRowsResult{}, fmt.Errorf("dataset_excel_snapshot_invalid: dataset_path must identify one registered XLSX or XLTX file")
 	}
 	pin := req.Snapshot
 	body, err := json.Marshal(struct {
@@ -64,7 +73,7 @@ func (c batchedDatasetClient) readExcelSnapshotRows(ctx context.Context, rid str
 	if err := validateScanBinding(datasetID, batchedScanInput{Branch: pin.Branch, Version: pin.Version}, &txn, reply.DatasetID, reply.Branch, reply.TransactionID, reply.Version); err != nil {
 		return DatasetRowsResult{}, err
 	}
-	if reply.Format != "xlsx" || reply.Path != req.Path || reply.Truncated || len(reply.Rows) == 0 || len(reply.Rows) > limit {
+	if reply.Format != format || reply.Path != req.Path || reply.Truncated || len(reply.Rows) == 0 || len(reply.Rows) > limit {
 		return DatasetRowsResult{}, fmt.Errorf("dataset_excel_snapshot_invalid: unexpected workbook response")
 	}
 	reply.Source = "dataset-versioning-excel-snapshot"

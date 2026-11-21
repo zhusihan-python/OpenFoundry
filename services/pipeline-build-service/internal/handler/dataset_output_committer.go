@@ -116,6 +116,9 @@ func routeDatasetRID(datasetRID string) string {
 }
 
 type datasetOutputCommitRequest struct {
+	ReservationID       string                     `json:"reservation_id,omitempty"`
+	BuildID             string                     `json:"build_id,omitempty"`
+	ArtifactManifest    *batchedArtifactManifest   `json:"artifact_manifest,omitempty"`
 	IdempotencyKey      string                     `json:"idempotency_key,omitempty"`
 	ManualReservation   *manualDatasetReservation  `json:"manual_reservation,omitempty"`
 	CreateIfMissing     bool                       `json:"create_if_missing"`
@@ -142,12 +145,14 @@ type datasetOutputSchema struct {
 type datasetOutputField = datasetRowsField
 
 type datasetOutputFile struct {
-	LogicalPath string          `json:"logical_path"`
-	StoragePath string          `json:"storage_path,omitempty"`
-	SizeBytes   int64           `json:"size_bytes"`
-	ContentType *string         `json:"content_type,omitempty"`
-	Metadata    json.RawMessage `json:"metadata,omitempty"`
-	Operation   string          `json:"operation,omitempty"`
+	StagedObjectID string          `json:"staged_object_id,omitempty"`
+	SHA256         string          `json:"sha256,omitempty"`
+	LogicalPath    string          `json:"logical_path"`
+	StoragePath    string          `json:"storage_path,omitempty"`
+	SizeBytes      int64           `json:"size_bytes"`
+	ContentType    *string         `json:"content_type,omitempty"`
+	Metadata       json.RawMessage `json:"metadata,omitempty"`
+	Operation      string          `json:"operation,omitempty"`
 	// ContentBase64 uploads the actual bytes with the commit so the dataset
 	// service can write a real backing-store object. nil keeps the historical
 	// metadata-only registration; an empty non-nil slice commits a

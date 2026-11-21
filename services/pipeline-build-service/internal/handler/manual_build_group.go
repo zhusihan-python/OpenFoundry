@@ -20,6 +20,8 @@ import (
 
 const maxManualDatasetGroup = 16
 
+var errManualGroupReceiptsPending = errors.New("complete manual group receipts are not available")
+
 type ManualBuildPublication struct {
 	Output         ManualBuildOutput
 	TransactionRID string
@@ -60,6 +62,9 @@ func (m manualBuildExecution) executeGroup(w http.ResponseWriter, ctx context.Co
 	runCtx := context.WithValue(ctx, manualGroupedDatasetProducersKey{}, producers)
 	// The executor handles dependencies and retries. Its external commit
 	// and abort ports stay idle until every output has been prepared.
+	if m.staged != nil && m.staged.Excel != nil {
+		runner = manualExcelGroupRunner{dataset: m.dataset, config: m.staged}
+	}
 	outcome, executionErr := executor.Execute(runCtx, plan, runner, nil, nil, manualGroupAudit{audit, outputJobs})
 	var group []manualGroupOutput
 	if executionErr == nil && outcome.FinalState == models.BuildCompleted {
@@ -133,14 +138,32 @@ func (m manualBuildExecution) prepareGroup(ctx context.Context, plan executor.Pl
 			if err != nil {
 				return nil, err
 			}
-			body, err := remote.commitBody(ctx, output, outcome.Results[node.ID])
+			result := outcome.Results[node.ID]
+			var artifact excelGroupArtifact
+			if m.staged != nil && m.staged.Excel != nil {
+				artifacts, _ := result.Metadata["excel_artifacts"].(map[string]excelGroupArtifact)
+				var found bool
+				if artifact, found = artifacts[remote.dataset]; !found {
+					return nil, errors.New("missing prepared Excel group output")
+				}
+				result = artifact.result
+			}
+			body, err := remote.commitBody(ctx, output, result)
 			if err != nil {
 				return nil, err
+			}
+			if artifact.schema != nil {
+				body.Schema, body.ArtifactManifest = artifact.schema, &artifact.manifest
 			}
 			group = append(group, manualGroupOutput{owned, remote, body})
 		}
 	}
 	sort.Slice(group, func(i, j int) bool { return group[i].remote.dataset < group[j].remote.dataset })
+	if m.staged != nil {
+		if err := m.stageGroup(ctx, group, outcome); err != nil {
+			return nil, err
+		}
+	}
 	return group, nil
 }
 
@@ -149,7 +172,22 @@ func (m manualBuildExecution) publishGroup(ctx, recoveryCtx context.Context, gro
 	if err != nil {
 		return nil, true, err
 	}
-	status, raw, err := m.dataset.do(ctx, http.MethodPost, "/v1/datasets/outputs:commit-group", payload)
+	// Persist the exact ordered request fingerprint before contacting DVS.
+	// A concurrent abort that changes the build state wins before this
+	// compare-and-set and prevents publication.
+	path := "/v1/datasets/outputs:commit-group"
+	var durableBody []byte
+	if m.staged != nil {
+		path, durableBody = stagedManualGroupPath, payload
+	}
+	saved, err := m.store.SetManualGroupPublishFingerprint(recoveryCtx, m.buildID, "", fingerprint, durableBody)
+	if err != nil {
+		return nil, false, err
+	}
+	if !saved {
+		return nil, false, errManualGroupReceiptsPending
+	}
+	status, raw, err := m.dataset.do(ctx, http.MethodPost, path, payload)
 	if err == nil && (status == http.StatusCreated || status == http.StatusOK) {
 		publications, decodeErr := decodeManualGroupReceipts(group, raw, fingerprint)
 		if decodeErr == nil {
@@ -175,6 +213,12 @@ func (m manualBuildExecution) publishGroup(ctx, recoveryCtx context.Context, gro
 		return publications, false, nil
 	}
 	rejected := len(publications) == 0 && status >= 400 && status < 500 && status != http.StatusRequestTimeout
+	if rejected {
+		cleared, clearErr := m.store.SetManualGroupPublishFingerprint(recoveryCtx, m.buildID, fingerprint, "", nil)
+		if clearErr != nil || !cleared {
+			return nil, false, errors.Join(errManualGroupReceiptsPending, err, clearErr)
+		}
+	}
 	return nil, rejected, err
 }
 

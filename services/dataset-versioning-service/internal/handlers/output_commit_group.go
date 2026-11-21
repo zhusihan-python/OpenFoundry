@@ -194,11 +194,13 @@ func validateStagedOutputCommitGroup(members []outputCommitGroupMember) error {
 		if memberBuild == uuid.Nil {
 			return errors.New("staged group members require a nonzero build ID")
 		}
+		memberSource := *body.ArtifactManifest
+		memberSource.Role, memberSource.Worksheet = "", ""
 		if i == 0 {
 			buildID = memberBuild
-			source = *body.ArtifactManifest
+			source = memberSource
 		}
-		if memberBuild != buildID || *body.ArtifactManifest != source {
+		if memberBuild != buildID || memberSource != source {
 			return errors.New("staged group members must use the same build, input pin and JobSpec")
 		}
 		for _, link := range body.LineageLinks {
