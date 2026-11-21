@@ -31,6 +31,11 @@ func TestPipelineTransformCatalogIncludesVersionedFunctions(t *testing.T) {
 			ResultType: "Double",
 			Expression: "distance_miles + (elevation_gain_ft / 1000)",
 		},
+		{Name: "scalar_round", Expression: "round(1.2)"},
+		{Name: "scalar_unknown", Expression: "abs(unknown_function(1))"},
+		{Name: "scalar_bad_arity", Expression: "abs(1,2)"},
+		{Name: "scalar_invalid_syntax", Expression: "abs("},
+		{Name: "scalar_empty"},
 		{
 			ID:         "fn.parse_gpx",
 			Name:       "parse_gpx",
@@ -56,6 +61,11 @@ func TestPipelineTransformCatalogIncludesVersionedFunctions(t *testing.T) {
 	}
 	require.Contains(t, seen, "function.trail_effort@1.0.0")
 	require.Contains(t, seen, "function.parse_gpx@0.2.0")
+	require.Contains(t, seen, "function.scalar_round@0.1.0")
+	require.NotContains(t, seen, "function.scalar_unknown@0.1.0")
+	require.NotContains(t, seen, "function.scalar_bad_arity@0.1.0")
+	require.NotContains(t, seen, "function.scalar_invalid_syntax@0.1.0")
+	require.NotContains(t, seen, "function.scalar_empty@0.1.0")
 	require.Equal(t, "function", seen["function.trail_effort@1.0.0"].TransformType)
 	require.Equal(t, "available", seen["function.trail_effort@1.0.0"].ExecutionStatus)
 	require.Equal(t, "requires_python_sidecar", seen["function.parse_gpx@0.2.0"].ExecutionStatus)

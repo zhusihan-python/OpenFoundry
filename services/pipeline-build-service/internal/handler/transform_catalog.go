@@ -3,6 +3,8 @@ package handler
 import (
 	"net/http"
 	"strings"
+
+	pipelineexpression "github.com/openfoundry/openfoundry-go/libs/pipeline-expression"
 )
 
 const pipelineTransformCatalogVersion = "pipeline_transform_catalog.v1"
@@ -146,6 +148,12 @@ func appendPipelineFunctionCatalog(response pipelineTransformCatalogResponse, de
 		def := normalisePipelineFunction(raw)
 		if strings.TrimSpace(def.Name) == "" {
 			continue
+		}
+		if def.Runtime == PipelineFunctionRuntimeExpression {
+			expr, err := pipelineexpression.ParseExpr(def.Expression)
+			if err != nil || !pipelineexpression.HasExecutableScalarCalls(expr) {
+				continue
+			}
 		}
 		entry := baseTransformCatalogEntry(
 			"function."+def.Name+"@"+def.Version,

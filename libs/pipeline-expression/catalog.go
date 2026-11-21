@@ -269,3 +269,26 @@ func ParseTypeLiteral(literal string) (PipelineType, bool) {
 	}
 	return PipelineType{}, false
 }
+
+// HasExecutableScalarCalls reports whether every function call in a parsed
+// expression has a declared signature and a runtime implementation. It does
+// not evaluate data or guarantee that a particular argument value is valid.
+func HasExecutableScalarCalls(expr Expr) bool {
+	switch expr.Kind {
+	case ExprCall:
+		sig, declared := ScalarSignatureFor(expr.Name)
+		if !declared || scalarEvaluator(expr.Name) == nil || len(expr.Args) != len(sig.Params) {
+			return false
+		}
+		for _, arg := range expr.Args {
+			if !HasExecutableScalarCalls(arg) {
+				return false
+			}
+		}
+	case ExprUnary:
+		return HasExecutableScalarCalls(*expr.Operand)
+	case ExprBinary:
+		return HasExecutableScalarCalls(*expr.Left) && HasExecutableScalarCalls(*expr.Right)
+	}
+	return true
+}
