@@ -100,7 +100,7 @@ func stagedManualGroupConfig(specs []models.JobSpec) (*manualStagedGroupConfig, 
 	}
 	if len(options.ExcelOutputs) != 0 {
 		if len(specs) != 1 || len(pin.Excel) != 0 || pin.FlattenJSON || excelSnapshotFormat(cfg.DatasetPath) == "" {
-			return nil, errors.New("excel_outputs requires one XLSX, XLTX, XLS or XLT JobSpec without a single-sheet config")
+			return nil, errors.New("excel_outputs requires one supported Excel workbook JobSpec without a single-sheet config")
 		}
 		declared, err := canonicalDatasetRIDForComparison(cfg.DatasetRID)
 		if err != nil || (declared != "" && declared != source) || cfg.DatasetID != "" ||

@@ -238,6 +238,11 @@ reads, a smaller node row limit also rejects the input. Workbook reads do not
 change the source dataset or create an import. The published output uses the
 ordinary single-output manual commit path.
 
+Pinned builds also read `.xlsm` workbooks and `.xltm` templates whose
+main-part types match the extension. Worksheet output consists of cell
+values. The reader leaves VBA parts unopened and reads only cached
+formula values. Encrypted packages and external workbook links are rejected.
+
 Pinned single-worksheet and staged multi-worksheet builds also read BIFF8 `.xls` workbooks and `.xlt`
 templates. The file extension must match the workbook's BIFF template marker.
 Encrypted or macro-bearing files, legacy versions before BIFF8, and
