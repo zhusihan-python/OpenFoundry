@@ -308,6 +308,16 @@ func inferCall(name string, args []Expr, env ColumnEnv, errors *[]TypeError) (Pi
 	}
 	argTypes := make([]argInfo, len(args))
 	for i, arg := range args {
+		if arg.Kind == ExprLit && arg.Lit.Kind == LitNull {
+			switch sig.Name {
+			case "ceil", "floor", "round":
+				argTypes[i] = argInfo{ty: DoubleType(), ok: true}
+				continue
+			case "geom_within":
+				argTypes[i] = argInfo{ty: GeometryType(), ok: true}
+				continue
+			}
+		}
 		t, tOk := inferInner(arg, env, errors)
 		if tOk {
 			checkConstraint(name, i, t, sig.Params[i], errors)
