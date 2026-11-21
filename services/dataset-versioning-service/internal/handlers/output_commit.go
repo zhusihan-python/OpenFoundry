@@ -769,7 +769,7 @@ func outputCommitFiles(datasetID uuid.UUID, txnID uuid.UUID, body models.CommitD
 		}
 		staged = append(staged, models.StageTransactionFile{LogicalPath: logical, PhysicalPath: storagePath, SizeBytes: file.SizeBytes, Operation: op})
 		entry := models.PutDatasetFileIndexEntry{Path: logical, StoragePath: indexStoragePath, EntryType: &entryType, SizeBytes: &file.SizeBytes, ContentType: file.ContentType, Metadata: meta, LastModified: &now}
-		if body.ManualReservation != nil && (body.TransactionType == "" || body.TransactionType == models.TransactionTypeSnapshot) {
+		if body.TransactionType == "" || body.TransactionType == models.TransactionTypeSnapshot {
 			entry.VerifiedRowCount = verifiedInlineNDJSONCount(file, logical)
 		}
 		indexEntries = append(indexEntries, entry)
