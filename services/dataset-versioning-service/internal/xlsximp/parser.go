@@ -1227,24 +1227,21 @@ func NormalizeSnapshot(data []byte, cfg Config, format string) (*Result, error) 
 	return NormalizeSnapshotRange(data, cfg, format, nil)
 }
 
-// NormalizeSnapshotRange optionally limits a pinned OOXML read to an A1 rectangle.
+// NormalizeSnapshotRange optionally limits a pinned read to an A1 rectangle.
 func NormalizeSnapshotRange(data []byte, cfg Config, format string, cellRange *string) (*Result, error) {
-	if workbookType := pinnedOOXMLWorkbookType(format); workbookType != "" {
-		var selection *cellRectangle
-		if cellRange != nil {
-			var err error
-			selection, err = parseCellRectangle(*cellRange, cfg.HeaderRow)
-			if err != nil {
-				return nil, err
-			}
+	var selection *cellRectangle
+	if cellRange != nil {
+		var err error
+		selection, err = parseCellRectangle(*cellRange, cfg.HeaderRow)
+		if err != nil {
+			return nil, err
 		}
+	}
+	if workbookType := pinnedOOXMLWorkbookType(format); workbookType != "" {
 		return normalize(data, cfg, 0, workbookType, selection)
 	}
-	if cellRange != nil {
-		return nil, errKind(ErrConfig, "cell_range requires an OOXML workbook")
-	}
 	if format == "xls" || format == "xlt" {
-		return normalizeBIFF8(data, cfg, format)
+		return normalizeBIFF8(data, cfg, format, selection)
 	}
 	return nil, errKind(ErrInvalid, "unsupported workbook format %q", format)
 }
@@ -1288,12 +1285,8 @@ func normalize(data []byte, cfg Config, sampleRows int, workbookType string, sel
 		return nil, err
 	}
 
-	if selection != nil {
-		for _, column := range mapping {
-			if column.SourceIndex+1 < selection.firstCol || column.SourceIndex+1 > selection.lastCol {
-				return nil, errKind(ErrMapping, "source_index %d is outside cell_range", column.SourceIndex)
-			}
-		}
+	if err := selection.validateMapping(mapping); err != nil {
+		return nil, err
 	}
 
 	var shared []string

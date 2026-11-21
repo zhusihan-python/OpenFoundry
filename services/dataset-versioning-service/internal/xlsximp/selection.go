@@ -38,3 +38,15 @@ func parseCellRectangle(value string, header *int) (*cellRectangle, error) {
 func (r *cellRectangle) includes(row, col int) bool {
 	return row >= r.firstRow && row <= r.lastRow && col >= r.firstCol && col <= r.lastCol
 }
+
+func (r *cellRectangle) validateMapping(mapping []ColumnMap) error {
+	if r == nil {
+		return nil
+	}
+	for _, column := range mapping {
+		if column.SourceIndex+1 < r.firstCol || column.SourceIndex+1 > r.lastCol {
+			return errKind(ErrMapping, "source_index %d is outside cell_range", column.SourceIndex)
+		}
+	}
+	return nil
+}
