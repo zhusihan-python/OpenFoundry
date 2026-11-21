@@ -264,13 +264,14 @@ func (h *Handlers) stagedKeyedOutputCommitBuild(rawRef string, body models.Commi
 		}
 		storageKey := outputCommitObjectKey(h.BackingFS.BaseDirectory(), dataset.ID, txn.ID, logical)
 		indexEntries := []models.PutDatasetFileIndexEntry{{
-			Path:         logical,
-			StoragePath:  physicalURIForOutputObject(h.BackingFS.FSID(), storageKey),
-			EntryType:    &entryType,
-			SizeBytes:    &sizeBytes,
-			ContentType:  &contentType,
-			Metadata:     meta,
-			LastModified: &now,
+			Path:             logical,
+			StoragePath:      physicalURIForOutputObject(h.BackingFS.FSID(), storageKey),
+			EntryType:        &entryType,
+			SizeBytes:        &sizeBytes,
+			ContentType:      &contentType,
+			Metadata:         meta,
+			LastModified:     &now,
+			VerifiedRowCount: &obj.RecordCount,
 		}}
 
 		// Install the sealed bytes into the backing namespace through the
