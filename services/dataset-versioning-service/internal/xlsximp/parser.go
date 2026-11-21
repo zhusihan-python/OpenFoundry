@@ -95,6 +95,8 @@ const (
 	maxSharedStrings = 2 << 20
 	maxMetaTokens    = 262144
 
+	xlsmWorkbookType = "application/vnd.ms-excel.sheet.macroenabled.main+xml"
+	xltmWorkbookType = "application/vnd.ms-excel.template.macroenabled.main+xml"
 	xltxWorkbookType = "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml"
 	xlsxWorkbookType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
 	// vbaContentType matches the VBA project part content types
@@ -328,8 +330,9 @@ func forbiddenEntry(name string) (bool, string) {
 }
 
 // checkContentTypes verifies the effective type of the part the parser
-// reads as the workbook and rejects macro-enabled packages.
-func checkContentTypes(zr *zip.Reader, workbookType string) error {
+// reads as the workbook. Only explicitly typed pinned macro formats may
+// contain an opaque VBA part.
+func checkContentTypes(zr *zip.Reader, workbookType string, macroWorkbook bool) error {
 	entry := zipEntry(zr, "[Content_Types].xml")
 	if entry == nil {
 		return errKind(ErrInvalid, "workbook is missing [Content_Types].xml")
@@ -375,8 +378,8 @@ func checkContentTypes(zr *zip.Reader, workbookType string) error {
 						ext = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(a.Value, ".")))
 					}
 				}
-				// A macro-enabled main part makes this an .xlsm: reject.
-				if strings.Contains(partType, "macroenabled") {
+				if strings.Contains(partType, "macroenabled") &&
+					(!macroWorkbook || partType != workbookType || partName != "/xl/workbook.xml" || el.Name.Local != "Override") {
 					return errKind(ErrMacro, "macro-enabled content type %q is not allowed", partType)
 				}
 				if el.Name.Local == "Override" && partName != "" {
@@ -393,9 +396,8 @@ func checkContentTypes(zr *zip.Reader, workbookType string) error {
 	}
 	matchedWorkbook := false
 	// Effective content types decide on the REAL parts: an Override wins;
-	// a Default only applies to extensions that actually have an entry. An
-	// actual VBA part is rejected however it is named — a fixed-name check
-	// alone would let xl/custom.bin with a vbaProject Override through.
+	// a Default only applies to extensions that actually have an entry.
+	// Macro-free formats reject a VBA part however it is named.
 	// A lazy Default with no matching entry stays inert (real producers
 	// declare one unconditionally).
 	for _, f := range zr.File {
@@ -409,8 +411,8 @@ func checkContentTypes(zr *zip.Reader, workbookType string) error {
 		if lower == "/xl/workbook.xml" {
 			matchedWorkbook = eff == workbookType
 		}
-		if ok && strings.Contains(eff, vbaContentType) {
-			return errKind(ErrMacro, "part %s has VBA content type %q (plain .xlsx only)", f.Name, eff)
+		if ok && strings.Contains(eff, vbaContentType) && (!macroWorkbook || !strings.HasSuffix(lower, ".bin")) {
+			return errKind(ErrMacro, "part %s has unexpected VBA content type %q", f.Name, eff)
 		}
 	}
 	if !matchedWorkbook {
@@ -433,10 +435,11 @@ func openZip(data []byte, workbookType string) (*zip.Reader, error) {
 	if len(zr.File) > MaxZipEntries {
 		return nil, errKind(ErrZipUnsafe, "workbook has %d zip entries, max %d", len(zr.File), MaxZipEntries)
 	}
+	macroWorkbook := workbookType == xlsmWorkbookType || workbookType == xltmWorkbookType
 	total := uint64(0)
 	seenNames := map[string]bool{}
 	for _, f := range zr.File {
-		if bad, kind := forbiddenEntry(f.Name); bad {
+		if bad, kind := forbiddenEntry(f.Name); bad && (!macroWorkbook || kind != ErrMacro) {
 			return nil, errKind(kind, "workbook entry %s is not allowed", f.Name)
 		}
 		lower := strings.ToLower(f.Name)
@@ -452,7 +455,7 @@ func openZip(data []byte, workbookType string) (*zip.Reader, error) {
 	if total > MaxUncompressedBytes {
 		return nil, errKind(ErrZipUnsafe, "workbook decompresses to %d bytes total, max %d", total, MaxUncompressedBytes)
 	}
-	if err := checkContentTypes(zr, workbookType); err != nil {
+	if err := checkContentTypes(zr, workbookType, macroWorkbook); err != nil {
 		return nil, err
 	}
 	return zr, nil
@@ -1196,18 +1199,35 @@ func Normalize(data []byte, cfg Config, sampleRows int) (*Result, error) {
 	return normalize(data, cfg, sampleRows, xlsxWorkbookType)
 }
 
-// NormalizeSnapshot decodes rows from an explicitly typed pinned file.
-func NormalizeSnapshot(data []byte, cfg Config, format string) (*Result, error) {
+func pinnedOOXMLWorkbookType(format string) string {
 	switch format {
 	case "xlsx":
-		return normalize(data, cfg, 0, xlsxWorkbookType)
+		return xlsxWorkbookType
 	case "xltx":
-		return normalize(data, cfg, 0, xltxWorkbookType)
-	case "xls", "xlt":
-		return normalizeBIFF8(data, cfg, format)
+		return xltxWorkbookType
+	case "xlsm":
+		return xlsmWorkbookType
+	case "xltm":
+		return xltmWorkbookType
 	default:
-		return nil, errKind(ErrInvalid, "unsupported workbook format %q", format)
+		return ""
 	}
+}
+
+// SupportsSnapshotFormat reports the workbook formats of the pinned endpoint.
+func SupportsSnapshotFormat(format string) bool {
+	return format == "xls" || format == "xlt" || pinnedOOXMLWorkbookType(format) != ""
+}
+
+// NormalizeSnapshot decodes rows from an explicitly typed pinned file.
+func NormalizeSnapshot(data []byte, cfg Config, format string) (*Result, error) {
+	if workbookType := pinnedOOXMLWorkbookType(format); workbookType != "" {
+		return normalize(data, cfg, 0, workbookType)
+	}
+	if format == "xls" || format == "xlt" {
+		return normalizeBIFF8(data, cfg, format)
+	}
+	return nil, errKind(ErrInvalid, "unsupported workbook format %q", format)
 }
 
 func normalize(data []byte, cfg Config, sampleRows int, workbookType string) (*Result, error) {
