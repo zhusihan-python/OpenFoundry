@@ -34,8 +34,6 @@ func TestPinnedCellRangeFiltersByPhysicalCoordinates(t *testing.T) {
 	cfg.Mapping[0].SourceIndex = 0
 	_, err = NormalizeSnapshotRange(data, cfg, "xlsx", &selection)
 	wantKind(t, err, ErrMapping, "mapping outside range")
-	_, err = NormalizeSnapshotRange(data, cfg, "xls", &selection)
-	wantKind(t, err, ErrConfig, "unsupported BIFF8 range")
 }
 
 func TestPinnedCellRangeValidation(t *testing.T) {
@@ -49,4 +47,15 @@ func TestPinnedCellRangeValidation(t *testing.T) {
 	wantKind(t, err, ErrRowLimit, "too many data rows")
 	_, err = parseCellRectangle("A1:A1001", intPtr(1))
 	require.NoError(t, err)
+}
+
+func TestPinnedBIFF8SelectionValidation(t *testing.T) {
+	cfg := Config{Sheet: "Sheet1", Mapping: []ColumnMap{{SourceIndex: 0, Target: "value"}}}
+	for _, selection := range []string{"A1:IW2", "A65535:A65537"} {
+		_, err := NormalizeSnapshotRange(nil, cfg, "xls", &selection)
+		wantKind(t, err, ErrConfig, "rectangle outside BIFF8 bounds")
+	}
+	outsideMapping := "B1:C2"
+	_, err := NormalizeSnapshotRange(nil, cfg, "xlt", &outsideMapping)
+	wantKind(t, err, ErrMapping, "BIFF8 mapping outside rectangle")
 }

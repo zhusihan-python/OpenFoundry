@@ -10,11 +10,19 @@ import (
 
 // normalizeBIFF8 reads one worksheet through the existing pinned contract.
 // It retains only normalized bytes and physical row numbers after each row.
-func normalizeBIFF8(data []byte, cfg Config, format string) (*Result, error) {
+func normalizeBIFF8(data []byte, cfg Config, format string, selection *cellRectangle) (*Result, error) {
 	mapping, err := cfg.normalizedMapping()
 	if err != nil {
 		return nil, err
 	}
+	const biff8MaxRows, biff8MaxColumns = 65536, 256
+	if selection != nil && (selection.lastRow > biff8MaxRows || selection.lastCol > biff8MaxColumns) {
+		return nil, errKind(ErrConfig, "cell_range exceeds BIFF8 worksheet bounds")
+	}
+	if err := selection.validateMapping(mapping); err != nil {
+		return nil, err
+	}
+
 	headerAt := 0
 	if cfg.HeaderRow != nil {
 		headerAt = *cfg.HeaderRow
@@ -52,13 +60,13 @@ func normalizeBIFF8(data []byte, cfg Config, format string) (*Result, error) {
 	width := 0
 	for book.Read() {
 		physical := book.RowIndex() + 1
-		if physical < headerAt {
+		if physical < headerAt || (selection != nil && (physical < selection.firstRow || physical > selection.lastRow)) {
 			continue
 		}
 		cells := book.Row()
 		populated := false
 		for i, cell := range cells {
-			if cell.Raw != "" {
+			if cell.Raw != "" && (selection == nil || selection.includes(physical, i+1)) {
 				populated = true
 				width = max(width, i+1)
 			}
@@ -102,6 +110,9 @@ func normalizeBIFF8(data []byte, cfg Config, format string) (*Result, error) {
 	}
 	if len(result.PhysicalRows) == 0 {
 		return nil, errKind(ErrSheet, "sheet %q has no data rows", cfg.Sheet)
+	}
+	if selection != nil {
+		width = selection.lastCol
 	}
 	for _, m := range mapping {
 		if m.SourceIndex >= width {
