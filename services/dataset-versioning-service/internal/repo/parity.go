@@ -965,7 +965,7 @@ func (r *Repo) CommitTransaction(ctx context.Context, datasetID uuid.UUID, txnID
 			_ = tx.Rollback(ctx)
 		}
 	}()
-	if err := commitTransactionSteps(ctx, tx, datasetID, txnID); err != nil {
+	if err := commitTransactionSteps(ctx, tx, datasetID, txnID, nil); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

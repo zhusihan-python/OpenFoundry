@@ -768,9 +768,33 @@ func outputCommitFiles(datasetID uuid.UUID, txnID uuid.UUID, body models.CommitD
 			return nil, nil, nil, err
 		}
 		staged = append(staged, models.StageTransactionFile{LogicalPath: logical, PhysicalPath: storagePath, SizeBytes: file.SizeBytes, Operation: op})
-		indexEntries = append(indexEntries, models.PutDatasetFileIndexEntry{Path: logical, StoragePath: indexStoragePath, EntryType: &entryType, SizeBytes: &file.SizeBytes, ContentType: file.ContentType, Metadata: meta, LastModified: &now})
+		entry := models.PutDatasetFileIndexEntry{Path: logical, StoragePath: indexStoragePath, EntryType: &entryType, SizeBytes: &file.SizeBytes, ContentType: file.ContentType, Metadata: meta, LastModified: &now}
+		if body.ManualReservation != nil && (body.TransactionType == "" || body.TransactionType == models.TransactionTypeSnapshot) {
+			entry.VerifiedRowCount = verifiedInlineNDJSONCount(file, logical)
+		}
+		indexEntries = append(indexEntries, entry)
 	}
 	return staged, indexEntries, writes, nil
+}
+
+// Only actual inline NDJSON is counted. Older output callers may register
+// opaque bytes, so a non-NDJSON file leaves the count unknown.
+func verifiedInlineNDJSONCount(file models.CommitOutputFile, logical string) *int64 {
+	if file.ContentBase64 == nil || !strings.HasSuffix(logical, ".ndjson") ||
+		file.ContentType == nil || *file.ContentType != "application/x-ndjson" {
+		return nil
+	}
+	var count int64
+	if len(file.ContentBase64) == 0 {
+		return &count
+	}
+	for line := range bytes.SplitSeq(bytes.TrimSuffix(file.ContentBase64, []byte("\n")), []byte("\n")) {
+		if !validNDJSONRecord(bytesTrim(line)) {
+			return nil
+		}
+		count++
+	}
+	return &count
 }
 
 func outputFileMetadata(datasetID uuid.UUID, txnID uuid.UUID, file models.CommitOutputFile, body models.CommitDatasetOutputRequest) (models.JSONValue, error) {

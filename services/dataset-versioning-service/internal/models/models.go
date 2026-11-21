@@ -509,6 +509,9 @@ type PutDatasetFileIndexEntry struct {
 	ContentType  *string    `json:"content_type"`
 	Metadata     JSONValue  `json:"metadata"`
 	LastModified *time.Time `json:"last_modified"`
+
+	// VerifiedRowCount is supplied internally for content that DVS counted.
+	VerifiedRowCount *int64 `json:"-"`
 }
 
 type InternalDatasetMetadata struct {
