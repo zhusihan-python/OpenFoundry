@@ -99,8 +99,8 @@ func stagedManualGroupConfig(specs []models.JobSpec) (*manualStagedGroupConfig, 
 		SpecHashes: make(map[string]string, len(specs)),
 	}
 	if len(options.ExcelOutputs) != 0 {
-		if len(specs) != 1 || len(pin.Excel) != 0 || pin.FlattenJSON || !strings.HasSuffix(strings.ToLower(cfg.DatasetPath), ".xlsx") {
-			return nil, errors.New("excel_outputs requires one XLSX JobSpec without a single-sheet config")
+		if len(specs) != 1 || len(pin.Excel) != 0 || pin.FlattenJSON || excelSnapshotFormat(cfg.DatasetPath) == "" {
+			return nil, errors.New("excel_outputs requires one XLSX or XLTX JobSpec without a single-sheet config")
 		}
 		declared, err := canonicalDatasetRIDForComparison(cfg.DatasetRID)
 		if err != nil || (declared != "" && declared != source) || cfg.DatasetID != "" ||

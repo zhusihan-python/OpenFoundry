@@ -35,10 +35,11 @@ func (h *Handlers) ReadExcelSnapshotRows(w http.ResponseWriter, r *http.Request)
 		writeJSONErr(w, http.StatusBadRequest, "dataset_excel_snapshot_invalid: invalid request body")
 		return
 	}
+	format := strings.ToLower(strings.TrimPrefix(path.Ext(body.Path), "."))
 	if strings.TrimSpace(body.Branch) == "" || body.Version < 1 || body.TransactionID == uuid.Nil ||
-		!strings.EqualFold(path.Ext(body.Path), ".xlsx") || body.Limit < 1 || body.Limit > xlsximp.MaxDataRows ||
+		(format != "xlsx" && format != "xltx") || body.Limit < 1 || body.Limit > xlsximp.MaxDataRows ||
 		strings.TrimSpace(body.Excel.Sheet) == "" || len(body.Excel.Mapping) == 0 {
-		writeJSONErr(w, http.StatusBadRequest, "dataset_excel_snapshot_invalid: branch, version, transaction_id, XLSX path, row limit, sheet and mapping are required")
+		writeJSONErr(w, http.StatusBadRequest, "dataset_excel_snapshot_invalid: branch, version, transaction_id, XLSX or XLTX path, row limit, sheet and mapping are required")
 		return
 	}
 	if !validScanRequestPath(w, body.Path) {
@@ -84,7 +85,7 @@ func (h *Handlers) ReadExcelSnapshotRows(w http.ResponseWriter, r *http.Request)
 		writeJSONErr(w, http.StatusUnprocessableEntity, "dataset_excel_file_size_mismatch: workbook bytes do not match the committed size")
 		return
 	}
-	result, err := xlsximp.Normalize(data, body.Excel, 0)
+	result, err := xlsximp.NormalizeSnapshot(data, body.Excel, format)
 	if err != nil {
 		writeExcelErr(w, err)
 		return
@@ -108,5 +109,5 @@ func (h *Handlers) ReadExcelSnapshotRows(w http.ResponseWriter, r *http.Request)
 		Columns       []string          `json:"columns"`
 		Rows          []json.RawMessage `json:"rows"`
 		PhysicalRows  []int             `json:"physical_rows"`
-	}{datasetID, body.Branch, body.Version, target.txn.ID, body.Path, "xlsx", result.Columns, rows, result.PhysicalRows})
+	}{datasetID, body.Branch, body.Version, target.txn.ID, body.Path, format, result.Columns, rows, result.PhysicalRows})
 }
