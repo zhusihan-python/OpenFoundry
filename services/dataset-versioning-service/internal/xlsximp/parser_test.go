@@ -823,3 +823,48 @@ func TestWrongRootNamespacesRejected(t *testing.T) {
 		t.Fatal("wrong rels namespace must be rejected")
 	}
 }
+
+func TestNormalizeSnapshotBindsTheWorkbookPartType(t *testing.T) {
+	cfg := Config{Sheet: "模板", HeaderRow: intPtr(1), Mapping: []ColumnMap{{SourceIndex: 0, Target: "order_no"}}}
+	fixture := func(types string) []byte {
+		return buildZip(t, map[string]string{
+			"[Content_Types].xml":        types,
+			"xl/workbook.xml":            workbookXML(`<sheet name="模板" sheetId="1" r:id="rId1"/>`),
+			"xl/_rels/workbook.xml.rels": relsXML("rId1", "worksheet", "worksheets/sheet1.xml"),
+			"xl/worksheets/sheet1.xml": sheetXML(
+				`<row r="1"><c r="A1" t="inlineStr"><is><t>编号</t></is></c></row>` +
+					`<row r="4"><c r="A4" t="inlineStr"><is><t>007</t></is></c></row>`),
+		})
+	}
+	templateTypes := strings.Replace(ctXML, xlsxWorkbookType, xltxWorkbookType, 1)
+	data := fixture(templateTypes)
+	result, err := NormalizeSnapshot(data, cfg, "xltx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.NDJSON()) != "{\"order_no\":\"007\"}\n" ||
+		len(result.PhysicalRows) != 1 || result.PhysicalRows[0] != 4 {
+		t.Fatalf("unexpected template rows %s at %v", result.NDJSON(), result.PhysicalRows)
+	}
+	_, err = NormalizeSnapshot(fixture(ctXML), cfg, "xltx")
+	wantKind(t, err, ErrInvalid, "XLSX renamed to XLTX")
+	_, err = NormalizeSnapshot(data, cfg, "xlsx")
+	wantKind(t, err, ErrInvalid, "XLTX renamed to XLSX")
+	_, err = Normalize(data, cfg, 0)
+	wantKind(t, err, ErrInvalid, "template on standard upload normalization")
+	_, err = Inspect(data, "renamed.xlsx")
+	wantKind(t, err, ErrInvalid, "template on standard upload inspection")
+
+	extraType := `<Override PartName="/xl/other.xml" ContentType="` + xltxWorkbookType + `"/></Types>`
+	wrongPart := strings.Replace(ctXML, "</Types>", extraType, 1)
+	_, err = NormalizeSnapshot(fixture(wrongPart), cfg, "xltx")
+	wantKind(t, err, ErrInvalid, "template content type attached to unrelated part")
+
+	duplicate := `<Override PartName="/xl/workbook.xml" ContentType="` + xltxWorkbookType + `"/></Types>`
+	_, err = NormalizeSnapshot(fixture(strings.Replace(ctXML, "</Types>", duplicate, 1)), cfg, "xltx")
+	wantKind(t, err, ErrInvalid, "conflicting workbook part overrides")
+
+	macro := strings.Replace(templateTypes, xltxWorkbookType, "application/vnd.ms-excel.template.macroEnabled.main+xml", 1)
+	_, err = NormalizeSnapshot(fixture(macro), cfg, "xltx")
+	wantKind(t, err, ErrMacro, "macro-enabled template disguised as XLTX")
+}

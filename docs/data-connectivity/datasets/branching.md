@@ -229,8 +229,11 @@ Pipeline Build uses the internal Dataset Versioning endpoint for this read.
 Source column indexes are zero-based. An omitted or null `header_row` reads
 the sheet without a header. Normalization retains strings, including numeric
 text, and represents blank cells as null. A mapped formula requires a cached
-value. The parser accepts plain XLSX, bounds compressed and decompressed
-workbook sizes, and rejects sheets with more than 1,000 data rows. For pinned
+value. Pinned pipeline inputs accept plain XLSX workbooks and macro-free XLTX
+templates. The file extension must match the workbook's declared main-part
+type. The parser bounds compressed and decompressed workbook sizes and
+rejects sheets with more than 1,000 data rows. Standard Excel uploads
+accept plain XLSX. For pinned
 reads, a smaller node row limit also rejects the input. Workbook reads do not
 change the source dataset or create an import. The published output uses the
 ordinary single-output manual commit path.
