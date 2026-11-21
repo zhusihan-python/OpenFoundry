@@ -36,7 +36,7 @@ import (
 // locks in one order and a keyed commit can never deadlock against a
 // plain commit. Keyed callers already hold this lock in the same outer
 // transaction — re-locking it is a no-op.
-func commitTransactionSteps(ctx context.Context, tx pgx.Tx, datasetID uuid.UUID, txnID uuid.UUID) error {
+func commitTransactionSteps(ctx context.Context, tx pgx.Tx, datasetID uuid.UUID, txnID uuid.UUID, rowCount *int64) error {
 	var lockedDataset uuid.UUID
 	err := tx.QueryRow(ctx, `SELECT id FROM datasets WHERE id = $1 FOR UPDATE`, datasetID).Scan(&lockedDataset)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -91,6 +91,9 @@ func commitTransactionSteps(ctx context.Context, tx pgx.Tx, datasetID uuid.UUID,
 		return ErrInvalidTransition
 	}
 
+	if row.TxType != models.TransactionTypeSnapshot {
+		rowCount = nil
+	}
 	if row.TxType == models.TransactionTypeSnapshot {
 		if _, err := tx.Exec(ctx, `UPDATE dataset_transactions
 			SET metadata = metadata || '{"historical": true}'::jsonb
@@ -114,8 +117,8 @@ func commitTransactionSteps(ctx context.Context, tx pgx.Tx, datasetID uuid.UUID,
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO dataset_versions
 		(id, dataset_id, version, message, size_bytes, row_count, storage_path, transaction_id)
-		VALUES ($1, $2, $3, $4, $5, 0, $6, $7)
-		ON CONFLICT (dataset_id, version) DO NOTHING`, uuid.New(), datasetID, nextVersion, row.Summary, sizeBytes, fmt.Sprintf("%s/v%d", storagePath, nextVersion), row.ID); err != nil {
+		VALUES ($1, $2, $3, $4, $5, COALESCE($6::bigint, 0), $7, $8)
+		ON CONFLICT (dataset_id, version) DO NOTHING`, uuid.New(), datasetID, nextVersion, row.Summary, sizeBytes, rowCount, fmt.Sprintf("%s/v%d", storagePath, nextVersion), row.ID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE dataset_branches
@@ -126,9 +129,10 @@ func commitTransactionSteps(ctx context.Context, tx pgx.Tx, datasetID uuid.UUID,
 	if _, err := tx.Exec(ctx, `UPDATE datasets
 		SET current_version = CASE WHEN active_branch = $2 THEN $3 ELSE current_version END,
 		    size_bytes = CASE WHEN active_branch = $2 THEN $4 ELSE size_bytes END,
+		    row_count = CASE WHEN active_branch = $2 THEN COALESCE($6::bigint, row_count) ELSE row_count END,
 		    metadata = CASE WHEN $5 = 'UPDATE' THEN metadata || '{"incremental_friendly": false}'::jsonb ELSE metadata END,
 		    updated_at = NOW()
-		WHERE id = $1`, datasetID, row.BranchName, nextVersion, sizeBytes, row.TxType); err != nil {
+		WHERE id = $1`, datasetID, row.BranchName, nextVersion, sizeBytes, row.TxType, rowCount); err != nil {
 		return err
 	}
 	return nil
@@ -204,6 +208,21 @@ type PublishSnapshot struct {
 	LineageLinks []models.DatasetLineageLink
 }
 
+// A complete count is available only if every published snapshot file was counted.
+func verifiedSnapshotRowCount(files []models.PutDatasetFileIndexEntry) *int64 {
+	if len(files) == 0 {
+		return nil
+	}
+	var rows int64
+	for _, file := range files {
+		if file.VerifiedRowCount == nil {
+			return nil
+		}
+		rows += *file.VerifiedRowCount
+	}
+	return &rows
+}
+
 // CommitTransactionWithPublish commits the transaction, publishes its
 // file index and lineage links, and snapshots the response data — all
 // inside one database transaction. The version cut, both replacements,
@@ -221,7 +240,7 @@ func (r *Repo) CommitTransactionWithPublish(ctx context.Context, datasetID uuid.
 			_ = tx.Rollback(ctx)
 		}
 	}()
-	if err := commitTransactionSteps(ctx, tx, datasetID, txnID); err != nil {
+	if err := commitTransactionSteps(ctx, tx, datasetID, txnID, verifiedSnapshotRowCount(files)); err != nil {
 		return nil, err
 	}
 	if len(files) > 0 {
