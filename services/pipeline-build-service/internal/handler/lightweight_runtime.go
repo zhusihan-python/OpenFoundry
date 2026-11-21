@@ -450,6 +450,9 @@ func (rt *lightweightTableRuntime) datasetInputRows(ctx context.Context, node ex
 			meta["columns"] = result.Columns
 			meta["dataset_schema_version"] = result.SchemaVersion
 			meta["dataset_schema"] = result.Schema
+			if len(ref.Snapshot.ExcelFiles) != 0 {
+				meta["excel_files_output_schema"] = &datasetOutputSchema{Fields: result.Schema.Fields, FileFormat: result.Schema.FileFormat}
+			}
 		}
 	} else if ref.Branch != "" {
 		meta["dataset_branch"] = ref.Branch

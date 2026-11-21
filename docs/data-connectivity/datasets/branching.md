@@ -269,3 +269,50 @@ the error dataset with `INVALID_LONG` and the original worksheet
 coordinates. Missing required values use `REQUIRED_VALUE_MISSING`.
 Optional missing values remain null. Columns outside `long_fields`
 retain the workbook's normalized text.
+
+An ordinary pipeline can read multiple workbook files from one pinned
+snapshot through `dataset_snapshot.excel_files`. Supply 2 to 16 distinct
+registered paths, each with its own worksheet and column mapping. Use this
+option with a direct `dataset_input` to an ordinary dataset output. Omit
+`dataset_path`, `dataset_snapshot.excel`, and `flatten_json`.
+
+```json
+{
+  "branch": "main",
+  "version": 7,
+  "transaction_id": "<committed-transaction-uuid>",
+  "excel_files": [
+    {
+      "path": "orders.xlsx",
+      "excel": {
+        "sheet": "Orders",
+        "header_row": 3,
+        "cell_range": "A3:B20",
+        "mapping": [{"source_index": 0, "target": "order_id"}]
+      }
+    },
+    {
+      "path": "quantities.xlt",
+      "excel": {
+        "sheet": "Quantities",
+        "mapping": [
+          {"source_index": 0, "target": "order_id"},
+          {"source_index": 1, "target": "quantity"}
+        ]
+      },
+      "long_fields": ["quantity"]
+    }
+  ]
+}
+```
+
+PBS aligns up to 256 columns by mapped target name. Rows follow
+lexicographic file-path order and physical worksheet order. Schema fields
+follow lexicographic target-name order. Missing columns and blank cells
+are null. Mapped cells default to `STRING`. Use each file's `long_fields`
+to declare signed 64-bit integers. Declarations for the same target must
+agree across the files that map it. A conflicting declaration or invalid
+integer fails the build. The output schema preserves declared types,
+including a `LONG` column whose values are all null. The workbook reads
+share the input row and byte budgets, and aligned output is subject to
+the byte budget.

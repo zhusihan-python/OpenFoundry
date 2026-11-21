@@ -78,5 +78,6 @@ func (c batchedDatasetClient) readExcelSnapshotRows(ctx context.Context, rid str
 		return DatasetRowsResult{}, fmt.Errorf("dataset_excel_snapshot_invalid: unexpected workbook response")
 	}
 	reply.Source = "dataset-versioning-excel-snapshot"
+	reply.responseBytes = int64(len(raw))
 	return reply.DatasetRowsResult, nil
 }

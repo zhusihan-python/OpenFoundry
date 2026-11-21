@@ -61,7 +61,7 @@ func stagedManualGroupConfig(specs []models.JobSpec) (*manualStagedGroupConfig, 
 		return nil, err
 	}
 	if options.TransformType != "dataset_input" || pin == nil || len(root.Inputs) != 1 ||
-		!validBatchedObjectPath(cfg.DatasetPath) || root.ContentHash == "" || len(root.OutputDatasetRIDs) == 0 {
+		len(pin.ExcelFiles) != 0 || !validBatchedObjectPath(cfg.DatasetPath) || root.ContentHash == "" || len(root.OutputDatasetRIDs) == 0 {
 		return nil, errors.New("staged output groups require one pinned dataset_input with an explicit file and a published JobSpec")
 	}
 	source, err := canonicalDatasetRIDForComparison(root.Inputs[0].DatasetRID)
