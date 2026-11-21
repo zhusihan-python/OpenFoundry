@@ -9,6 +9,26 @@ import (
 	pe "github.com/openfoundry/openfoundry-go/libs/pipeline-expression"
 )
 
+func TestScalarAbsIntegerBoundaries(t *testing.T) {
+	row := pe.Row{
+		"minimum":   json.RawMessage("-9223372036854775808"),
+		"above_min": json.RawMessage("-9223372036854775807"),
+		"maximum":   json.RawMessage("9223372036854775807"),
+	}
+	node, err := pe.ParseExpr("abs(minimum)")
+	require.NoError(t, err)
+	_, err = pe.Eval(node, row)
+	var failure *pe.EvalError
+	require.ErrorAs(t, err, &failure)
+	require.Equal(t, pe.EvalErrTypeMismatch, failure.Kind)
+	require.Equal(t, "abs integer overflow", failure.Message)
+
+	assertScalarJSON(t, row, "ABS(above_min)", "9223372036854775807")
+	assertScalarJSON(t, row, "abs(maximum)", "9223372036854775807")
+	assertScalarJSON(t, row, "abs(-2.5)", "2.5")
+	assertScalarError(t, row, "abs(null)", pe.EvalErrTypeMismatch)
+}
+
 func TestScalarRoundingBoundaries(t *testing.T) {
 	row := pe.Row{
 		"min_value": json.RawMessage("-9223372036854775808"),
