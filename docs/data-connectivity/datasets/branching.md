@@ -234,3 +234,13 @@ workbook sizes, and rejects sheets with more than 1,000 data rows. For pinned
 reads, a smaller node row limit also rejects the input. Workbook reads do not
 change the source dataset or create an import. The published output uses the
 ordinary single-output manual commit path.
+
+For a staged multi-worksheet output, the worksheet entry in
+`excel_outputs.worksheets` can declare `long_fields` as a list of mapped
+target names. These cells accept signed base-10 integers in the 64-bit
+range and publish as JSON numbers with a `LONG` schema field. Values
+outside the range or with fractional, exponent, or nonnumeric text enter
+the error dataset with `INVALID_LONG` and the original worksheet
+coordinates. Missing required values use `REQUIRED_VALUE_MISSING`.
+Optional missing values remain null. Columns outside `long_fields`
+retain the workbook's normalized text.
