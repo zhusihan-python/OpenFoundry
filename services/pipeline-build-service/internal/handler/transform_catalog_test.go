@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const expectedTransformCatalogSnapshotSHA256 = "4c859d20e0a0c1eb454a98ad9f2c62bc74f8f03c1df07036c3096eaa50a5ebaf"
+const expectedTransformCatalogSnapshotSHA256 = "f5322765f44f4a2c17750fe471abe0078cf15e0bfe2337f2ffde7438b79fcf9f"
 
 func TestListPipelineTransformCatalogSnapshot(t *testing.T) {
 	rr := httptest.NewRecorder()
@@ -80,6 +80,9 @@ func TestTransformCatalogContainsRequiredPB5Entries(t *testing.T) {
 		require.True(t, ok, "missing transform %s", id)
 	}
 
+	require.Equal(t, "available", seen["formula"].ExecutionStatus)
+	require.Equal(t, "lightweight_table", seen["formula"].Runtime)
+	require.Equal(t, "planned", seen["derive_column"].ExecutionStatus)
 	require.Equal(t, "available", seen["join"].ExecutionStatus)
 	require.Equal(t, "join_editor", seen["join"].BuilderSurface)
 	require.Equal(t, "available", seen["haversine_distance"].ExecutionStatus)

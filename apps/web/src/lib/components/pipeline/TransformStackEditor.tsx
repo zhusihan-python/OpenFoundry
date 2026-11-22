@@ -15,6 +15,7 @@ import {
   newDropColumnsBlock,
   newExplodeBlock,
   newFilterBlock,
+  newFormulaBlock,
   newJSONExtractBlock,
   newHaversineDistanceBlock,
   newNormalizeColumnsBlock,
@@ -42,6 +43,7 @@ import {
   type TransformStack,
   validAggregateConfig,
   validCSVParseConfig,
+  validFormulaConfig,
   validJSONExtractConfig,
   validNormalizeUnitsConfig,
 } from './transformStack';
@@ -72,6 +74,7 @@ const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   normalize_columns: () => newNormalizeColumnsBlock(),
   normalize_units: () => newNormalizeUnitsBlock(),
   haversine_distance: () => newHaversineDistanceBlock(),
+  formula: newFormulaBlock,
   aggregate: () => newAggregateBlock(),
   csv_parse: () => newCSVParseBlock(),
   explode: () => newExplodeBlock(),
@@ -494,6 +497,20 @@ function BlockCard({
           <NormalizeUnitsBody block={block} schema={schema} catalogEntry={catalogEntry}
             onPatch={(patch) => onPatch({ ...patch, applied: false })} />
         ) : null}
+        {block.kind === 'formula' && (
+          <div style={{ display: 'grid', gap: 8 }}>
+            <label>
+              Expression
+              <input className="of-input" value={block.expression} placeholder="distance_miles * 1.60934"
+                onChange={(event) => onPatch({ expression: event.target.value, applied: false })} />
+            </label>
+            <label>
+              Target column
+              <input className="of-input" value={block.target_column} placeholder="distance_km"
+                onChange={(event) => onPatch({ target_column: event.target.value, applied: false })} />
+            </label>
+          </div>
+        )}
         {block.kind === 'aggregate' ? (
           <AggregateBody block={block} schema={schema} catalogEntry={catalogEntry}
             onPatch={(patch) => onPatch({ ...patch, applied: false })} />
@@ -1133,6 +1150,7 @@ function blockAccent(kind: TransformBlock['kind']): string {
     case 'normalize':
     case 'normalize_units':
       return '#7c5dd6';
+    case 'formula':
     case 'aggregate':
     case 'csv_parse':
     case 'explode':
@@ -1148,6 +1166,8 @@ function hasInvalidConfig(block: TransformBlock): boolean {
   switch (block.kind) {
     case 'normalize_units':
       return !validNormalizeUnitsConfig(block);
+    case 'formula':
+      return !validFormulaConfig(block);
     case 'aggregate':
       return !validAggregateConfig(block);
     case 'csv_parse':

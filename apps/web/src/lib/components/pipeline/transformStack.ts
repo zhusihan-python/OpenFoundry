@@ -140,6 +140,14 @@ export interface AggregateBlock {
   aggregations: Aggregation[];
 }
 
+export interface FormulaBlock {
+  id: string;
+  kind: 'formula';
+  applied: boolean;
+  expression: string;
+  target_column: string;
+}
+
 export type TransformBlock =
   | CastBlock
   | FilterBlock
@@ -153,7 +161,8 @@ export type TransformBlock =
   | NormalizeUnitsBlock
   | ExplodeBlock
   | CSVParseBlock
-  | AggregateBlock;
+  | AggregateBlock
+  | FormulaBlock;
 
 export interface TransformStack {
   source_dataset_id: string;
@@ -226,6 +235,14 @@ export function newNormalizeColumnsBlock(): NormalizeColumnsBlock {
     applied: false,
     remove_special_characters: false,
   };
+}
+
+export function newFormulaBlock(): FormulaBlock {
+  return { id: newBlockId('formula'), kind: 'formula', applied: false, expression: '', target_column: '' };
+}
+
+export function validFormulaConfig(block: FormulaBlock): boolean {
+  return Boolean(block.expression.trim() && block.target_column.trim());
 }
 
 export function newAggregateBlock(): AggregateBlock {
@@ -322,6 +339,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Normalize column names';
     case 'normalize_units':
       return 'Normalize units';
+    case 'formula':
+      return 'Formula';
     case 'aggregate':
       return 'Aggregate';
     case 'csv_parse':
@@ -353,6 +372,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Normalize column names';
     case 'normalize_units':
       return 'Normalize units';
+    case 'formula':
+      return 'Formula';
     case 'aggregate':
       return 'Aggregate';
     case 'csv_parse':
@@ -493,6 +514,12 @@ export function composeTransformStackSql(stack: TransformStack): string {
       case 'normalize_units': {
         if (!validNormalizeUnitsConfig(block)) break;
         ctes.push(`${cte} AS (SELECT * FROM ${previous} /* normalize_units: see structured stack config */)`);
+        previous = cte;
+        return;
+      }
+      case 'formula': {
+        if (!validFormulaConfig(block)) break;
+        ctes.push(`${cte} AS (SELECT * FROM ${previous} /* formula: see structured stack config */)`);
         previous = cte;
         return;
       }
