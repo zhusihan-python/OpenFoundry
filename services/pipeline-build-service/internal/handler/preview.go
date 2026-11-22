@@ -27,6 +27,13 @@ const (
 	maxPipelinePreviewSampleSize     = 500
 )
 
+// previewJoinExpansionLimit bounds the intermediate rows one relational
+// join may materialize during a local preview (previews read full build
+// inputs, so the join expansion is fully materialized). Production keeps
+// the shared lightweight expanded-rows bound; tests lower it to exercise
+// the cap. Builds never consult it.
+var previewJoinExpansionLimit = maxLightweightExpandedRows
+
 type previewPipelineNodeRequest struct {
 	DAG        json.RawMessage       `json:"dag,omitempty"`
 	IR         *models.PipelineIR    `json:"ir,omitempty"`
@@ -157,6 +164,7 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 	// sample. Use the bounded build inputs before limiting the final result.
 	sampleInputs := !previewChainRequiresBuildInputs(chain)
 	runtime.datasetRowsPreview = sampleInputs
+	runtime.joinExpansionLimit = previewJoinExpansionLimit
 	runner := runtimeNodeRunner{Table: runtime, LLM: ports.LLM}
 	var targetMetadata map[string]any
 	for _, node := range chain {

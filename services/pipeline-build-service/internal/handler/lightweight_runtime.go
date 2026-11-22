@@ -30,6 +30,11 @@ type lightweightTableRuntime struct {
 	// datasetRowsPreview marks preview runs, which may read a truncated
 	// sample; formal execution keeps strict no-truncation semantics.
 	datasetRowsPreview bool
+	// joinExpansionLimit caps the intermediate rows one relational join may
+	// materialize (0 = uncapped). Preview runs set the shared
+	// maxLightweightExpandedRows bound because they fully materialize the
+	// join expansion; builds keep their existing output capability.
+	joinExpansionLimit int
 }
 
 type tableRuntimeConfig struct {
@@ -847,29 +852,52 @@ func (rt *lightweightTableRuntime) runJoin(node executor.NodeContext, draft runt
 		return nil, errors.New("lightweight_join_missing_match_conditions")
 	}
 
-	leftColumns := selectRuntimeColumns(left, draft.LeftColumns, draft.AutoSelectLeft || len(draft.LeftColumns) == 0)
+	leftColumns := rt.selectRuntimeJoinColumns(node.Node.DependsOn[0], draft.LeftColumns, draft.AutoSelectLeft || len(draft.LeftColumns) == 0)
 	if joinType == runtimeJoinLeftAnti {
 		if len(matches) != len(draft.Matches) {
 			return nil, errors.New("left anti join requires both columns in each match condition")
 		}
+		if err := rejectRuntimeJoinColumnCollision(node.Node.ID, leftColumns, nil, ""); err != nil {
+			return nil, err
+		}
 		return joinLeftAnti(left, right, matches, leftColumns)
 	}
-	rightColumns := selectRuntimeColumns(right, draft.RightColumns, draft.AutoSelectRight)
+	rightColumns := rt.selectRuntimeJoinColumns(node.Node.DependsOn[1], draft.RightColumns, draft.AutoSelectRight)
 	if err := rejectRuntimeJoinColumnCollision(node.Node.ID, leftColumns, rightColumns, draft.RightPrefix); err != nil {
 		return nil, err
 	}
 	out := make([]pipelineexpression.Row, 0)
+	// Preview joins fully materialize their expansion; when a budget is set
+	// (preview runs) fail BEFORE composing the row that would exceed it —
+	// never truncate silently. Builds leave the budget at zero.
+	joinRowBudgetExceeded := func() bool {
+		return rt.joinExpansionLimit > 0 && len(out) >= rt.joinExpansionLimit
+	}
+	joinRowsExceededError := func() error {
+		return fmt.Errorf("lightweight_join_rows_exceeded: node %q would materialize more than %d joined rows; narrow the join or run the build", node.Node.ID, rt.joinExpansionLimit)
+	}
 	rightMatched := make([]bool, len(right))
 	for _, lrow := range left {
 		matched := false
 		for idx, rrow := range right {
-			if rowsJoinMatch(lrow, rrow, draft.Matches, joinType == "cross") {
-				matched = true
-				rightMatched[idx] = true
-				out = append(out, composeRuntimeJoinRow(lrow, rrow, leftColumns, rightColumns, draft.RightPrefix))
+			match, err := rowsJoinMatch(lrow, rrow, matches, joinType == "cross")
+			if err != nil {
+				return nil, err
 			}
+			if !match {
+				continue
+			}
+			matched = true
+			rightMatched[idx] = true
+			if joinRowBudgetExceeded() {
+				return nil, joinRowsExceededError()
+			}
+			out = append(out, composeRuntimeJoinRow(lrow, rrow, leftColumns, rightColumns, draft.RightPrefix))
 		}
 		if !matched && (joinType == "left" || joinType == "outer") {
+			if joinRowBudgetExceeded() {
+				return nil, joinRowsExceededError()
+			}
 			out = append(out, composeRuntimeJoinRow(lrow, nil, leftColumns, rightColumns, draft.RightPrefix))
 		}
 	}
@@ -877,6 +905,9 @@ func (rt *lightweightTableRuntime) runJoin(node executor.NodeContext, draft runt
 		for idx, rrow := range right {
 			if rightMatched[idx] {
 				continue
+			}
+			if joinRowBudgetExceeded() {
+				return nil, joinRowsExceededError()
 			}
 			out = append(out, composeRuntimeJoinRow(nil, rrow, leftColumns, rightColumns, draft.RightPrefix))
 		}
@@ -1223,35 +1254,31 @@ func validJoinMatches(matches []runtimeJoinMatch) []runtimeJoinMatch {
 	return out
 }
 
-func rowsJoinMatch(left, right pipelineexpression.Row, matches []runtimeJoinMatch, cross bool) bool {
+// rowsJoinMatch evaluates one row pair against the pre-validated match
+// conditions (runJoin passes its validJoinMatches result — the slice is
+// computed once and reused across the whole match loop). Keys compare
+// through the typed scalar encoding the anti join already uses
+// (runtimeCompositeKey): NULL or missing keys never match, adjacent int64
+// values never collapse through float64, and 1 == 1.0 across
+// integer/double spellings while "1" (string) is a different key from 1.
+func rowsJoinMatch(left, right pipelineexpression.Row, matches []runtimeJoinMatch, cross bool) (bool, error) {
 	if cross {
-		return true
+		return true, nil
 	}
-	for _, match := range validJoinMatches(matches) {
-		leftKey, ok := joinMatchKey(left, match.LeftColumn)
-		if !ok {
-			return false
+	for _, match := range matches {
+		leftKey, leftMatchable, err := runtimeCompositeKey(left, []string{match.LeftColumn}, false)
+		if err != nil {
+			return false, fmt.Errorf("lightweight_join %w", err)
 		}
-		rightKey, ok := joinMatchKey(right, match.RightColumn)
-		if !ok {
-			return false
+		rightKey, rightMatchable, err := runtimeCompositeKey(right, []string{match.RightColumn}, false)
+		if err != nil {
+			return false, fmt.Errorf("lightweight_join %w", err)
 		}
-		if runtimeScalarString(leftKey) != runtimeScalarString(rightKey) {
-			return false
+		if !leftMatchable || !rightMatchable || leftKey != rightKey {
+			return false, nil
 		}
 	}
-	return true
-}
-
-// joinMatchKey extracts one equality-join key. SQL semantics: a NULL or
-// missing key never matches — not even another NULL. A present empty string
-// is a real value and keeps matching.
-func joinMatchKey(row pipelineexpression.Row, column string) (json.RawMessage, bool) {
-	raw, ok := row[column]
-	if !ok || isRuntimeNullish(raw, false) {
-		return nil, false
-	}
-	return raw, true
+	return true, nil
 }
 
 func selectRuntimeColumns(rows []pipelineexpression.Row, explicit []string, auto bool) []string {
@@ -1261,34 +1288,49 @@ func selectRuntimeColumns(rows []pipelineexpression.Row, explicit []string, auto
 	return deriveRuntimeColumns(rows)
 }
 
-// rejectRuntimeJoinColumnCollision keeps the lightweight join consistent with
-// the strict build validation (checkSchemaDuplicateFields): when the composed
-// output would name one column twice — an unprefixed right column colliding
-// with a kept left column, or a duplicate inside an explicit projection — the
-// join fails instead of silently letting the right side overwrite the left.
-func rejectRuntimeJoinColumnCollision(nodeID string, leftColumns, rightColumns []string, rightPrefix string) error {
-	prefix := strings.TrimSpace(rightPrefix)
-	seen := make(map[string]struct{}, len(leftColumns)+len(rightColumns))
-	for _, column := range leftColumns {
-		if strings.TrimSpace(column) == "" {
-			continue
-		}
-		seen[column] = struct{}{}
+// selectRuntimeJoinColumns picks one join side's projection. Explicit lists
+// win verbatim; auto-selection uses the dependency's table schema (declared
+// types merged with the observed rows), so an empty or sparse input keeps
+// its declared columns — NULL-filled by composeRuntimeJoinRow and still
+// visible to the duplicate-column check — instead of silently dropping them.
+// The geospatial join keeps selectRuntimeColumns.
+func (rt *lightweightTableRuntime) selectRuntimeJoinColumns(dep string, explicit []string, auto bool) []string {
+	if !auto {
+		return append([]string(nil), explicit...)
 	}
+	return rt.tableSchema(dep).columnNames()
+}
+
+// errJoinDuplicateColumn marks a lightweight join whose composed output
+// names one column twice; the wrapped message is the strict validation's
+// own duplicate_column_name text.
+var errJoinDuplicateColumn = errors.New("lightweight_join_duplicate_column_name")
+
+// rejectRuntimeJoinColumnCollision keeps the lightweight join consistent
+// with the strict build validation: it feeds the composed output names
+// (left selection, then right selection under the same prefixing rule
+// composeRuntimeJoinRow applies) through the shared checkDuplicateNames
+// rule, so an unprefixed right column colliding with a left column, or any
+// duplicate inside an explicit projection — the left anti join's left-only
+// projection included — fails with the same duplicate_column_name message
+// instead of silently letting one side overwrite the other.
+func rejectRuntimeJoinColumnCollision(nodeID string, leftColumns, rightColumns []string, rightPrefix string) error {
+	names := make([]string, 0, len(leftColumns)+len(rightColumns))
+	names = append(names, leftColumns...)
+	prefix := strings.TrimSpace(rightPrefix)
 	for _, column := range rightColumns {
 		target := column
 		if prefix != "" {
 			target = prefix + column
 		}
-		if strings.TrimSpace(target) == "" {
-			continue
-		}
-		if _, duplicate := seen[target]; duplicate {
-			return fmt.Errorf("lightweight_join_duplicate_column_name: node %q composes duplicate column name %q; set right_prefix or project the columns explicitly", nodeID, target)
-		}
-		seen[target] = struct{}{}
+		names = append(names, target)
 	}
-	return nil
+	report := pipelineStrictValidationReport{}
+	checkDuplicateNames(nodeID, names, "duplicate_column_name", &report)
+	if len(report.Errors) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", errJoinDuplicateColumn, report.Errors[0].Message)
 }
 
 func composeRuntimeJoinRow(left, right pipelineexpression.Row, leftColumns, rightColumns []string, rightPrefix string) pipelineexpression.Row {

@@ -23,7 +23,7 @@ func joinPreviewNodes(leftRows, rightRows, joinConfig string) []models.PipelineN
 	}
 }
 
-func TestRowsJoinMatchNullishKeysNeverMatch(t *testing.T) {
+func TestRowsJoinMatchTypedScalarKeys(t *testing.T) {
 	match := []runtimeJoinMatch{{LeftColumn: "k", RightColumn: "k"}}
 	tests := []struct {
 		name  string
@@ -37,11 +37,18 @@ func TestRowsJoinMatchNullishKeysNeverMatch(t *testing.T) {
 		{"missing never matches missing", pipelineexpression.Row{}, pipelineexpression.Row{}, false},
 		{"null never matches a value", pipelineexpression.Row{"k": json.RawMessage(`null`)}, pipelineexpression.Row{"k": json.RawMessage(`"O-1"`)}, false},
 		{"empty string still matches", pipelineexpression.Row{"k": json.RawMessage(`""`)}, pipelineexpression.Row{"k": json.RawMessage(`""`)}, true},
-		{"equal values still match", pipelineexpression.Row{"k": json.RawMessage(`"O-1"`)}, pipelineexpression.Row{"k": json.RawMessage(`"O-1"`)}, true},
+		{"equal strings still match", pipelineexpression.Row{"k": json.RawMessage(`"O-1"`)}, pipelineexpression.Row{"k": json.RawMessage(`"O-1"`)}, true},
+		{"adjacent int64 keys never collapse", pipelineexpression.Row{"k": json.RawMessage(`9007199254740993`)}, pipelineexpression.Row{"k": json.RawMessage(`9007199254740992`)}, false},
+		{"equal int64 keys match", pipelineexpression.Row{"k": json.RawMessage(`9007199254740993`)}, pipelineexpression.Row{"k": json.RawMessage(`9007199254740993`)}, true},
+		{"integer equals its double spelling", pipelineexpression.Row{"k": json.RawMessage(`1`)}, pipelineexpression.Row{"k": json.RawMessage(`1.0`)}, true},
+		{"distinct integers never match", pipelineexpression.Row{"k": json.RawMessage(`1`)}, pipelineexpression.Row{"k": json.RawMessage(`2`)}, false},
+		{"string one is a different key than number one", pipelineexpression.Row{"k": json.RawMessage(`"1"`)}, pipelineexpression.Row{"k": json.RawMessage(`1`)}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.match, rowsJoinMatch(tc.left, tc.right, match, false))
+			got, err := rowsJoinMatch(tc.left, tc.right, match, false)
+			require.NoError(t, err)
+			assert.Equal(t, tc.match, got)
 		})
 	}
 }
@@ -102,6 +109,22 @@ func TestRunJoinRejectsDuplicateOutputColumns(t *testing.T) {
 		assert.Contains(t, err.Error(), `duplicate column name "order_id"`)
 	})
 
+	t.Run("duplicate left projection is rejected", func(t *testing.T) {
+		nodes := joinPreviewNodes(left, right, `{"_join":{"join_type":"left","left_columns":["order_id","order_id"],"auto_select_right":true,"right_prefix":"refund_","matches":[`+matches+`]}}`)
+		_, err := executeLocalPipelinePreview(t.Context(), uuid.New(), "output", nodes, 20)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lightweight_join_duplicate_column_name")
+		assert.Contains(t, err.Error(), `duplicate column name "order_id"`)
+	})
+
+	t.Run("left anti projection duplicates are rejected too", func(t *testing.T) {
+		nodes := joinPreviewNodes(left, right, `{"_join":{"join_type":"left_anti","left_columns":["order_id","order_id"],"matches":[`+matches+`]}}`)
+		_, err := executeLocalPipelinePreview(t.Context(), uuid.New(), "output", nodes, 20)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lightweight_join_duplicate_column_name")
+		assert.Contains(t, err.Error(), `duplicate column name "order_id"`)
+	})
+
 	t.Run("right prefix keeps the left key", func(t *testing.T) {
 		nodes := joinPreviewNodes(left, right, `{"_join":{"join_type":"left","auto_select_right":true,"matches":[`+matches+`],"right_prefix":"refund_"}}`)
 		out, err := executeLocalPipelinePreview(t.Context(), uuid.New(), "output", nodes, 20)
@@ -144,5 +167,190 @@ func TestRunJoinRejectsDuplicateOutputColumns(t *testing.T) {
 		assert.JSONEq(t, `"O-1"`, string(out.Rows[0]["order_id"]))
 		assert.JSONEq(t, `"O-2"`, string(out.Rows[1]["order_id"]))
 		assert.JSONEq(t, `"late"`, string(out.Rows[1]["refund_reason"]))
+	})
+}
+
+func TestRejectRuntimeJoinColumnCollisionMatchesStrictRule(t *testing.T) {
+	err := rejectRuntimeJoinColumnCollision("join", []string{"order_id", "customer"}, []string{"order_id", "reason"}, "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errJoinDuplicateColumn)
+
+	// Same rule, same message the strict report itself would carry.
+	report := pipelineStrictValidationReport{}
+	checkDuplicateNames("join", []string{"order_id", "customer", "order_id", "reason"}, "duplicate_column_name", &report)
+	require.Len(t, report.Errors, 1)
+	assert.Equal(t, "duplicate_column_name", report.Errors[0].Code)
+	assert.Contains(t, err.Error(), report.Errors[0].Message)
+	assert.Equal(t, `lightweight_join_duplicate_column_name: duplicate column name "order_id"`, err.Error())
+
+	assert.NoError(t, rejectRuntimeJoinColumnCollision("join", []string{"a"}, []string{"b"}, ""))
+	assert.NoError(t, rejectRuntimeJoinColumnCollision("join", []string{"a"}, []string{"a"}, "refund_"))
+	// The prefixing rule mirrors composeRuntimeJoinRow: a blank prefix is no
+	// prefix, so the collision must still fire.
+	assert.Error(t, rejectRuntimeJoinColumnCollision("join", []string{"a"}, []string{"a"}, "  "))
+}
+
+func TestRunJoinInt64KeysPairExactly(t *testing.T) {
+	// Adjacent int64 order numbers around the 2^53 float64 boundary: the
+	// refund keyed 9007199254740992 must link only to the same integer and
+	// the raw key must survive the join unchanged (published-data parity).
+	nodes := joinPreviewNodes(
+		`{"rows":[
+			{"order_id":9007199254740992,"customer":"ann"},
+			{"order_id":9007199254740993,"customer":"bob"}
+		]}`,
+		`{"rows":[
+			{"order_id":9007199254740992,"refund_id":"R1","reason":"damaged"}
+		]}`,
+		`{"_join":{"join_type":"left","auto_select_right":true,"matches":[{"left_column":"order_id","right_column":"order_id"}],"right_prefix":"refund_"}}`,
+	)
+	out, err := executeLocalPipelinePreview(t.Context(), uuid.New(), "output", nodes, 50)
+	require.NoError(t, err)
+	require.Len(t, out.Rows, 2)
+	assert.JSONEq(t, `9007199254740992`, string(out.Rows[0]["order_id"]))
+	assert.JSONEq(t, `9007199254740992`, string(out.Rows[0]["refund_order_id"]))
+	assert.JSONEq(t, `"R1"`, string(out.Rows[0]["refund_refund_id"]))
+	// The adjacent order stays unmatched — never paired with R1 — and the
+	// exact integer is preserved, not rounded through float64.
+	assert.JSONEq(t, `9007199254740993`, string(out.Rows[1]["order_id"]))
+	assert.JSONEq(t, `null`, string(out.Rows[1]["refund_order_id"]))
+	assert.JSONEq(t, `null`, string(out.Rows[1]["refund_refund_id"]))
+	assert.JSONEq(t, `null`, string(out.Rows[1]["refund_reason"]))
+}
+
+// declaredJoinNodes builds the collide-shaped graph with a declared output
+// schema on the refunds input, so the runtime table carries the declared
+// columns even when the rows are empty or sparse. The schemas map mirrors
+// what declaredTableSchemas yields for a persisted IR carrying that
+// output_schema (legacy nodes have no schema field, so build it directly).
+func declaredJoinNodes(refundRows string, declaredOrderID bool, join string) ([]models.PipelineNode, map[string]*models.PipelineIRSchema) {
+	fields := []models.PipelineIRField{{Name: "reason", FieldType: "STRING", Nullable: true}}
+	if declaredOrderID {
+		fields = append([]models.PipelineIRField{{Name: "order_id", FieldType: "STRING", Nullable: true}}, fields...)
+	}
+	refundSchema := &models.PipelineIRSchema{Fields: fields}
+	nodes := []models.PipelineNode{
+		{ID: "orders", TransformType: "external", Config: json.RawMessage(`{"rows":[{"order_id":"O-1","customer":"ann"}]}`)},
+		{ID: "refunds", TransformType: "external", Config: json.RawMessage(refundRows)},
+		{ID: "link", TransformType: "sql", DependsOn: []string{"orders", "refunds"}, Config: json.RawMessage(join)},
+		{ID: "output", TransformType: "output_dataset", DependsOn: []string{"link"}},
+	}
+	return nodes, map[string]*models.PipelineIRSchema{"refunds": refundSchema}
+}
+
+func previewJoinWithSchemas(t *testing.T, nodes []models.PipelineNode, schemas map[string]*models.PipelineIRSchema) (pipelineNodePreviewResponse, error) {
+	t.Helper()
+	return executeLocalPreviewWithSchemas(t.Context(), uuid.New(), "output", nodes, 20, ExecutionPorts{}, schemas)
+}
+
+func TestRunJoinAutoColumnsUseTableSchema(t *testing.T) {
+	const match = `{"left_column":"order_id","right_column":"order_id"}`
+
+	t.Run("prefixed empty right keeps declared refund columns as NULLs", func(t *testing.T) {
+		nodes, schemas := declaredJoinNodes(`{"rows":[]}`, true, `{"_join":{"join_type":"left","auto_select_right":true,"matches":[`+match+`],"right_prefix":"refund_"}}`)
+		out, err := previewJoinWithSchemas(t, nodes, schemas)
+		require.NoError(t, err)
+		require.Len(t, out.Rows, 1)
+		assert.JSONEq(t, `"O-1"`, string(out.Rows[0]["order_id"]))
+		assert.JSONEq(t, `null`, string(out.Rows[0]["refund_order_id"]))
+		assert.JSONEq(t, `null`, string(out.Rows[0]["refund_reason"]))
+		assert.Contains(t, out.Columns, "refund_order_id")
+		assert.Contains(t, out.Columns, "refund_reason")
+	})
+
+	t.Run("unprefixed empty right is still rejected", func(t *testing.T) {
+		nodes, schemas := declaredJoinNodes(`{"rows":[]}`, true, `{"_join":{"join_type":"left","auto_select_right":true,"matches":[`+match+`]}}`)
+		_, err := previewJoinWithSchemas(t, nodes, schemas)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lightweight_join_duplicate_column_name")
+		assert.Contains(t, err.Error(), `duplicate column name "order_id"`)
+	})
+
+	t.Run("unprefixed sparse right is still rejected", func(t *testing.T) {
+		nodes, schemas := declaredJoinNodes(`{"rows":[{"reason":"late"}]}`, true, `{"_join":{"join_type":"left","auto_select_right":true,"matches":[`+match+`]}}`)
+		_, err := previewJoinWithSchemas(t, nodes, schemas)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lightweight_join_duplicate_column_name")
+		assert.Contains(t, err.Error(), `duplicate column name "order_id"`)
+	})
+
+	t.Run("prefixed sparse right fills missing values with NULLs", func(t *testing.T) {
+		nodes, schemas := declaredJoinNodes(`{"rows":[{"order_id":"O-1"}]}`, true, `{"_join":{"join_type":"left","auto_select_right":true,"matches":[`+match+`],"right_prefix":"refund_"}}`)
+		out, err := previewJoinWithSchemas(t, nodes, schemas)
+		require.NoError(t, err)
+		require.Len(t, out.Rows, 1)
+		assert.JSONEq(t, `"O-1"`, string(out.Rows[0]["order_id"]))
+		assert.JSONEq(t, `"O-1"`, string(out.Rows[0]["refund_order_id"]))
+		assert.JSONEq(t, `null`, string(out.Rows[0]["refund_reason"]))
+	})
+}
+
+// withJoinPreviewBudget lowers the preview join expansion budget for one
+// test and restores it afterwards.
+func withJoinPreviewBudget(t *testing.T, limit int) {
+	t.Helper()
+	previous := previewJoinExpansionLimit
+	previewJoinExpansionLimit = limit
+	t.Cleanup(func() { previewJoinExpansionLimit = previous })
+}
+
+func TestJoinPreviewExpansionBudgetIsHardCap(t *testing.T) {
+	joinRows := func(t *testing.T, join string, leftRows, rightRows string) (pipelineNodePreviewResponse, error) {
+		t.Helper()
+		nodes := joinPreviewNodes(leftRows, rightRows, join)
+		return executeLocalPipelinePreview(t.Context(), uuid.New(), "output", nodes, 50)
+	}
+	const match = `{"left_column":"order_id","right_column":"order_id"}`
+	const leftJoin = `{"_join":{"join_type":"left","auto_select_right":true,"matches":[` + match + `],"right_prefix":"refund_"}}`
+	const crossJoin = `{"_join":{"join_type":"cross","auto_select_right":true,"right_prefix":"refund_"}}`
+
+	t.Run("matched rows at the cap pass and beyond fail", func(t *testing.T) {
+		const leftRows = `{"rows":[{"order_id":"O-1"},{"order_id":"O-2"},{"order_id":"O-3"}]}`
+		const rightRows = `{"rows":[{"order_id":"O-1","reason":"a"},{"order_id":"O-2","reason":"b"},{"order_id":"O-3","reason":"c"}]}`
+		withJoinPreviewBudget(t, 3)
+		out, err := joinRows(t, leftJoin, leftRows, rightRows)
+		require.NoError(t, err)
+		require.Len(t, out.Rows, 3)
+
+		withJoinPreviewBudget(t, 2)
+		_, err = joinRows(t, leftJoin, leftRows, rightRows)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lightweight_join_rows_exceeded")
+	})
+
+	t.Run("left-join retained rows count toward the cap", func(t *testing.T) {
+		const leftRows = `{"rows":[{"order_id":"O-1"},{"order_id":"O-2"},{"order_id":"O-3"}]}`
+		const emptyRight = `{"rows":[]}`
+		withJoinPreviewBudget(t, 3)
+		out, err := joinRows(t, leftJoin, leftRows, emptyRight)
+		require.NoError(t, err)
+		require.Len(t, out.Rows, 3)
+
+		withJoinPreviewBudget(t, 2)
+		_, err = joinRows(t, leftJoin, leftRows, emptyRight)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lightweight_join_rows_exceeded")
+	})
+
+	t.Run("cross products count toward the cap", func(t *testing.T) {
+		const leftRows = `{"rows":[{"order_id":"O-1"},{"order_id":"O-2"}]}`
+		const rightRows = `{"rows":[{"reason":"a"},{"reason":"b"}]}`
+		withJoinPreviewBudget(t, 4)
+		out, err := joinRows(t, crossJoin, leftRows, rightRows)
+		require.NoError(t, err)
+		require.Len(t, out.Rows, 4)
+
+		withJoinPreviewBudget(t, 3)
+		_, err = joinRows(t, crossJoin, leftRows, rightRows)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lightweight_join_rows_exceeded")
+	})
+
+	t.Run("build runners stay uncapped", func(t *testing.T) {
+		// newRuntimeNodeRunner is the FASTER build path's wiring: the join
+		// budget must remain zero there so build output capability is
+		// unchanged.
+		runner := newRuntimeNodeRunner(ExecutionPorts{})
+		assert.Zero(t, runner.Table.joinExpansionLimit)
 	})
 }
