@@ -83,6 +83,15 @@ export interface HaversineDistanceBlock {
   target_column: string;
 }
 
+export interface JSONExtractBlock {
+  id: string;
+  kind: 'json_extract';
+  applied: boolean;
+  source_column: string;
+  json_path: string;
+  target_column: string;
+}
+
 export type TransformBlock =
   | CastBlock
   | FilterBlock
@@ -90,7 +99,8 @@ export type TransformBlock =
   | DropColumnsBlock
   | RenameColumnsBlock
   | NormalizeColumnsBlock
-  | HaversineDistanceBlock;
+  | HaversineDistanceBlock
+  | JSONExtractBlock;
 
 export interface TransformStack {
   source_dataset_id: string;
@@ -165,6 +175,15 @@ export function newNormalizeColumnsBlock(): NormalizeColumnsBlock {
   };
 }
 
+export function newJSONExtractBlock(): JSONExtractBlock {
+  return { id: newBlockId('json_extract'), kind: 'json_extract', applied: false, source_column: '', json_path: '$', target_column: '' };
+}
+
+export function validJSONExtractConfig(block: JSONExtractBlock): boolean {
+  return block.source_column.trim() !== '' && block.target_column.trim() !== '' &&
+    block.source_column !== block.target_column && block.json_path.trim().startsWith('$');
+}
+
 export function newHaversineDistanceBlock(): HaversineDistanceBlock {
   return {
     id: newBlockId('haversine_distance'),
@@ -193,6 +212,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Rename columns';
     case 'normalize':
       return 'Normalize column names';
+    case 'json_extract':
+      return 'JSON extract';
     case 'haversine_distance':
       return 'Haversine distance';
   }
@@ -212,6 +233,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Rename columns';
     case 'normalize':
       return 'Normalize column names';
+    case 'json_extract':
+      return 'JSON extract';
     case 'haversine_distance':
       return 'Haversine distance';
   }
@@ -336,6 +359,12 @@ export function composeTransformStackSql(stack: TransformStack): string {
         // when materialising. Carry it as a comment for the audit trail.
         sql = `SELECT * FROM ${previous} /* normalize_column_names${block.remove_special_characters ? '_strict' : ''} */`;
         ctes.push(`${cte} AS (${sql})`);
+        previous = cte;
+        return;
+      }
+      case 'json_extract': {
+        if (!validJSONExtractConfig(block)) break;
+        ctes.push(`${cte} AS (SELECT * FROM ${previous} /* json_extract: see structured stack config */)`);
         previous = cte;
         return;
       }

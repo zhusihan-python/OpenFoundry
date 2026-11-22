@@ -12,6 +12,7 @@ import {
   newCastBlock,
   newDropColumnsBlock,
   newFilterBlock,
+  newJSONExtractBlock,
   newHaversineDistanceBlock,
   newNormalizeColumnsBlock,
   newRenameColumnsBlock,
@@ -21,11 +22,13 @@ import {
   type FilterBlock,
   type FilterCondition,
   type HaversineDistanceBlock,
+  type JSONExtractBlock,
   type NormalizeColumnsBlock,
   type RenameColumnsBlock,
   type SelectColumnsBlock,
   type TransformBlock,
   type TransformStack,
+  validJSONExtractConfig,
 } from './transformStack';
 
 interface TransformStackEditorProps {
@@ -52,6 +55,7 @@ const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   rename: () => newRenameColumnsBlock(),
   normalize_columns: () => newNormalizeColumnsBlock(),
   haversine_distance: () => newHaversineDistanceBlock(),
+  json_extract: () => newJSONExtractBlock(),
 };
 
 const FALLBACK_ADD_BLOCK_OPTIONS: AddBlockOption[] = [
@@ -100,7 +104,9 @@ export function TransformStackEditor({ open, stack, schema = [], onClose, onAppl
     };
   }, [open]);
 
-  const allApplied = useMemo(() => Boolean(draft && draft.blocks.every((block) => block.applied)), [draft]);
+  const alreadySaved = useMemo(() => Boolean(draft &&
+    draft.blocks.every((block) => block.applied) && JSON.stringify(draft) === JSON.stringify(stack)
+  ), [draft, stack]);
   const addBlockOptions = useMemo<AddBlockOption[]>(() => {
     const stackEntries = catalogEntries.filter((entry) => entry.builder_surface === 'transform_stack');
     if (stackEntries.length === 0) return FALLBACK_ADD_BLOCK_OPTIONS;
@@ -147,6 +153,9 @@ export function TransformStackEditor({ open, stack, schema = [], onClose, onAppl
     setSearch('');
     setShowSearchMenu(false);
   }
+
+  const cannotApplyAll = alreadySaved || draft.blocks.length === 0 ||
+    draft.blocks.some((block) => block.kind === 'json_extract' && !validJSONExtractConfig(block));
 
   function applyAll() {
     if (!draft) return;
@@ -241,7 +250,7 @@ export function TransformStackEditor({ open, stack, schema = [], onClose, onAppl
           <button
             type="button"
             onClick={applyAll}
-            disabled={allApplied || draft.blocks.length === 0}
+            disabled={cannotApplyAll}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -253,8 +262,8 @@ export function TransformStackEditor({ open, stack, schema = [], onClose, onAppl
               color: '#fff',
               fontSize: 13,
               fontWeight: 600,
-              cursor: allApplied || draft.blocks.length === 0 ? 'not-allowed' : 'pointer',
-              opacity: allApplied || draft.blocks.length === 0 ? 0.55 : 1,
+              cursor: cannotApplyAll ? 'not-allowed' : 'pointer',
+              opacity: cannotApplyAll ? 0.55 : 1,
             }}
           >
             <Glyph name="check" size={13} tone="#fff" />
@@ -461,6 +470,9 @@ function BlockCard({
         {block.kind === 'normalize' ? (
           <NormalizeBody block={block} onPatch={(patch) => onPatch(patch)} />
         ) : null}
+        {block.kind === 'json_extract' ? (
+          <JSONExtractBody block={block} schema={schema} onPatch={(patch) => onPatch({ ...patch, applied: false })} />
+        ) : null}
         {block.kind === 'haversine_distance' ? (
           <HaversineBody block={block} schema={schema} onPatch={(patch) => onPatch(patch)} />
         ) : null}
@@ -471,7 +483,7 @@ function BlockCard({
           <button
             type="button"
             onClick={onApply}
-            disabled={block.applied}
+            disabled={block.applied || (block.kind === 'json_extract' && !validJSONExtractConfig(block))}
             style={{
               padding: '6px 12px',
               border: 0,
@@ -842,12 +854,40 @@ function HaversineBody({
   );
 }
 
-function ColumnInput({ value, onChange, schema }: { value: string; onChange: (value: string) => void; schema: string[] }) {
+function JSONExtractBody({
+  block,
+  schema,
+  onPatch,
+}: {
+  block: JSONExtractBlock;
+  schema: string[];
+  onPatch: (patch: Partial<JSONExtractBlock>) => void;
+}) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 8, alignItems: 'center' }}>
+      <span className="of-text-muted" style={{ fontSize: 12 }}>JSON column</span>
+      <ColumnInput label="JSON column" value={block.source_column} schema={schema}
+        onChange={(source_column) => onPatch({ source_column })} />
+      <label htmlFor={`json-path-${block.id}`}>JSON path</label>
+      <input id={`json-path-${block.id}`} value={block.json_path} placeholder="$.items[0].name"
+        onChange={(event) => onPatch({ json_path: event.target.value })} style={inputStyle()} />
+      <label htmlFor={`json-target-${block.id}`}>New column</label>
+      <input id={`json-target-${block.id}`} value={block.target_column}
+        onChange={(event) => onPatch({ target_column: event.target.value })} style={inputStyle()} />
+      <p className="of-text-muted" style={{ gridColumn: '1 / -1', fontSize: 12 }}>
+        Extracts one value as text. Missing values become null.
+      </p>
+    </div>
+  );
+}
+
+function ColumnInput({ value, onChange, schema, label }: { value: string; onChange: (value: string) => void; schema: string[]; label?: string }) {
   const datalistId = useMemo(() => `column-list-${Math.random().toString(36).slice(2, 8)}`, []);
   return (
     <span style={{ display: 'inline-flex', flex: 1 }}>
       <input
         list={datalistId}
+        aria-label={label}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="Column"
@@ -874,6 +914,8 @@ function blockAccent(kind: TransformBlock['kind']): string {
       return '#9a5b00';
     case 'normalize':
       return '#7c5dd6';
+    case 'json_extract':
+      return '#2563eb';
     case 'haversine_distance':
       return '#047857';
   }
