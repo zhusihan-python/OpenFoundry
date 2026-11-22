@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/models"
 )
 
 func TestPreviewPipelineNodeRunsUpstreamChain(t *testing.T) {
@@ -195,4 +200,139 @@ func requestWithPreviewURLParams(method string, target string, body io.Reader, p
 	rctx.URLParams.Add("id", pipelineID)
 	rctx.URLParams.Add("node_id", nodeID)
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
+// routingDatasetRowSource routes each dataset read to a per-RID source and
+// records every request, so one preview chain can serve distinct pinned
+// datasets while the test observes the bounds the runtime actually used.
+type routingDatasetRowSource struct {
+	byRID map[string]PipelineDatasetRowSource
+	calls []DatasetRowsRequest
+}
+
+func (r *routingDatasetRowSource) ReadDatasetRows(ctx context.Context, req DatasetRowsRequest) (DatasetRowsResult, error) {
+	r.calls = append(r.calls, req)
+	source, ok := r.byRID[req.DatasetRID]
+	if !ok {
+		return DatasetRowsResult{}, fmt.Errorf("unexpected dataset %s", req.DatasetRID)
+	}
+	return source.ReadDatasetRows(ctx, req)
+}
+
+func TestJoinPreviewShortSampleReadsBuildInputsAndLimitsDisplay(t *testing.T) {
+	// Orders and refunds pinned to snapshots. The refunds file lists the
+	// early orders' matches last, so sampling the inputs at the display size
+	// would corrupt the joined prefix — and a pinned read at the sample bound
+	// fails outright (pinned reads never truncate).
+	orders := [][]byte{
+		[]byte(`{"order_id":"O-1"}`),
+		[]byte(`{"order_id":"O-2"}`),
+		[]byte(`{"order_id":"O-3"}`),
+		[]byte(`{"order_id":"O-4"}`),
+		[]byte(`{"order_id":"O-5"}`),
+	}
+	refunds := [][]byte{
+		[]byte(`{"order_id":"O-4","reason":"late"}`),
+		[]byte(`{"order_id":"O-4","reason":"wrong item"}`),
+		[]byte(`{"order_id":"O-5","reason":"partial"}`),
+		[]byte(`{"order_id":"O-1","reason":"damaged"}`),
+	}
+	ordersServer := newSnapshotTestServer(t, orders)
+	refundsServer := newSnapshotTestServer(t, refunds)
+	ordersID, refundsID := uuid.NewString(), uuid.NewString()
+	source := &routingDatasetRowSource{byRID: map[string]PipelineDatasetRowSource{
+		ordersID: DatasetServiceRowReader{BaseURL: ordersServer.server.URL},
+		refundsID: DatasetServiceRowReader{BaseURL: refundsServer.server.URL},
+	}}
+
+	pinnedInput := func(datasetID string) models.PipelineNode {
+		return models.PipelineNode{
+			ID:            datasetID,
+			TransformType: "dataset_input",
+			Config:        json.RawMessage(`{"dataset_id":"` + datasetID + `","dataset_snapshot":` + validSnapshot + `}`),
+		}
+	}
+	nodes := []models.PipelineNode{
+		pinnedInput(ordersID),
+		pinnedInput(refundsID),
+		{ID: "link", TransformType: "sql", DependsOn: []string{ordersID, refundsID}, Config: json.RawMessage(
+			`{"_join":{"join_type":"left","auto_select_right":true,"matches":[{"left_column":"order_id","right_column":"order_id"}],"right_prefix":"refund_"}}`)},
+		{ID: "output", TransformType: "output_dataset", DependsOn: []string{"link"}},
+	}
+
+	response, err := executeLocalPipelinePreviewWithPorts(callerCtx(), uuid.New(), "output", nodes, 3, ExecutionPorts{DatasetRows: source})
+	require.NoError(t, err)
+	require.Nil(t, response.Error)
+
+	// Inputs were read with the build bounds, not the display sample.
+	require.Len(t, source.calls, 2)
+	for _, call := range source.calls {
+		require.NotNil(t, call.Snapshot)
+		assert.Equal(t, maxDatasetInputRows, call.Limit)
+		assert.False(t, call.AllowTruncation)
+	}
+
+	// The display sample is the prefix of the fully joined result.
+	require.Len(t, response.Rows, 3)
+	assert.JSONEq(t, `"O-1"`, string(response.Rows[0]["order_id"]))
+	assert.JSONEq(t, `"O-1"`, string(response.Rows[0]["refund_order_id"]))
+	assert.JSONEq(t, `"damaged"`, string(response.Rows[0]["refund_reason"]))
+	assert.JSONEq(t, `null`, string(response.Rows[1]["refund_reason"]))
+	assert.JSONEq(t, `null`, string(response.Rows[2]["refund_reason"]))
+}
+
+func TestPreviewPipelineNodeRejectsJoinDuplicateColumns(t *testing.T) {
+	restore := SetPipelineAuthoringRepository(nil)
+	defer restore()
+
+	pipelineID := "33333333-3333-3333-3333-333333333333"
+	body := []byte(`{
+		"sample_size": 20,
+		"nodes": [
+			{
+				"id": "orders",
+				"label": "Orders",
+				"transform_type": "external",
+				"config": {"rows": [{"order_id": "O-1", "customer": "ann"}]}
+			},
+			{
+				"id": "refunds",
+				"label": "Refunds",
+				"transform_type": "external",
+				"config": {"rows": [{"order_id": "O-1", "reason": "late"}]}
+			},
+			{
+				"id": "link",
+				"label": "Link refunds",
+				"transform_type": "sql",
+				"depends_on": ["orders", "refunds"],
+				"config": {
+					"_join": {
+						"join_type": "left",
+						"auto_select_right": true,
+						"matches": [{"left_column": "order_id", "right_column": "order_id"}]
+					}
+				}
+			},
+			{
+				"id": "output",
+				"label": "Joined output",
+				"transform_type": "output_dataset",
+				"depends_on": ["link"]
+			}
+		]
+	}`)
+	req := requestWithPreviewURLParams(http.MethodPost, "/api/v1/pipelines/"+pipelineID+"/nodes/output/preview", bytes.NewReader(body), pipelineID, "output")
+	rr := httptest.NewRecorder()
+	PreviewPipelineNode(rr, req)
+	require.Equal(t, http.StatusBadRequest, rr.Code)
+
+	var payload pipelineNodePreviewResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&payload))
+	require.False(t, payload.Fresh)
+	require.NotNil(t, payload.Error)
+	require.Equal(t, "transform_failed", payload.Error.Kind)
+	require.Equal(t, "link", payload.Error.NodeID)
+	require.Equal(t, "sql", payload.Error.Transform)
+	require.Contains(t, payload.Error.Message, `duplicate column name "order_id"`)
 }

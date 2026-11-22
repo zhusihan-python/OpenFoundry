@@ -855,6 +855,9 @@ func (rt *lightweightTableRuntime) runJoin(node executor.NodeContext, draft runt
 		return joinLeftAnti(left, right, matches, leftColumns)
 	}
 	rightColumns := selectRuntimeColumns(right, draft.RightColumns, draft.AutoSelectRight)
+	if err := rejectRuntimeJoinColumnCollision(node.Node.ID, leftColumns, rightColumns, draft.RightPrefix); err != nil {
+		return nil, err
+	}
 	out := make([]pipelineexpression.Row, 0)
 	rightMatched := make([]bool, len(right))
 	for _, lrow := range left {
@@ -1225,11 +1228,30 @@ func rowsJoinMatch(left, right pipelineexpression.Row, matches []runtimeJoinMatc
 		return true
 	}
 	for _, match := range validJoinMatches(matches) {
-		if runtimeScalarString(left[match.LeftColumn]) != runtimeScalarString(right[match.RightColumn]) {
+		leftKey, ok := joinMatchKey(left, match.LeftColumn)
+		if !ok {
+			return false
+		}
+		rightKey, ok := joinMatchKey(right, match.RightColumn)
+		if !ok {
+			return false
+		}
+		if runtimeScalarString(leftKey) != runtimeScalarString(rightKey) {
 			return false
 		}
 	}
 	return true
+}
+
+// joinMatchKey extracts one equality-join key. SQL semantics: a NULL or
+// missing key never matches — not even another NULL. A present empty string
+// is a real value and keeps matching.
+func joinMatchKey(row pipelineexpression.Row, column string) (json.RawMessage, bool) {
+	raw, ok := row[column]
+	if !ok || isRuntimeNullish(raw, false) {
+		return nil, false
+	}
+	return raw, true
 }
 
 func selectRuntimeColumns(rows []pipelineexpression.Row, explicit []string, auto bool) []string {
@@ -1237,6 +1259,36 @@ func selectRuntimeColumns(rows []pipelineexpression.Row, explicit []string, auto
 		return append([]string(nil), explicit...)
 	}
 	return deriveRuntimeColumns(rows)
+}
+
+// rejectRuntimeJoinColumnCollision keeps the lightweight join consistent with
+// the strict build validation (checkSchemaDuplicateFields): when the composed
+// output would name one column twice — an unprefixed right column colliding
+// with a kept left column, or a duplicate inside an explicit projection — the
+// join fails instead of silently letting the right side overwrite the left.
+func rejectRuntimeJoinColumnCollision(nodeID string, leftColumns, rightColumns []string, rightPrefix string) error {
+	prefix := strings.TrimSpace(rightPrefix)
+	seen := make(map[string]struct{}, len(leftColumns)+len(rightColumns))
+	for _, column := range leftColumns {
+		if strings.TrimSpace(column) == "" {
+			continue
+		}
+		seen[column] = struct{}{}
+	}
+	for _, column := range rightColumns {
+		target := column
+		if prefix != "" {
+			target = prefix + column
+		}
+		if strings.TrimSpace(target) == "" {
+			continue
+		}
+		if _, duplicate := seen[target]; duplicate {
+			return fmt.Errorf("lightweight_join_duplicate_column_name: node %q composes duplicate column name %q; set right_prefix or project the columns explicitly", nodeID, target)
+		}
+		seen[target] = struct{}{}
+	}
+	return nil
 }
 
 func composeRuntimeJoinRow(left, right pipelineexpression.Row, leftColumns, rightColumns []string, rightPrefix string) pipelineexpression.Row {

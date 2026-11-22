@@ -153,7 +153,7 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 	}
 	runtime := newLightweightTableRuntime(ports.Functions)
 	runtime.datasets = ports.DatasetRows
-	// Windows, anti joins and positional unions can depend on rows beyond the display
+	// Windows, joins and positional unions can depend on rows beyond the display
 	// sample. Use the bounded build inputs before limiting the final result.
 	sampleInputs := !previewChainRequiresBuildInputs(chain)
 	runtime.datasetRowsPreview = sampleInputs
@@ -243,10 +243,16 @@ func previewChainRequiresBuildInputs(chain []models.PipelineNode) bool {
 			continue
 		}
 		if cfg.Stack == nil {
-			if cfg.Join != nil && strings.EqualFold(strings.TrimSpace(cfg.Join.JoinType), runtimeJoinLeftAnti) {
+			// Every relational join (_join, anti included) derives its output
+			// rows from the complete input relations — matches and fan-out can
+			// pair rows far beyond the display sample, and pinned dataset
+			// reads never truncate. Pushing the sample size into the inputs
+			// would both corrupt the joined prefix and fail pinned reads, so
+			// join chains read the bounded build inputs like a real run.
+			if cfg.Join != nil {
 				return true
 			}
-			if cfg.Join == nil && cfg.GeoJoin == nil && cfg.Union.byPosition() {
+			if cfg.GeoJoin == nil && cfg.Union.byPosition() {
 				return true
 			}
 			continue
