@@ -32,3 +32,6 @@ Point、LineString 和 Polygon，以及列中以字符串承载的上述 GeoJSON
 
 [WP5.1 盘点快照](data-integration-wp5-1-expression-inventory.md)
 保留实现前的观察。WP5.3 后续核对原有函数的 null、数值和类型语义。
+
+当前 20 个函数的候选清单与待裁定的兼容性口径见
+[WP5.5 冻结评审](data-integration-wp5-5-expression-review.md)。
