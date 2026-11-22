@@ -75,6 +75,7 @@ const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   normalize_units: () => newNormalizeUnitsBlock(),
   haversine_distance: () => newHaversineDistanceBlock(),
   formula: newFormulaBlock,
+  derive_column: () => newFormulaBlock('derive_column'),
   aggregate: () => newAggregateBlock(),
   csv_parse: () => newCSVParseBlock(),
   explode: () => newExplodeBlock(),
@@ -497,7 +498,7 @@ function BlockCard({
           <NormalizeUnitsBody block={block} schema={schema} catalogEntry={catalogEntry}
             onPatch={(patch) => onPatch({ ...patch, applied: false })} />
         ) : null}
-        {block.kind === 'formula' && (
+        {(block.kind === 'formula' || block.kind === 'derive_column') && (
           <div style={{ display: 'grid', gap: 8 }}>
             <label>
               Expression
@@ -505,7 +506,7 @@ function BlockCard({
                 onChange={(event) => onPatch({ expression: event.target.value, applied: false })} />
             </label>
             <label>
-              Target column
+              {block.kind === 'derive_column' ? 'New column' : 'Target column'}
               <input className="of-input" value={block.target_column} placeholder="distance_km"
                 onChange={(event) => onPatch({ target_column: event.target.value, applied: false })} />
             </label>
@@ -1151,6 +1152,7 @@ function blockAccent(kind: TransformBlock['kind']): string {
     case 'normalize_units':
       return '#7c5dd6';
     case 'formula':
+    case 'derive_column':
     case 'aggregate':
     case 'csv_parse':
     case 'explode':
@@ -1167,6 +1169,7 @@ function hasInvalidConfig(block: TransformBlock): boolean {
     case 'normalize_units':
       return !validNormalizeUnitsConfig(block);
     case 'formula':
+    case 'derive_column':
       return !validFormulaConfig(block);
     case 'aggregate':
       return !validAggregateConfig(block);

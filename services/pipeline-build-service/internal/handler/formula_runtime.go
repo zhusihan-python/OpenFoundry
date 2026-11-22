@@ -9,6 +9,10 @@ import (
 	pe "github.com/openfoundry/openfoundry-go/libs/pipeline-expression"
 )
 
+func derivesNewColumn(block runtimeTransformBlock) bool {
+	return strings.EqualFold(strings.TrimSpace(block.Kind), "derive_column")
+}
+
 func compileFormula(block runtimeTransformBlock) (string, pe.Expr, error) {
 	target := strings.TrimSpace(block.TargetColumn)
 	if target == "" {
@@ -33,8 +37,14 @@ func applyRuntimeFormulaBlock(rows []pe.Row, block runtimeTransformBlock) ([]pe.
 	if err != nil {
 		return nil, err
 	}
+	newOnly := derivesNewColumn(block)
 	out := make([]pe.Row, 0, len(rows))
 	for index, row := range rows {
+		if newOnly {
+			if _, exists := row[target]; exists {
+				return nil, fmt.Errorf("derived column target %q already exists in row %d", target, index+1)
+			}
+		}
 		if expression.Kind == pe.ExprColumn {
 			raw := bytes.TrimSpace(row[expression.Name])
 			if len(raw) > 0 && (raw[0] == '[' || raw[0] == '{') {
@@ -54,12 +64,23 @@ func applyRuntimeFormulaBlock(rows []pe.Row, block runtimeTransformBlock) ([]pe.
 
 func applyFormulaSchema(nodeID string, schema pipelineStrictSchema, block runtimeTransformBlock, report *pipelineStrictValidationReport) pipelineStrictSchema {
 	target, expression, err := compileFormula(block)
+	newOnly := derivesNewColumn(block)
 	if err != nil {
-		report.addError(nodeID, nil, "invalid_formula", err.Error())
+		code := "invalid_formula"
+		if newOnly {
+			code = "invalid_derive_column"
+		}
+		report.addError(nodeID, nil, code, err.Error())
 		return schema
 	}
 	if !schema.Known {
 		return schema
+	}
+	if newOnly {
+		if _, exists := schema.field(target); exists {
+			report.addError(nodeID, strPtr(target), "duplicate_column_name", fmt.Sprintf("derived column target %q already exists in upstream schema", target))
+			return schema
+		}
 	}
 	result, typeErrors := pe.InferExpr(expression, schemaToColumnEnv(schema))
 	for _, typeErr := range typeErrors {

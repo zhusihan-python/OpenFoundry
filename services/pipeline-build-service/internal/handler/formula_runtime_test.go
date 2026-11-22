@@ -76,3 +76,44 @@ func TestRuntimeFormulaInfersOutputAndRejectsInvalidTypes(t *testing.T) {
 	require.Len(t, report.Errors, 1)
 	require.Equal(t, "missing_column", report.Errors[0].Code)
 }
+
+func TestRuntimeDeriveColumnAppendsAndRejectsSparseCollision(t *testing.T) {
+	first := pe.Row{"n": json.RawMessage("6")}
+	second := pe.Row{"n": json.RawMessage("7"), "derived": json.RawMessage("null")}
+	block := runtimeTransformBlock{Kind: "derive_column", TargetColumn: " derived ", Expression: "n + 1"}
+	out, err := applyRuntimeFormulaBlock([]pe.Row{first}, block)
+	require.NoError(t, err)
+	require.Equal(t, []pe.Row{{"n": json.RawMessage("6"), "derived": json.RawMessage("7")}}, out)
+	require.NotContains(t, first, "derived")
+
+	out, err = applyRuntimeFormulaBlock([]pe.Row{first, second}, block)
+	require.ErrorContains(t, err, `derived column target "derived" already exists in row 2`)
+	require.Nil(t, out)
+	require.NotContains(t, first, "derived")
+	require.Equal(t, "null", string(second["derived"]))
+
+	block.Kind = "formula"
+	out, err = applyRuntimeFormulaBlock([]pe.Row{first, second}, block)
+	require.NoError(t, err)
+	require.Equal(t, "8", string(out[1]["derived"]))
+}
+
+func TestRuntimeDeriveColumnSchemaRejectsKnownCollisionAndAllowsAppend(t *testing.T) {
+	input := pipelineStrictSchema{Known: true, Fields: []pipelineStrictValidationField{{Name: "n", FieldType: "LONG"}}}
+	block := runtimeTransformBlock{Kind: "derive_column", TargetColumn: "n", Expression: "n + 1"}
+
+	var rejected pipelineStrictValidationReport
+	require.Equal(t, input, applyFormulaSchema("derived", input, block, &rejected))
+	require.Len(t, rejected.Errors, 1)
+	require.Equal(t, "duplicate_column_name", rejected.Errors[0].Code)
+
+	block.TargetColumn = "next_n"
+	var accepted pipelineStrictValidationReport
+	out := applyFormulaSchema("derived", input, block, &accepted)
+	require.Empty(t, accepted.Errors)
+	require.Equal(t, []pipelineStrictValidationField{
+		{Name: "n", FieldType: "LONG"},
+		{Name: "next_n", FieldType: "LONG", Nullable: true},
+	}, out.Fields)
+	require.Len(t, input.Fields, 1)
+}
