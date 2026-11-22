@@ -99,6 +99,16 @@ export interface SortRowsBlock {
   sort_keys: Array<{ column: string; direction: 'asc' | 'desc' }>;
 }
 
+export interface NormalizeUnitsBlock {
+  id: string;
+  kind: 'normalize_units';
+  applied: boolean;
+  source_column: string;
+  source_unit: string;
+  target_unit: string;
+  target_column: string;
+}
+
 export type TransformBlock =
   | CastBlock
   | FilterBlock
@@ -108,7 +118,8 @@ export type TransformBlock =
   | NormalizeColumnsBlock
   | HaversineDistanceBlock
   | JSONExtractBlock
-  | SortRowsBlock;
+  | SortRowsBlock
+  | NormalizeUnitsBlock;
 
 export interface TransformStack {
   source_dataset_id: string;
@@ -201,6 +212,22 @@ export function validSortKeys(keys: SortRowsBlock['sort_keys']): boolean {
     new Set(keys.map((key) => key.column)).size === keys.length;
 }
 
+export function newNormalizeUnitsBlock(): NormalizeUnitsBlock {
+  return {
+    id: newBlockId('normalize_units'),
+    kind: 'normalize_units',
+    applied: false,
+    source_column: '',
+    source_unit: '',
+    target_unit: '',
+    target_column: '',
+  };
+}
+
+export function validNormalizeUnitsConfig(block: NormalizeUnitsBlock): boolean {
+  return Boolean(block.source_column.trim() && block.source_unit.trim() && block.target_unit.trim());
+}
+
 export function newHaversineDistanceBlock(): HaversineDistanceBlock {
   return {
     id: newBlockId('haversine_distance'),
@@ -229,6 +256,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Rename columns';
     case 'normalize':
       return 'Normalize column names';
+    case 'normalize_units':
+      return 'Normalize units';
     case 'json_extract':
       return 'JSON extract';
     case 'sort':
@@ -252,6 +281,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Rename columns';
     case 'normalize':
       return 'Normalize column names';
+    case 'normalize_units':
+      return 'Normalize units';
     case 'json_extract':
       return 'JSON extract';
     case 'sort':
@@ -380,6 +411,12 @@ export function composeTransformStackSql(stack: TransformStack): string {
         // when materialising. Carry it as a comment for the audit trail.
         sql = `SELECT * FROM ${previous} /* normalize_column_names${block.remove_special_characters ? '_strict' : ''} */`;
         ctes.push(`${cte} AS (${sql})`);
+        previous = cte;
+        return;
+      }
+      case 'normalize_units': {
+        if (!validNormalizeUnitsConfig(block)) break;
+        ctes.push(`${cte} AS (SELECT * FROM ${previous} /* normalize_units: see structured stack config */)`);
         previous = cte;
         return;
       }

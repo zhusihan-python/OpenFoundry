@@ -481,6 +481,8 @@ func validateTransformStack(nodeID string, stack runtimeTransformStack, schema p
 					}
 				}
 			}
+		case "normalize_units":
+			out = applyNormalizeUnitsSchema(nodeID, out, block, report)
 		case "normalize":
 			out = applyNormalizeSchema(nodeID, out, block.RemoveSpecialCharacters, report)
 		case "json_extract":

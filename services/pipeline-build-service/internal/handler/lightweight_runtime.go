@@ -110,6 +110,8 @@ type runtimeTransformBlock struct {
 	Lat2Column              string                    `json:"lat2_column,omitempty"`
 	Lon2Column              string                    `json:"lon2_column,omitempty"`
 	Unit                    string                    `json:"unit,omitempty"`
+	SourceUnit              string                    `json:"source_unit,omitempty"`
+	TargetUnit              string                    `json:"target_unit,omitempty"`
 	Mode                    string                    `json:"mode,omitempty"`
 	Match                   string                    `json:"match,omitempty"`
 	Conditions              []runtimeFilterCondition  `json:"conditions,omitempty"`
@@ -623,6 +625,8 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 			out = applyRuntimeRenameBlock(out, block.Renames)
 		case "sort":
 			out, err = applyRuntimeSortBlock(out, block.SortKeys)
+		case "normalize_units":
+			out, err = applyRuntimeNormalizeUnitsBlock(out, block)
 		case "normalize":
 			out = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters)
 		case "json_extract":
