@@ -367,7 +367,7 @@ func transformCatalogNormalizeUnits(docs []string) pipelineTransformCatalogEntry
 }
 
 func transformCatalogSort(docs []string) pipelineTransformCatalogEntry {
-	entry := baseTransformCatalogEntry("sort", "Sort rows", "Order rows by one or more columns.", "row_filtering", "stack_block", "transform_stack", "planned", "catalog_only", "sort", docs)
+	entry := baseTransformCatalogEntry("sort", "Sort rows", "Order rows by one or more columns, with nulls last.", "row_filtering", "stack_block", "transform_stack", "available", "lightweight_table", "sort", docs)
 	entry.Tags = []string{"order", "rows"}
 	entry.DefaultConfig = map[string]any{"kind": "sort", "applied": false, "sort_keys": []map[string]string{{"column": "", "direction": "asc"}}}
 	entry.Form.Fields = []pipelineTransformCatalogField{{Name: "sort_keys", Label: "Sort keys", FieldType: "sort_keys", Required: true, Repeated: true}}

@@ -83,6 +83,13 @@ export interface HaversineDistanceBlock {
   target_column: string;
 }
 
+export interface SortRowsBlock {
+  id: string;
+  kind: 'sort';
+  applied: boolean;
+  sort_keys: Array<{ column: string; direction: 'asc' | 'desc' }>;
+}
+
 export type TransformBlock =
   | CastBlock
   | FilterBlock
@@ -90,7 +97,8 @@ export type TransformBlock =
   | DropColumnsBlock
   | RenameColumnsBlock
   | NormalizeColumnsBlock
-  | HaversineDistanceBlock;
+  | HaversineDistanceBlock
+  | SortRowsBlock;
 
 export interface TransformStack {
   source_dataset_id: string;
@@ -165,6 +173,15 @@ export function newNormalizeColumnsBlock(): NormalizeColumnsBlock {
   };
 }
 
+export function newSortRowsBlock(): SortRowsBlock {
+  return { id: newBlockId('sort'), kind: 'sort', applied: false, sort_keys: [{ column: '', direction: 'asc' }] };
+}
+
+export function validSortKeys(keys: SortRowsBlock['sort_keys']): boolean {
+  return keys.length > 0 && keys.every((key) => key.column.trim() !== '') &&
+    new Set(keys.map((key) => key.column)).size === keys.length;
+}
+
 export function newHaversineDistanceBlock(): HaversineDistanceBlock {
   return {
     id: newBlockId('haversine_distance'),
@@ -193,6 +210,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Rename columns';
     case 'normalize':
       return 'Normalize column names';
+    case 'sort':
+      return 'Sort rows';
     case 'haversine_distance':
       return 'Haversine distance';
   }
@@ -212,6 +231,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Rename columns';
     case 'normalize':
       return 'Normalize column names';
+    case 'sort':
+      return 'Sort rows';
     case 'haversine_distance':
       return 'Haversine distance';
   }
@@ -336,6 +357,14 @@ export function composeTransformStackSql(stack: TransformStack): string {
         // when materialising. Carry it as a comment for the audit trail.
         sql = `SELECT * FROM ${previous} /* normalize_column_names${block.remove_special_characters ? '_strict' : ''} */`;
         ctes.push(`${cte} AS (${sql})`);
+        previous = cte;
+        return;
+      }
+      case 'sort': {
+        if (!validSortKeys(block.sort_keys)) break;
+        const order = block.sort_keys.map(({ column, direction }) =>
+          `${quoteIdent(column)} ${direction === 'desc' ? 'DESC' : 'ASC'} NULLS LAST`).join(', ');
+        ctes.push(`${cte} AS (SELECT * FROM ${previous} ORDER BY ${order})`);
         previous = cte;
         return;
       }
