@@ -42,6 +42,12 @@ import { OutputDrawer, type OutputDraft } from '@/lib/components/pipeline/Output
 import { DeployDrawer } from '@/lib/components/pipeline/DeployDrawer';
 import { previewDataset, type Dataset } from '@/lib/api/datasets';
 
+import { usePipelineAuthoringAccess } from './usePipelineAuthoringAccess';
+
+const EDITOR_TABS = ['canvas', 'nodes', 'config', 'runs', 'history', 'validate'] as const;
+const VIEWER_TABS = ['canvas', 'runs', 'history'] as const;
+type PipelineTab = (typeof EDITOR_TABS)[number];
+
 function parseJson<T>(value: string, fallback: T): T {
   try {
     return JSON.parse(value) as T;
@@ -72,12 +78,15 @@ function isPipelineObjectOutput(node?: PipelineNode): node is PipelineNode {
 }
 
 export function PipelineEditPage() {
+  const { canEdit } = usePipelineAuthoringAccess();
   const { id = '', runId } = useParams<{ id: string; runId?: string }>();
   const [pipeline, setPipeline] = useState<Pipeline | null>(null);
   const [runs, setRuns] = useState<PipelineRun[]>([]);
   const [versions, setVersions] = useState<PipelineVersion[]>([]);
   const [validation, setValidation] = useState<PipelineValidationResponse | null>(null);
-  const [tab, setTab] = useState<'canvas' | 'nodes' | 'config' | 'runs' | 'history' | 'validate'>(runId ? 'runs' : 'canvas');
+  const [activeTab, setTab] = useState<PipelineTab>(runId ? 'runs' : 'canvas');
+  const tabs: readonly PipelineTab[] = canEdit ? EDITOR_TABS : VIEWER_TABS;
+  const tab = tabs.includes(activeTab) ? activeTab : 'canvas';
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -681,7 +690,7 @@ export function PipelineEditPage() {
     }
   }
 
-  const parsedDAG = currentDAG();
+  const parsedDAG = canEdit ? currentDAG() : pipeline?.dag ?? [];
   const parsedNodes = pipelineNodesFromDAG(parsedDAG);
   const selectedPreviewNode = selectedNodeId ? (parsedNodes.find((node) => node.id === selectedNodeId) ?? null) : null;
   const highlightedRun = runId ? runs.find((run) => run.id === runId) : null;
@@ -742,44 +751,48 @@ export function PipelineEditPage() {
           }}
         >
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <select value={statusValue} onChange={(event) => setStatusValue(event.target.value)} className="of-select" style={{ width: 120 }}>
-              <option value="draft">draft</option>
-              <option value="active">active</option>
-              <option value="paused">paused</option>
-              <option value="archived">archived</option>
-            </select>
+            {canEdit && (
+              <select value={statusValue} onChange={(event) => setStatusValue(event.target.value)} className="of-select" style={{ width: 120 }}>
+                <option value="draft">draft</option>
+                <option value="active">active</option>
+                <option value="paused">paused</option>
+                <option value="archived">archived</option>
+              </select>
+            )}
             <span className="of-text-muted" style={{ alignSelf: 'center', fontSize: 11 }}>
               {runs.length} run{runs.length === 1 ? '' : 's'} | {versions.length} version{versions.length === 1 ? '' : 's'}
             </span>
           </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <button type="button" onClick={() => setAipOpen(true)} disabled={aipBusy} className="of-button">
-              <Glyph name="sparkles" size={12} /> AIP Generate
-            </button>
-            <button type="button" onClick={() => void runValidate()} disabled={busy} className="of-button">
-              Validate
-            </button>
-            <button type="button" onClick={() => void openProposal()} disabled={historyBusy} className="of-button">
-              Open proposal
-            </button>
-            <button type="button" onClick={() => void publishDraft()} disabled={historyBusy} className="of-button">
-              Publish draft
-            </button>
-            <button type="button" onClick={() => void runNow()} disabled={busy} className="of-button">
-              Run now
-            </button>
-            <button type="button" onClick={() => void save()} disabled={saving} className="of-button of-button--primary">
-              {saving ? 'Saving...' : 'Save'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setDeployOpen(true)}
-              className="of-button"
-              style={{ borderColor: '#15803d', color: '#15803d', fontWeight: 600 }}
-            >
-              Deploy
-            </button>
-          </div>
+          {canEdit && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setAipOpen(true)} disabled={aipBusy} className="of-button">
+                <Glyph name="sparkles" size={12} /> AIP Generate
+              </button>
+              <button type="button" onClick={() => void runValidate()} disabled={busy} className="of-button">
+                Validate
+              </button>
+              <button type="button" onClick={() => void openProposal()} disabled={historyBusy} className="of-button">
+                Open proposal
+              </button>
+              <button type="button" onClick={() => void publishDraft()} disabled={historyBusy} className="of-button">
+                Publish draft
+              </button>
+              <button type="button" onClick={() => void runNow()} disabled={busy} className="of-button">
+                Run now
+              </button>
+              <button type="button" onClick={() => void save()} disabled={saving} className="of-button of-button--primary">
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeployOpen(true)}
+                className="of-button"
+                style={{ borderColor: '#15803d', color: '#15803d', fontWeight: 600 }}
+              >
+                Deploy
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -799,13 +812,14 @@ export function PipelineEditPage() {
       )}
 
       <section className="of-panel" style={{ overflow: 'hidden' }}>
-        <Tabs tabs={['canvas', 'nodes', 'config', 'runs', 'history', 'validate'] as const} active={tab} onChange={setTab} />
+        <Tabs tabs={tabs} active={tab} onChange={setTab} />
 
         <div style={{ padding: tab === 'canvas' ? 0 : 10 }}>
           {tab === 'canvas' && (
             <div style={{ position: 'relative' }}>
               <PipelineCanvas
                 nodes={parsedNodes}
+                readOnly={!canEdit}
                 status={statusValue}
                 scheduleConfig={parseJson(scheduleJson, { enabled: false, cron: null })}
                 onChange={(next) => setPipelineNodes(next)}
@@ -815,11 +829,16 @@ export function PipelineEditPage() {
                 onAddOutput={(source, kind) => handleAddOutput(source, kind)}
                 onSelect={(node) => setSelectedNodeId(node?.id ?? null)}
               />
-              {isPipelineEmpty(parsedNodes) ? (
+              {canEdit && isPipelineEmpty(parsedNodes) ? (
                 <PipelineWelcomePanel onAddFoundryData={() => setAddDataOpen(true)} />
               ) : null}
-              <NodePreviewPanel pipelineId={pipeline.id} node={selectedPreviewNode} draftDag={parsedDAG} draftKey={nodesJson} />
-              {aipOpen && (
+              <NodePreviewPanel
+                pipelineId={pipeline.id}
+                node={selectedPreviewNode}
+                draftDag={canEdit ? parsedDAG : undefined}
+                draftKey={canEdit ? nodesJson : undefined}
+              />
+              {canEdit && aipOpen && (
                 <PipelineAIPGeneratePanel
                   prompt={aipPrompt}
                   busy={aipBusy}
@@ -908,9 +927,12 @@ export function PipelineEditPage() {
                     <td>{run.trigger_type}</td>
                     <td>{new Date(run.started_at).toLocaleString()}</td>
                     <td style={{ textAlign: 'right' }}>
-                      <button type="button" onClick={() => void retryRun(run.id)} disabled={busy} className="of-button" style={{ fontSize: 11 }}>
-                        Retry
-                      </button>
+                      <Link to={`/pipelines/${pipeline.id}/runs/${run.id}`} className="of-link">Details</Link>
+                      {canEdit && (
+                        <button type="button" onClick={() => void retryRun(run.id)} disabled={busy} className="of-button" style={{ fontSize: 11 }}>
+                          Retry
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -937,9 +959,11 @@ export function PipelineEditPage() {
                   <button type="button" onClick={() => void loadVersions()} disabled={historyBusy} className="of-button">
                     Refresh
                   </button>
-                  <button type="button" onClick={() => void publishDraft()} disabled={historyBusy} className="of-button of-button--primary">
-                    Publish draft
-                  </button>
+                  {canEdit && (
+                    <button type="button" onClick={() => void publishDraft()} disabled={historyBusy} className="of-button of-button--primary">
+                      Publish draft
+                    </button>
+                  )}
                 </div>
               </div>
               <table className="of-table">
@@ -975,26 +999,28 @@ export function PipelineEditPage() {
                       </td>
                       <td>{new Date(version.created_at).toLocaleString()}</td>
                       <td style={{ textAlign: 'right' }}>
-                        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                          <button
-                            type="button"
-                            onClick={() => void restoreVersion(version, true)}
-                            disabled={historyBusy}
-                            className="of-button"
-                            style={{ fontSize: 11 }}
-                          >
-                            Restore draft
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void restoreVersion(version, false)}
-                            disabled={historyBusy}
-                            className="of-button"
-                            style={{ fontSize: 11 }}
-                          >
-                            Restore + publish
-                          </button>
-                        </div>
+                        {canEdit && (
+                          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              onClick={() => void restoreVersion(version, true)}
+                              disabled={historyBusy}
+                              className="of-button"
+                              style={{ fontSize: 11 }}
+                            >
+                              Restore draft
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void restoreVersion(version, false)}
+                              disabled={historyBusy}
+                              className="of-button"
+                              style={{ fontSize: 11 }}
+                            >
+                              Restore + publish
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1033,74 +1059,78 @@ export function PipelineEditPage() {
         </div>
       </section>
 
-      <AddFoundryDataDialog
-        open={addDataOpen}
-        onClose={() => setAddDataOpen(false)}
-        onAdd={handleAddDatasets}
-      />
+      {canEdit && (
+        <>
+          <AddFoundryDataDialog
+            open={addDataOpen}
+            onClose={() => setAddDataOpen(false)}
+            onAdd={handleAddDatasets}
+          />
 
-      <TransformStackEditor
-        open={Boolean(transformStack)}
-        stack={transformStack}
-        onClose={() => {
-          setTransformStack(null);
-          setTransformOriginNodeId(null);
-          setTransformEditingNodeId(null);
-        }}
-        onApplyAll={handleApplyTransformStack}
-      />
+          <TransformStackEditor
+            open={Boolean(transformStack)}
+            stack={transformStack}
+            onClose={() => {
+              setTransformStack(null);
+              setTransformOriginNodeId(null);
+              setTransformEditingNodeId(null);
+            }}
+            onApplyAll={handleApplyTransformStack}
+          />
 
-      <JoinEditor
-        open={Boolean(joinDraft)}
-        draft={joinDraft}
-        leftSchema={joinLeftSchema}
-        rightSchema={joinRightSchema}
-        onClose={() => {
-          setJoinDraft(null);
-          setJoinOriginIds(null);
-          setJoinLeftSchema([]);
-          setJoinRightSchema([]);
-          setJoinGuidance(null);
-        }}
-        guidance={joinGuidance}
-        onApply={handleApplyJoin}
-      />
+          <JoinEditor
+            open={Boolean(joinDraft)}
+            draft={joinDraft}
+            leftSchema={joinLeftSchema}
+            rightSchema={joinRightSchema}
+            onClose={() => {
+              setJoinDraft(null);
+              setJoinOriginIds(null);
+              setJoinLeftSchema([]);
+              setJoinRightSchema([]);
+              setJoinGuidance(null);
+            }}
+            guidance={joinGuidance}
+            onApply={handleApplyJoin}
+          />
 
-      <UnionEditor
-        open={Boolean(unionDraft)}
-        draft={unionDraft}
-        onClose={() => {
-          setUnionDraft(null);
-          setUnionInputIds([]);
-          setUnionGuidance(null);
-        }}
-        guidance={unionGuidance}
-        onApply={handleApplyUnion}
-      />
+          <UnionEditor
+            open={Boolean(unionDraft)}
+            draft={unionDraft}
+            onClose={() => {
+              setUnionDraft(null);
+              setUnionInputIds([]);
+              setUnionGuidance(null);
+            }}
+            guidance={unionGuidance}
+            onApply={handleApplyUnion}
+          />
 
-      <OutputDrawer
-        open={Boolean(outputDraft)}
-        draft={outputDraft}
-        onClose={() => {
-          setOutputDraft(null);
-          setOutputNodeId(null);
-        }}
-        onChangeName={handleRenameOutput}
-      />
+          <OutputDrawer
+            open={Boolean(outputDraft)}
+            draft={outputDraft}
+            onClose={() => {
+              setOutputDraft(null);
+              setOutputNodeId(null);
+            }}
+            onChangeName={handleRenameOutput}
+          />
 
-      <DeployDrawer
-        open={deployOpen}
-        pipelineId={pipeline?.id ?? null}
-        outputs={parsedNodes
-          .filter((node) => node.transform_type === 'output_dataset')
-          .map((node) => ({ id: node.id, label: node.label }))}
-        lastDeploymentLabel={runs.length > 0 ? new Date(runs[0].started_at).toLocaleString() : 'None'}
-        onClose={() => setDeployOpen(false)}
-        onDeployed={() => {
-          void loadRuns();
-          setTab('runs');
-        }}
-      />
+          <DeployDrawer
+            open={deployOpen}
+            pipelineId={pipeline?.id ?? null}
+            outputs={parsedNodes
+              .filter((node) => node.transform_type === 'output_dataset')
+              .map((node) => ({ id: node.id, label: node.label }))}
+            lastDeploymentLabel={runs.length > 0 ? new Date(runs[0].started_at).toLocaleString() : 'None'}
+            onClose={() => setDeployOpen(false)}
+            onDeployed={() => {
+              void loadRuns();
+              setTab('runs');
+            }}
+          />
+        </>
+      )}
     </section>
   );
 }

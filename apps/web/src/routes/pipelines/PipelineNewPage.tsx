@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { listProjects, type OntologyProject } from '@/lib/api/ontology';
 import {
@@ -15,6 +15,8 @@ import {
 } from '@/lib/api/pipelines';
 import { ChoosePipelineLocationDialog } from '@/lib/components/pipeline/ChoosePipelineLocationDialog';
 import { Glyph } from '@/lib/components/ui/Glyph';
+
+import { usePipelineAuthoringAccess } from './usePipelineAuthoringAccess';
 
 type PrimaryFamily = 'BATCH' | 'STREAMING';
 type SubmitState = 'idle' | 'loading' | 'success' | 'error';
@@ -199,6 +201,13 @@ function PipelineFileGlyph({ size = 18 }: { size?: number }) {
 }
 
 export function PipelineNewPage() {
+  const { canEdit, loading } = usePipelineAuthoringAccess();
+  if (loading) return null;
+  if (!canEdit) return <Navigate to="/pipelines" replace />;
+  return <PipelineCreateForm />;
+}
+
+function PipelineCreateForm() {
   const [searchParams] = useSearchParams();
   const virtualTableRid = searchParams.get('virtual_table');
   const navigate = useNavigate();

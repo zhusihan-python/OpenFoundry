@@ -124,6 +124,7 @@ export function PipelineCanvas({
 
   // Debounced validate when nodes/status/scheduleConfig change.
   useEffect(() => {
+    if (readOnly) return;
     const timer = setTimeout(async () => {
       setValidating(true);
       setValidationError(null);
@@ -145,10 +146,9 @@ export function PipelineCanvas({
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, status, scheduleConfig.enabled, scheduleConfig.cron]);
+  }, [nodes, status, scheduleConfig.enabled, scheduleConfig.cron, readOnly]);
 
   function selectNode(id: string | null) {
-    if (readOnly && id !== null) return;
     setSelectedId(id);
     setPendingSourceId(null);
     onSelect?.(id ? (nodes.find((n) => n.id === id) ?? null) : null);
@@ -185,6 +185,10 @@ export function PipelineCanvas({
   }
 
   function nodeClick(id: string) {
+    if (readOnly) {
+      selectNode(id);
+      return;
+    }
     if (pendingUnionIds.length > 0) {
       setPendingUnionIds((current) => {
         if (current.includes(id)) return current.filter((entry) => entry !== id);
@@ -284,32 +288,34 @@ export function PipelineCanvas({
 
   return (
     <div style={{ display: 'grid', gap: 0 }}>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: 8, borderBottom: '1px solid var(--border-default)', background: 'var(--bg-topbar)' }}>
-        {!readOnly && TRANSFORM_OPTIONS.map((t) => (
-          <button key={t.value} type="button" onClick={() => addNode(t.value)} className="of-button" style={{ fontSize: 11 }}>
-            + {t.label}
-          </button>
-        ))}
-        {!readOnly && selectedId && (
-          <>
-            <button type="button" onClick={startConnect} className="of-button" style={{ fontSize: 11, background: pendingSourceId ? '#2d72d2' : undefined, color: pendingSourceId ? '#fff' : undefined }}>
-              {pendingSourceId ? 'Click target to connect…' : 'Connect →'}
+      {!readOnly && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: 8, borderBottom: '1px solid var(--border-default)', background: 'var(--bg-topbar)' }}>
+          {TRANSFORM_OPTIONS.map((t) => (
+            <button key={t.value} type="button" onClick={() => addNode(t.value)} className="of-button" style={{ fontSize: 11 }}>
+              + {t.label}
             </button>
-            <button type="button" onClick={removeSelected} className="of-button" style={{ fontSize: 11, color: '#b91c1c', borderColor: '#fecaca' }}>
-              Remove
-            </button>
-          </>
-        )}
-        <span className="of-text-muted" style={{ fontSize: 11, marginLeft: 'auto' }}>
-          {validating && '· validating…'}
-          {!validating && validation && validation.valid && '· ✓ valid'}
-          {!validating && validation && !validation.valid && `· ${validation.errors.length} error${validation.errors.length === 1 ? '' : 's'}`}
-          {!validating && validationError && ` · ${validationError}`}
-        </span>
-      </div>
+          ))}
+          {selectedId && (
+            <>
+              <button type="button" onClick={startConnect} className="of-button" style={{ fontSize: 11, background: pendingSourceId ? '#2d72d2' : undefined, color: pendingSourceId ? '#fff' : undefined }}>
+                {pendingSourceId ? 'Click target to connect…' : 'Connect →'}
+              </button>
+              <button type="button" onClick={removeSelected} className="of-button" style={{ fontSize: 11, color: '#b91c1c', borderColor: '#fecaca' }}>
+                Remove
+              </button>
+            </>
+          )}
+          <span className="of-text-muted" style={{ fontSize: 11, marginLeft: 'auto' }}>
+            {validating && '· validating…'}
+            {!validating && validation && validation.valid && '· ✓ valid'}
+            {!validating && validation && !validation.valid && `· ${validation.errors.length} error${validation.errors.length === 1 ? '' : 's'}`}
+            {!validating && validationError && ` · ${validationError}`}
+          </span>
+        </div>
+      )}
 
       <div style={{ overflow: 'auto', border: 0, background: '#eef1f5', position: 'relative' }}>
-        {pendingUnionIds.length > 0 ? (
+        {!readOnly && pendingUnionIds.length > 0 ? (
           (() => {
             const primary = nodes.find((entry) => entry.id === pendingUnionIds[0]);
             const others = pendingUnionIds.length - 1;
@@ -366,7 +372,7 @@ export function PipelineCanvas({
             );
           })()
         ) : null}
-        {pendingJoinLeftId ? (
+        {!readOnly && pendingJoinLeftId ? (
           (() => {
             const left = nodes.find((entry) => entry.id === pendingJoinLeftId);
             const right = pendingJoinRightId ? nodes.find((entry) => entry.id === pendingJoinRightId) : null;
@@ -579,7 +585,7 @@ export function PipelineCanvas({
                 key={n.id}
                 transform={`translate(${pos.x}, ${pos.y})`}
                 onClick={() => nodeClick(n.id)}
-                style={{ cursor: readOnly ? 'default' : 'pointer' }}
+                style={{ cursor: 'pointer' }}
               >
                 <rect width={NODE_W} height={NODE_H} rx={2} ry={2} fill={nodeFill(n)} stroke={nodeStroke(n)} strokeWidth={1.5} />
                 <rect width={4} height={NODE_H} rx={2} ry={2} fill={selectedId === n.id ? '#2d72d2' : '#6f7d8c'} />
@@ -609,7 +615,7 @@ export function PipelineCanvas({
         </svg>
       </div>
 
-      {validation && validation.errors.length > 0 && (
+      {!readOnly && validation && validation.errors.length > 0 && (
         <div className="of-status-danger" style={{ padding: '10px 14px', borderRadius: 'var(--radius-md)', fontSize: 12 }}>
           <strong>Errors</strong>
           <ul style={{ marginTop: 4, paddingLeft: 18 }}>
@@ -617,7 +623,7 @@ export function PipelineCanvas({
           </ul>
         </div>
       )}
-      {validation && validation.warnings.length > 0 && (
+      {!readOnly && validation && validation.warnings.length > 0 && (
         <div style={{ padding: '10px 14px', background: '#fef3c7', color: '#92400e', borderRadius: 'var(--radius-md)', fontSize: 12 }}>
           <strong>Warnings</strong>
           <ul style={{ marginTop: 4, paddingLeft: 18 }}>
