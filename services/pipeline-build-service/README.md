@@ -82,7 +82,7 @@ go test ./services/pipeline-build-service/...
 | `OBJECT_DATABASE_SERVICE_BEARER` | unset; forwarded as `Authorization: Bearer` for object output materialization when configured |
 | `WORKFLOW_SERVICE_URL` | `http://localhost:50080` |
 | `AI_SERVICE_URL` | `http://localhost:50127` |
-| `PIPELINE_LLM_PROTOCOL` | `ai-service` by default. Set to `agent-runtime` for LLM nodes calling the authenticated chat route of the Go agent-runtime-service at `AI_SERVICE_URL`. |
+| `PIPELINE_LLM_PROTOCOL` | `ai-service` by default. Set to `agent-runtime` for LLM nodes and AIP-assisted generation calling the authenticated chat route of the Go agent-runtime-service at `AI_SERVICE_URL`. |
 | `AI_SERVICE_BEARER` | unset; forwarded as `Authorization: Bearer` for LLM nodes and AIP-assisted generation when configured |
 | `STORAGE_BACKEND` | `local` |
 | `STORAGE_BUCKET` | unset |

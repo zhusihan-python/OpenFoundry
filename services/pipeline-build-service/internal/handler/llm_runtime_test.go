@@ -111,7 +111,7 @@ func TestAIServiceLLMProviderSmokeGated(t *testing.T) {
 	}
 	baseURL := strings.TrimSpace(os.Getenv("AI_SERVICE_URL"))
 	require.NotEmpty(t, baseURL, "AI_SERVICE_URL is required for provider smoke")
-	runner := NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: baseURL, BearerToken: os.Getenv("AI_SERVICE_BEARER")})
+	runner := NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: baseURL, AgentRuntime: os.Getenv("PIPELINE_LLM_PROTOCOL") == "agent-runtime", BearerToken: os.Getenv("AI_SERVICE_BEARER")})
 	result, err := runner.RunLLMTransform(context.Background(), LLMTransformRequest{
 		Node:          executor.NodeContext{Node: executor.Node{ID: "llm_provider_smoke"}},
 		Payload:       json.RawMessage(`{"prompt":"Return exactly: ok","output_column":"result","max_rows":1,"max_tokens":8}`),
@@ -143,4 +143,21 @@ func TestLLMEmptyDependencyDoesNotCreateRowsOrCallModel(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, result.Metadata["rows_affected"])
 	require.Empty(t, result.Metadata["data_rows"])
+}
+
+func TestAgentRuntimeCompletionTracksServedModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/agent-runtime/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer service", r.Header.Get("Authorization"))
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, []any{map[string]any{"role": "system", "content": "system"}, map[string]any{"role": "user", "content": "order"}}, body["messages"])
+		writeJSON(w, 200, map[string]any{"model": "served-version", "provider_name": "local", "choices": []any{map[string]any{"message": map[string]string{"content": "ok"}}}, "usage": map[string]int{"total_tokens": 3}})
+	}))
+	defer server.Close()
+	runner := NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: server.URL, AgentRuntime: true, BearerToken: "service"})
+	response, err := runner.RunLLMTransform(context.Background(), LLMTransformRequest{Payload: json.RawMessage(`{"system_prompt":"system","prompt":"order"}`)})
+	require.NoError(t, err)
+	require.Equal(t, "served-version", response.Metadata["model"])
+	require.Equal(t, "local", response.Metadata["provider_name"])
 }

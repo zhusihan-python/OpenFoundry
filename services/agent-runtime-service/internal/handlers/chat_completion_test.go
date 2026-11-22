@@ -328,3 +328,13 @@ func TestCreateChatCompletionPurposeCheckpointServiceError(t *testing.T) {
 }
 
 func strPtr(value string) *string { return &value }
+
+func TestConfiguredProviderRejectsMismatchingModel(t *testing.T) {
+	runtime := &llm.FakeRuntime{}
+	h := &Handlers{Runtime: runtime, Provider: &aimodels.LlmProvider{Name: "local", ModelName: "served"}}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"other","messages":[{"role":"user","content":"hello"}]}`))
+	w := httptest.NewRecorder()
+	h.CreateChatCompletion(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Empty(t, runtime.Calls)
+}

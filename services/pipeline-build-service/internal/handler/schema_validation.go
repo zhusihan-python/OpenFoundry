@@ -1255,7 +1255,7 @@ func applyNormalizeSchema(nodeID string, schema pipelineStrictSchema, removeSpec
 	for i := range fields {
 		target := normalizeRuntimeColumnName(fields[i].Name, removeSpecial)
 		if target == "" {
-			// The runtime cannot materialise an empty column name; validate
+			// The runtime cannot materialize an empty column name; validate
 			// must agree instead of quietly keeping the original name.
 			report.addError(nodeID, strPtr(fields[i].Name), "normalize_column_name_empty",
 				fmt.Sprintf("column %q normalizes to an empty name", fields[i].Name))

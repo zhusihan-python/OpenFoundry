@@ -1350,7 +1350,7 @@ func runtimeScalarFloat(raw json.RawMessage) (float64, bool) {
 }
 
 // validRuntimeCastTarget reports whether the cast block's target type is one
-// the lightweight runtime can materialise (the catalog's scalar set plus the
+// the lightweight runtime can materialize (the catalog's scalar set plus the
 // historical aliases). Anything else fails instead of passing values through.
 func validRuntimeCastTarget(targetType string) bool {
 	switch strings.ToLower(strings.TrimSpace(targetType)) {

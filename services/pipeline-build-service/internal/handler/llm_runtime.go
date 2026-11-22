@@ -87,6 +87,7 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 	totalCompletionTokens := 0
 	totalTokens := 0
 	providerName := ""
+	model := cfg.Model
 	for _, row := range rows {
 		prompt := renderLLMPrompt(cfg, row)
 		completion, err := r.complete(ctx, aiChatCompletionRequest{
@@ -106,6 +107,9 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 		totalPromptTokens += completion.PromptTokens
 		totalCompletionTokens += completion.CompletionTokens
 		totalTokens += completion.TotalTokens
+		if completion.Model != "" {
+			model = completion.Model
+		}
 		if completion.ProviderName != "" {
 			providerName = completion.ProviderName
 		}
@@ -134,8 +138,8 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 			"total_tokens":      totalTokens,
 		},
 	}
-	if cfg.Model != "" {
-		meta["model"] = cfg.Model
+	if model != "" {
+		meta["model"] = model
 	}
 	payload, _ := json.Marshal(outRows)
 	sum := sha256.Sum256(append([]byte(req.Node.Node.ID+"|llm|"), payload...))
@@ -176,6 +180,7 @@ type aiChatCompletionRequest struct {
 }
 
 type aiChatCompletion struct {
+	Model            string
 	Text             string
 	ProviderName     string
 	PromptTokens     int
@@ -239,6 +244,7 @@ func (r *AIServiceLLMRunner) complete(ctx context.Context, body aiChatCompletion
 
 func parseAICompletionResponse(raw []byte) (aiChatCompletion, error) {
 	var shaped struct {
+		Model        string          `json:"model"`
 		Reply        string          `json:"reply"`
 		ProviderName string          `json:"provider_name"`
 		Usage        json.RawMessage `json:"usage"`
@@ -258,7 +264,7 @@ func parseAICompletionResponse(raw []byte) (aiChatCompletion, error) {
 	if text == "" {
 		return aiChatCompletion{}, errors.New("ai-service response did not include reply text")
 	}
-	completion := aiChatCompletion{Text: text, ProviderName: shaped.ProviderName}
+	completion := aiChatCompletion{Text: text, Model: shaped.Model, ProviderName: shaped.ProviderName}
 	if len(shaped.Usage) > 0 {
 		var usage struct {
 			PromptTokens     int `json:"prompt_tokens"`

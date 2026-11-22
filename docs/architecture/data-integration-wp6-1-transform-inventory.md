@@ -30,7 +30,7 @@
 | `csv_parse` | 解析 CSV 内容 | available | 轻量变换栈解析 CSV 文本列。数据连接的 CSV 文件摄取有独立配置和验收。见 `b03a187f`。 |
 | `gpx_parse` | 解析 GPX | available | 轻量 GPX 节点；别名 `parse_gpx`、`gpx`、`gpx_parser` |
 | `python_transform` | Python 变换 | requires_python_sidecar | Python 节点依赖 sidecar；与动态 Python UDF 复用入口的计数由产品确认 |
-| `llm_node` | 调用 LLM | requires_ai_service | LLM 节点依赖 AI 服务与实际提供方 |
+| `llm_node` | 调用 LLM | requires_ai_service | Go agent-runtime 的鉴权 chat 接口支持接入实际模型。提供方返回的模型标识和 token 用量可在节点执行记录核对。 |
 | `output_mapping` | 输出映射 | available | 构建器输出配置与发布路径；数据集、对象、链接和目录表单中其他选项需按目标分别核对 |
 | `function.<name>@<version>` | 可复用函数（动态族） | 表达式可用 / Python 仅声明 | 动态族。注入注册表后追加各函数版本，生产启动当前未接注册表。调用别名和版本共享函数引用语义。 |
 

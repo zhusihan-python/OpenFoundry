@@ -15,7 +15,7 @@ import (
 
 // WP6.5 batch-2 regressions: drop columns, whole-column cast and column-name
 // normalization in the lightweight transform stack. Every case mirrors a
-// behaviour verified against a real PBS + DVS + PostgreSQL stack; see
+// behavior verified against a real PBS + DVS + PostgreSQL stack; see
 // tools/smoke evidence for the live run.
 
 func rowsFromMaps(t testing.TB, maps ...map[string]any) []pipelineexpression.Row {

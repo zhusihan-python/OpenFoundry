@@ -344,12 +344,18 @@ func (h *Handlers) CreateChatCompletion(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	if completion.Model != "" {
+		model = completion.Model
+	}
 	resp := map[string]any{
 		"id":      uuid.New(),
 		"object":  "chat.completion",
 		"model":   model,
 		"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": completion.Text}, "finish_reason": "stop"}},
 		"usage":   map[string]int32{"prompt_tokens": completion.PromptTokens, "completion_tokens": completion.CompletionTokens, "total_tokens": completion.TotalTokens},
+	}
+	if h.Provider != nil {
+		resp["provider_name"] = provider.Name
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

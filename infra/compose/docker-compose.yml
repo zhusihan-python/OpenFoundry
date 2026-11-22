@@ -846,6 +846,9 @@ services:
       context: ..
       dockerfile: services/agent-runtime-service/Dockerfile
     environment:
+      LLM_PROVIDER_BASE_URL: ${LLM_PROVIDER_BASE_URL:-}
+      LLM_PROVIDER_MODEL: ${LLM_PROVIDER_MODEL:-}
+      LLM_PROVIDER_TOKEN: ${LLM_PROVIDER_TOKEN:-}
       HOST: 0.0.0.0
       PORT: 50127
       DATABASE_URL: postgres://openfoundry:openfoundry@postgres:5432/openfoundry_agent_runtime_service
@@ -1118,6 +1121,8 @@ services:
       DATASET_SERVICE_URL: http://dataset-versioning-service:50078
       WORKFLOW_SERVICE_URL: http://workflow-automation-service:50137
       AI_SERVICE_URL: http://agent-runtime-service:50127
+      PIPELINE_LLM_PROTOCOL: agent-runtime
+      AI_SERVICE_BEARER: ${AI_SERVICE_BEARER:-}
       STORAGE_BACKEND: s3
       STORAGE_BUCKET: datasets
       S3_ENDPOINT: http://minio:9000

@@ -69,7 +69,7 @@ func FromEnv() (*Config, error) {
 		}
 		tokenEnv := "LLM_PROVIDER_TOKEN"
 		cfg.ChatProvider = &aimodels.LlmProvider{
-			Name: model, ModelName: model, ProviderType: "openai_compatible",
+			Name: "OpenAI-compatible inference", ModelName: model, ProviderType: "openai_compatible",
 			EndpointURL: endpoint, APIMode: "chat_completions", Enabled: true,
 			CredentialReference: &tokenEnv, RouteRules: aimodels.DefaultProviderRoutingRules(),
 		}
