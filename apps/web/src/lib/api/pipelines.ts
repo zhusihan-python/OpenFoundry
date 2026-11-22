@@ -80,7 +80,13 @@ export interface PipelineNode {
   validation_errors?: string[];
 }
 
-export interface PipelineIRNode extends PipelineNode {
+// PBS omits empty slices from persisted node responses.
+type PipelineNodePayload = Omit<PipelineNode, 'depends_on' | 'input_dataset_ids'> & {
+  depends_on?: string[] | null;
+  input_dataset_ids?: string[] | null;
+};
+
+export interface PipelineIRNode extends PipelineNodePayload {
   input_ports?: PipelineIRPort[];
   output_ports?: PipelineIRPort[];
   output_schema?: PipelineIRSchema;
@@ -148,11 +154,16 @@ export interface PipelineIR {
   metadata?: Record<string, unknown>;
 }
 
-export type PipelineDAG = PipelineIR | PipelineNode[];
+export type PipelineDAG = PipelineIR | PipelineNodePayload[];
 
 export function pipelineNodesFromDAG(dag: PipelineDAG | null | undefined): PipelineNode[] {
   if (!dag) return [];
-  return Array.isArray(dag) ? dag : dag.nodes;
+  const nodes = Array.isArray(dag) ? dag : dag.nodes;
+  return nodes.map((node) => ({
+    ...node,
+    depends_on: node.depends_on ?? [],
+    input_dataset_ids: node.input_dataset_ids ?? [],
+  }));
 }
 
 export function pipelineDAGWithNodes(dag: PipelineDAG | null | undefined, nodes: PipelineNode[]): PipelineDAG {

@@ -18,8 +18,6 @@ const pipeline = {
           { trail: 'Mesa Trail', distance: 6.0, gain: 900 },
         ],
       },
-      depends_on: [],
-      input_dataset_ids: [],
       output_dataset_id: null,
     },
     {
@@ -28,7 +26,6 @@ const pipeline = {
       transform_type: 'select',
       config: { columns: ['trail', 'distance'] },
       depends_on: ['source_trails'],
-      input_dataset_ids: [],
       output_dataset_id: null,
     },
   ],
@@ -41,7 +38,7 @@ const pipeline = {
   pipeline_type: 'BATCH',
 };
 
-test('shows a selected pipeline node preview from the draft DAG', async ({ page }) => {
+test('previews a draft DAG when PBS omits empty node arrays', async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem('of_access_token', 'e2e-token');
     window.localStorage.setItem('of_refresh_token', 'e2e-refresh');
@@ -106,7 +103,10 @@ test('shows a selected pipeline node preview from the draft DAG', async ({ page 
   });
 
   await page.goto(`/pipelines/${pipelineId}/edit`);
-  await page.getByText('Select fast trails').click();
+  const canvas = page.getByRole('img', { name: 'Pipeline DAG' });
+  await expect(canvas.getByText('Trail source')).toBeVisible();
+  await expect(canvas.locator('path[marker-end]')).toHaveCount(1);
+  await canvas.getByText('Select fast trails').click();
 
   await expect(page.getByText('Preview')).toBeVisible();
   await expect(page.getByText('Mesa Trail')).toBeVisible();
