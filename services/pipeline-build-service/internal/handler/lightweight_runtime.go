@@ -976,8 +976,8 @@ func (rt *lightweightTableRuntime) runUnion(node executor.NodeContext, draft run
 	}
 	columns := []string{}
 	seen := map[string]struct{}{}
-	for i, batch := range batches {
-		for _, col := range availableColumnNames(batch, rt.tableSchema(node.Node.DependsOn[i]).columnNames()) {
+	for _, batch := range batches {
+		for _, col := range deriveRuntimeColumns(batch) {
 			if _, ok := seen[col]; ok {
 				continue
 			}

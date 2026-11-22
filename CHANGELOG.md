@@ -44,8 +44,7 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - _(add entries here)_
 
 ### Fixed
-- By-name Union keeps declared columns from empty inputs and reads bounded inputs
-  before serving a short preview.
+- By-name Union reads its bounded inputs before serving a short preview.
 
 - Published lightweight NDJSON datasets retain the logical type of whole-column casts after filtering or renaming, including empty results.
 - Manual canonical dataset builds now publish through their own output reservation.
