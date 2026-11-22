@@ -126,6 +126,20 @@ export interface CSVParseBlock {
   has_header: boolean;
 }
 
+export type Aggregation = {
+  function: string;
+  source_column: string;
+  target_column: string;
+};
+
+export interface AggregateBlock {
+  id: string;
+  kind: 'aggregate';
+  applied: boolean;
+  group_by: string[];
+  aggregations: Aggregation[];
+}
+
 export type TransformBlock =
   | CastBlock
   | FilterBlock
@@ -138,7 +152,8 @@ export type TransformBlock =
   | SortRowsBlock
   | NormalizeUnitsBlock
   | ExplodeBlock
-  | CSVParseBlock;
+  | CSVParseBlock
+  | AggregateBlock;
 
 export interface TransformStack {
   source_dataset_id: string;
@@ -211,6 +226,23 @@ export function newNormalizeColumnsBlock(): NormalizeColumnsBlock {
     applied: false,
     remove_special_characters: false,
   };
+}
+
+export function newAggregateBlock(): AggregateBlock {
+  return {
+    id: newBlockId('aggregate'),
+    kind: 'aggregate',
+    applied: false,
+    group_by: [],
+    aggregations: [{ function: 'count', source_column: '', target_column: 'row_count' }],
+  };
+}
+
+export function validAggregateConfig(block: AggregateBlock): boolean {
+  const columns = [...block.group_by, ...block.aggregations.map((measure) => measure.target_column)];
+  return block.aggregations.length > 0 && columns.every((column) => column.trim()) &&
+    new Set(columns).size === columns.length &&
+    block.aggregations.every((measure) => measure.function === 'count' || measure.source_column.trim());
 }
 
 export function newCSVParseBlock(): CSVParseBlock {
@@ -290,6 +322,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Normalize column names';
     case 'normalize_units':
       return 'Normalize units';
+    case 'aggregate':
+      return 'Aggregate';
     case 'csv_parse':
       return 'CSV parse';
     case 'explode':
@@ -319,6 +353,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Normalize column names';
     case 'normalize_units':
       return 'Normalize units';
+    case 'aggregate':
+      return 'Aggregate';
     case 'csv_parse':
       return 'CSV parse';
     case 'explode':
@@ -457,6 +493,12 @@ export function composeTransformStackSql(stack: TransformStack): string {
       case 'normalize_units': {
         if (!validNormalizeUnitsConfig(block)) break;
         ctes.push(`${cte} AS (SELECT * FROM ${previous} /* normalize_units: see structured stack config */)`);
+        previous = cte;
+        return;
+      }
+      case 'aggregate': {
+        if (!validAggregateConfig(block)) break;
+        ctes.push(`${cte} AS (SELECT * FROM ${previous} /* aggregate: see structured stack config */)`);
         previous = cte;
         return;
       }
