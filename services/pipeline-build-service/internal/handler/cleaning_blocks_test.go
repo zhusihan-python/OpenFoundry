@@ -258,6 +258,58 @@ func TestPreviewChainWithPinnedSnapshotReadsBuildInputs(t *testing.T) {
 	assert.False(t, previewChainRequiresBuildInputs(unpinned))
 }
 
+// Geo joins pair rows across the complete relations — a nearest neighbour can
+// sit far beyond the right side's first sample row — so their preview chains
+// must read the bounded build inputs like a real run, pin or no pin.
+func TestPreviewChainGeoJoinReadsBuildInputs(t *testing.T) {
+	geoJoin := json.RawMessage(`{"_geo_join":{"mode":"nearest","left_lat_column":"lat","left_lon_column":"lon","right_lat_column":"lat","right_lon_column":"lon","k":1}}`)
+	for _, pinned := range []bool {true, false} {
+		config := json.RawMessage(`{"dataset_id":"ri.foundry.main.dataset.00000000-0000-0000-0000-000000000000"}`)
+		if pinned {
+			config = json.RawMessage(`{"dataset_id":"ri.foundry.main.dataset.00000000-0000-0000-0000-000000000000","dataset_snapshot":{"branch":"main","version":1,"transaction_id":"ri.foundry.main.transaction.00000000-0000-0000-0000-000000000000"}}`)
+		}
+		chain := []models.PipelineNode{
+			{ID: "left", TransformType: "dataset_input", Config: config},
+			{ID: "right", TransformType: "dataset_input", Config: config},
+			{ID: "join", TransformType: "geo_nearest_neighbor_join", DependsOn: []string{"left", "right"}, Config: geoJoin},
+		}
+		assert.True(t, previewChainRequiresBuildInputs(chain), "pinned=%v", pinned)
+	}
+}
+
+// Haversine and GPX chains map each input row to exactly one output row, so a
+// pinned chain's display sample must come from the final rows, never from the
+// snapshot read's bound (pinned reads never truncate).
+func TestPreviewChainPinnedHaversineAndGPXReadBuildInputs(t *testing.T) {
+	pinned := json.RawMessage(`{"dataset_id":"ri.foundry.main.dataset.00000000-0000-0000-0000-000000000000","dataset_snapshot":{"branch":"main","version":1,"transaction_id":"ri.foundry.main.transaction.00000000-0000-0000-0000-000000000000"}}`)
+	unpinned := json.RawMessage(`{"dataset_id":"ri.foundry.main.dataset.00000000-0000-0000-0000-000000000000"}`)
+	haversineStack := `{"sql":"SELECT * FROM __source__","_stack":{"blocks":[{"kind":"haversine_distance","applied":true,"start_lat_column":"lat1","start_lon_column":"lon1","end_lat_column":"lat2","end_lon_column":"lon2","unit":"meters","target_column":""}]}}`
+
+	pinnedHaversine := []models.PipelineNode{
+		{ID: "pts", TransformType: "dataset_input", Config: pinned},
+		{ID: "dist", TransformType: "sql", DependsOn: []string{"pts"}, Config: json.RawMessage(haversineStack)},
+	}
+	assert.True(t, previewChainRequiresBuildInputs(pinnedHaversine))
+
+	pinnedGPX := []models.PipelineNode{
+		{ID: "docs", TransformType: "dataset_input", Config: pinned},
+		{ID: "parse", TransformType: "gpx_parse", DependsOn: []string{"docs"}, Config: json.RawMessage(`{"gpx_column":"gpx"}`)},
+	}
+	assert.True(t, previewChainRequiresBuildInputs(pinnedGPX))
+
+	unpinnedHaversine := []models.PipelineNode{
+		{ID: "pts", TransformType: "dataset_input", Config: unpinned},
+		{ID: "dist", TransformType: "sql", DependsOn: []string{"pts"}, Config: json.RawMessage(haversineStack)},
+	}
+	assert.False(t, previewChainRequiresBuildInputs(unpinnedHaversine))
+
+	pinnedPassthrough := []models.PipelineNode{
+		{ID: "pts", TransformType: "dataset_input", Config: pinned},
+		{ID: "pass", TransformType: "sql", DependsOn: []string{"pts"}, Config: json.RawMessage(`{"sql":"SELECT * FROM __source__"}`)},
+	}
+	assert.False(t, previewChainRequiresBuildInputs(pinnedPassthrough))
+}
+
 func TestCleaningStackReusesDroppedName(t *testing.T) {
 	rt := newLightweightTableRuntime(nil)
 	rt.storeTable("in", lightweightTable{rows: rowsFromMaps(t, map[string]any{"a": "3", "b": 2})})
