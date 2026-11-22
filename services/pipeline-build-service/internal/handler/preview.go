@@ -151,11 +151,10 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 	}
 	runtime := newLightweightTableRuntime()
 	runtime.datasets = ports.DatasetRows
-	// A window can use rows beyond the requested display sample, including
-	// later input rows that sort before it. Read the same bounded input as a
-	// build and apply the display limit after computing the window.
-	usesWindow := previewChainUsesWindow(chain)
-	runtime.datasetRowsPreview = !usesWindow
+	// Windows and left anti joins can depend on input rows beyond the display
+	// sample. Use the bounded build inputs before limiting the final result.
+	sampleInputs := !previewChainRequiresBuildInputs(chain)
+	runtime.datasetRowsPreview = sampleInputs
 	runner := runtimeNodeRunner{Table: runtime, LLM: ports.LLM}
 	var targetMetadata map[string]any
 	for _, node := range chain {
@@ -175,7 +174,7 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 			"logic_payload":  node.Config,
 			"label":          node.Label,
 		}
-		if !usesWindow {
+		if sampleInputs {
 			metadata["logic_payload"] = previewConfigWithSampleSize(node.Config, sampleSize)
 			metadata["sample_size"] = sampleSize
 		}
@@ -201,7 +200,7 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 		if node.ID == nodeID {
 			targetMetadata = result.Metadata
 		}
-		if !usesWindow {
+		if sampleInputs {
 			runtime.trimRows(node.ID, sampleSize)
 		}
 	}
@@ -226,17 +225,19 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 	return response, nil
 }
 
-func previewChainUsesWindow(chain []models.PipelineNode) bool {
+func previewChainRequiresBuildInputs(chain []models.PipelineNode) bool {
 	for _, node := range chain {
-		var cfg struct {
-			Stack struct {
-				Blocks []struct {
-					Kind    string `json:"kind"`
-					Applied bool   `json:"applied"`
-				} `json:"blocks"`
-			} `json:"_stack"`
+		if normaliseTableTransform(node.TransformType) != "sql" {
+			continue
 		}
-		if json.Unmarshal(node.Config, &cfg) != nil {
+		cfg, err := parseTableRuntimeConfig(node.Config)
+		if err != nil {
+			continue
+		}
+		if cfg.Stack == nil {
+			if cfg.Join != nil && strings.EqualFold(strings.TrimSpace(cfg.Join.JoinType), runtimeJoinLeftAnti) {
+				return true
+			}
 			continue
 		}
 		for _, block := range cfg.Stack.Blocks {

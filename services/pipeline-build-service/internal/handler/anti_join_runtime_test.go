@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	pe "github.com/openfoundry/openfoundry-go/libs/pipeline-expression"
+	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/models"
 )
 
 func TestLeftAntiJoinCompositeKeys(t *testing.T) {
@@ -67,4 +69,22 @@ func TestLeftAntiJoinSchemaProjectsOnlyLeft(t *testing.T) {
 	draft.Matches = append(draft.Matches, runtimeJoinMatch{LeftColumn: "key"})
 	validateJoinNode("join", draft, []pipelineStrictSchema{left, right}, &report)
 	require.Equal(t, "join_incomplete_match_conditions", report.Errors[0].Code)
+}
+
+func TestLeftAntiJoinPreviewLimitsDisplayAfterMatching(t *testing.T) {
+	const join = `{"_join":{"join_type":"left_anti","matches":[{"left_column":"id","right_column":"id"}]}}`
+	for name, config := range map[string]string{"direct": join, "nested": `{"config":` + join + `}`} {
+		t.Run(name, func(t *testing.T) {
+			nodes := []models.PipelineNode{
+				{ID: "left", TransformType: "external", Config: json.RawMessage(`{"rows":[{"id":1},{"id":2},{"id":3}]}`)},
+				{ID: "right", TransformType: "external", Config: json.RawMessage(`{"rows":[{"id":4},{"id":1}]}`)},
+				{ID: "anti", TransformType: "sql", DependsOn: []string{"left", "right"}, Config: json.RawMessage(config)},
+				{ID: "output", TransformType: "output_dataset", DependsOn: []string{"anti"}},
+			}
+			out, err := executeLocalPipelinePreview(t.Context(), uuid.New(), "output", nodes, 1)
+			require.NoError(t, err)
+			require.Len(t, out.Rows, 1)
+			require.Equal(t, "2", string(out.Rows[0]["id"]))
+		})
+	}
 }
