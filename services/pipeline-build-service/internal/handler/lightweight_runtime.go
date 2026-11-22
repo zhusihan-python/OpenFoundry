@@ -21,7 +21,7 @@ import (
 
 type lightweightTableRuntime struct {
 	mu        sync.Mutex
-	tables    map[string][]pipelineexpression.Row
+	tables    map[string]lightweightTable
 	functions PipelineFunctionRegistry
 	// datasets reads registered dataset files for input-shaped nodes. When
 	// nil, a node that references a dataset fails explicitly instead of
@@ -217,7 +217,7 @@ func newLightweightTableRuntime(functions ...PipelineFunctionRegistry) *lightwei
 	if len(functions) > 0 {
 		registry = functions[0]
 	}
-	return &lightweightTableRuntime{tables: map[string][]pipelineexpression.Row{}, functions: registry}
+	return &lightweightTableRuntime{tables: map[string]lightweightTable{}, functions: registry}
 }
 
 func (rt *lightweightTableRuntime) Supports(transformType string) bool {
@@ -289,7 +289,12 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 	if err != nil {
 		return executor.NodeResult{}, err
 	}
-	rt.storeRows(node.Node.ID, rows)
+	columns := deriveRuntimeColumns(rows)
+	table := rt.runtimeTable(node.Node, transformType, kind, payload, cfg, datasetMeta, rows)
+	rt.storeTable(node.Node.ID, table)
+	if table.positional {
+		columns = table.schema.columnNames()
+	}
 
 	metaRows := cloneRows(rows)
 	if len(metaRows) > 5 {
@@ -300,7 +305,7 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		"engine":         "pipeline-expression",
 		"transform_type": transformType,
 		"rows_affected":  len(rows),
-		"columns":        deriveRuntimeColumns(rows),
+		"columns":        columns,
 		"sample_rows":    rowsToMaps(metaRows),
 		"data_rows":      rowsToMaps(rows),
 	}
@@ -888,12 +893,8 @@ func (rt *lightweightTableRuntime) runUnion(node executor.NodeContext, draft run
 		}
 		batches = append(batches, rows)
 	}
-	if strings.EqualFold(strings.TrimSpace(draft.UnionType), "by_position") {
-		out := []pipelineexpression.Row{}
-		for _, batch := range batches {
-			out = append(out, cloneRows(batch)...)
-		}
-		return out, nil
+	if draft.byPosition() {
+		return rt.alignPositionalUnion(node.Node.DependsOn, batches)
 	}
 	columns := []string{}
 	seen := map[string]struct{}{}
@@ -930,8 +931,8 @@ func (rt *lightweightTableRuntime) firstDependencyRows(node executor.NodeContext
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	for _, dep := range node.Node.DependsOn {
-		if rows, ok := rt.tables[dep]; ok {
-			return cloneRows(rows), nil
+		if table, ok := rt.tables[dep]; ok {
+			return cloneRows(table.rows), nil
 		}
 	}
 	return nil, fmt.Errorf("lightweight_table_input_not_ready:%s", strings.Join(node.Node.DependsOn, ","))
@@ -940,23 +941,21 @@ func (rt *lightweightTableRuntime) firstDependencyRows(node executor.NodeContext
 func (rt *lightweightTableRuntime) dependencyRows(nodeID string) ([]pipelineexpression.Row, error) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	rows, ok := rt.tables[nodeID]
+	table, ok := rt.tables[nodeID]
 	if !ok {
 		return nil, fmt.Errorf("lightweight_table_input_not_ready:%s", nodeID)
 	}
-	return cloneRows(rows), nil
+	return cloneRows(table.rows), nil
 }
 
 func (rt *lightweightTableRuntime) storeRows(nodeID string, rows []pipelineexpression.Row) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	rt.tables[nodeID] = cloneRows(rows)
+	rt.storeTable(nodeID, lightweightTable{rows: rows})
 }
 
 func (rt *lightweightTableRuntime) snapshotRows(nodeID string) []pipelineexpression.Row {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	return cloneRows(rt.tables[nodeID])
+	return cloneRows(rt.tables[nodeID].rows)
 }
 
 func (rt *lightweightTableRuntime) trimRows(nodeID string, limit int) {
@@ -965,8 +964,9 @@ func (rt *lightweightTableRuntime) trimRows(nodeID string, limit int) {
 	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if rows, ok := rt.tables[nodeID]; ok && len(rows) > limit {
-		rt.tables[nodeID] = cloneRows(rows[:limit])
+	if table, ok := rt.tables[nodeID]; ok && len(table.rows) > limit {
+		table.rows = cloneRows(table.rows[:limit])
+		rt.tables[nodeID] = table
 	}
 }
 

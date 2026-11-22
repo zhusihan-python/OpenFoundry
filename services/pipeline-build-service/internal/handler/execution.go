@@ -433,10 +433,12 @@ func executorNodeFromRequest(buildID uuid.UUID, node executeNodeRequest) executo
 }
 
 func planFromPipeline(pipeline *models.Pipeline, runID uuid.UUID, req models.TriggerPipelineRequest, ports ExecutionPorts) (executor.Plan, error) {
-	nodes, err := pipeline.RuntimeNodes()
+	ir, err := pipeline.RuntimeIR()
 	if err != nil {
 		return executor.Plan{}, err
 	}
+	nodes := ir.LegacyNodes()
+	schemas := declaredTableSchemas(ir)
 	if len(nodes) == 0 {
 		return executor.Plan{}, errors.New("pipeline must define at least one node")
 	}
@@ -468,6 +470,9 @@ func planFromPipeline(pipeline *models.Pipeline, runID uuid.UUID, req models.Tri
 			"input_dataset_ids": uuidStrings(node.InputDatasetIDs),
 			"output_dataset_id": outputRID,
 			"pipeline_type":     pipelineType,
+		}
+		if schema := schemas[node.ID]; schema != nil {
+			metadata[runtimeDeclaredSchema] = schema
 		}
 		if models.IsLightweightPipelineType(pipelineType) {
 			metadata["execution_mode"] = "lightweight"
