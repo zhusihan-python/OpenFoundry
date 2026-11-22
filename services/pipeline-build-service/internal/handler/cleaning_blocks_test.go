@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/domain/executor"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -154,7 +156,7 @@ func TestApplyRuntimeCastBlockRejectsOutOfRangeInteger(t *testing.T) {
 	block := runtimeTransformBlock{SourceColumn: "n", TargetType: "Integer"}
 	_, err := applyRuntimeCastBlock(rows, block, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "out of range for an integer")
+	assert.Contains(t, err.Error(), "32-bit integer range")
 }
 
 func TestApplyRuntimeCastBlockRejectsInvalidConfiguration(t *testing.T) {
@@ -179,12 +181,12 @@ func TestApplyRuntimeCastBlockRejectsInvalidConfiguration(t *testing.T) {
 
 func TestApplyRuntimeNormalizeBlockRenamesPredictably(t *testing.T) {
 	rows := rowsFromMaps(t, map[string]any{"Order ID": "O-1", "CustomerName": "ann", "paid amount (usd)": "9.5"})
-	out, err := applyRuntimeNormalizeBlock(rows, false)
+	out, err := applyRuntimeNormalizeBlock(rows, false, nil)
 	require.NoError(t, err)
 	assert.Equal(t, []map[string]any{{"order_id": "O-1", "customer_name": "ann", "paid_amount_(usd)": "9.5"}},
 		rowsToMapsForTest(t, out))
 
-	out, err = applyRuntimeNormalizeBlock(rows, true)
+	out, err = applyRuntimeNormalizeBlock(rows, true, nil)
 	require.NoError(t, err)
 	assert.Equal(t, []map[string]any{{"order_id": "O-1", "customer_name": "ann", "paid_amount_usd": "9.5"}},
 		rowsToMapsForTest(t, out))
@@ -195,14 +197,14 @@ func TestApplyRuntimeNormalizeBlockRejectsCollidingNames(t *testing.T) {
 		map[string]any{"Order ID": "O-1", "order-id": "O-1"},
 		map[string]any{"Order ID": "O-2", "order-id": "O-2"},
 	)
-	_, err := applyRuntimeNormalizeBlock(rows, false)
+	_, err := applyRuntimeNormalizeBlock(rows, false, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `duplicate column name "order_id" (from "Order ID", "order-id")`)
 }
 
 func TestApplyRuntimeNormalizeBlockRejectsEmptyNormalizedName(t *testing.T) {
 	rows := rowsFromMaps(t, map[string]any{"###": "x"})
-	_, err := applyRuntimeNormalizeBlock(rows, true)
+	_, err := applyRuntimeNormalizeBlock(rows, true, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `column "###" normalizes to an empty name`)
 }
@@ -254,4 +256,22 @@ func TestPreviewChainWithPinnedSnapshotReadsBuildInputs(t *testing.T) {
 		{ID: "clean", TransformType: "sql", DependsOn: []string{"orders"}, Config: json.RawMessage(cleaningStack)},
 	}
 	assert.False(t, previewChainRequiresBuildInputs(unpinned))
+}
+
+func TestCleaningStackReusesDroppedName(t *testing.T) {
+	rt := newLightweightTableRuntime(nil)
+	rt.storeTable("in", lightweightTable{rows: rowsFromMaps(t, map[string]any{"a": "3", "b": 2})})
+	node := executor.NodeContext{Node: executor.Node{ID: "clean", DependsOn: []string{"in"}}}
+	drop := runtimeTransformBlock{Kind: "drop", Applied: true, Columns: []string{"b"}}
+	cast := runtimeTransformBlock{Kind: "cast", Applied: true, SourceColumn: "a", TargetColumn: "b", TargetType: "Integer"}
+	out, err := rt.runTransformStack(context.Background(), node, runtimeTransformStack{Blocks: []runtimeTransformBlock{drop, cast}})
+	require.NoError(t, err)
+	assert.Equal(t, []map[string]any{{"b": float64(3)}}, rowsToMapsForTest(t, out))
+	_, err = rt.runTransformStack(context.Background(), node, runtimeTransformStack{Blocks: []runtimeTransformBlock{drop, drop}})
+	require.ErrorContains(t, err, `column "b" does not exist`)
+}
+
+func TestNormalizeRejectsDeclaredCollisionInEmptyTable(t *testing.T) {
+	_, err := applyRuntimeNormalizeBlock(nil, false, []string{"OrderID", "Order ID"})
+	require.ErrorContains(t, err, `duplicate column name "order_id"`)
 }

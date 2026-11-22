@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -562,28 +561,22 @@ func (rt *lightweightTableRuntime) runDrop(node executor.NodeContext, cfg tableR
 	if err != nil {
 		return nil, err
 	}
-	return applyRuntimeDropBlock(rows, firstStrings(cfg.DropColumns, cfg.Columns), rt.declaredDependencyColumns(node))
+	return applyRuntimeDropBlock(rows, firstStrings(cfg.DropColumns, cfg.Columns), rt.dependencySchema(node).columnNames())
 }
 
-// declaredDependencyColumns lists the dependency node's declared schema
-// columns. Shaping blocks merge it with the observed row keys so a declared
-// but sparse column stays addressable, mirroring how the lightweight join
-// resolves its projections.
-func (rt *lightweightTableRuntime) declaredDependencyColumns(node executor.NodeContext) []string {
+func (rt *lightweightTableRuntime) dependencySchema(node executor.NodeContext) pipelineStrictSchema {
 	if len(node.Node.DependsOn) == 0 {
-		return nil
+		return pipelineStrictSchema{}
 	}
-	schema := rt.tableSchema(node.Node.DependsOn[0])
-	if !schema.Known {
-		return nil
+	return rt.tableSchema(node.Node.DependsOn[0])
+}
+
+func (block runtimeTransformBlock) shapesColumns() bool {
+	switch strings.ToLower(strings.TrimSpace(block.Kind)) {
+	case "cast", "drop", "normalize":
+		return block.Applied
 	}
-	names := make([]string, 0, len(schema.Fields))
-	for _, field := range schema.Fields {
-		if strings.TrimSpace(field.Name) != "" {
-			names = append(names, field.Name)
-		}
-	}
-	return names
+	return false
 }
 
 func (rt *lightweightTableRuntime) runRename(node executor.NodeContext, cfg tableRuntimeConfig) ([]pipelineexpression.Row, error) {
@@ -658,7 +651,15 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 	if err != nil {
 		return nil, err
 	}
-	declared := rt.declaredDependencyColumns(node)
+	// Each block sees the shape produced by its predecessors, including
+	// declared columns that have no values in this batch.
+	var schema pipelineStrictSchema
+	for _, block := range stack.Blocks {
+		if block.shapesColumns() {
+			schema = rt.dependencySchema(node)
+			break
+		}
+	}
 	out := cloneRows(rows)
 	for _, block := range stack.Blocks {
 		if !block.Applied {
@@ -670,7 +671,7 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 		case "select":
 			out = applyRuntimeSelectBlock(out, block.Columns)
 		case "drop":
-			out, err = applyRuntimeDropBlock(out, block.Columns, declared)
+			out, err = applyRuntimeDropBlock(out, block.Columns, schema.columnNames())
 		case "rename":
 			out = applyRuntimeRenameBlock(out, block.Renames)
 		case "sort":
@@ -678,7 +679,7 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 		case "normalize_units":
 			out, err = applyRuntimeNormalizeUnitsBlock(out, block)
 		case "normalize":
-			out, err = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters)
+			out, err = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters, schema.columnNames())
 		case "formula", "derive_column":
 			out, err = applyRuntimeFormulaBlock(out, block)
 		case "window_aggregate":
@@ -692,7 +693,7 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 		case "json_extract":
 			out, err = applyRuntimeJSONExtractBlock(out, block)
 		case "cast":
-			out, err = applyRuntimeCastBlock(out, block, declared)
+			out, err = applyRuntimeCastBlock(out, block, schema.columnNames())
 		case "haversine", "haversine_distance", "geo_distance":
 			out, err = applyRuntimeHaversineBlock(out, block)
 		case "function", "udf", "reusable_function":
@@ -711,6 +712,9 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 		}
 		if err != nil {
 			return nil, err
+		}
+		if schema.Known {
+			schema = validateTransformStack(node.Node.ID, runtimeTransformStack{Blocks: []runtimeTransformBlock{block}}, schema, &pipelineStrictValidationReport{})
 		}
 	}
 	return out, nil
@@ -1091,7 +1095,7 @@ func applyRuntimeDropBlock(rows []pipelineexpression.Row, columns []string, decl
 			drop = append(drop, col)
 		}
 	}
-	if err := requireRuntimeColumns(runtimeColumnOracle(rows, declared), drop); err != nil {
+	if err := requireRuntimeColumns(availableColumnNames(rows, declared), drop); err != nil {
 		return nil, err
 	}
 	remove := map[string]struct{}{}
@@ -1131,10 +1135,10 @@ func requireRuntimeColumns(oracle, requested []string) error {
 	return errors.New(strings.Join(parts, "; "))
 }
 
-// runtimeColumnOracle merges the names observed in rows with the dependency's
+// availableColumnNames merges the names observed in rows with the dependency's
 // declared schema so a declared-but-sparse column stays addressable — the same
 // merge the lightweight join uses for its projections.
-func runtimeColumnOracle(rows []pipelineexpression.Row, declared []string) []string {
+func availableColumnNames(rows []pipelineexpression.Row, declared []string) []string {
 	names := deriveRuntimeColumns(rows)
 	if len(declared) == 0 {
 		return names
@@ -1193,9 +1197,9 @@ func applyRuntimeRenameBlock(rows []pipelineexpression.Row, renames []runtimeRen
 // rule. Two upstream names that normalize to the same target, or a name that
 // normalizes to empty, are hard errors: keeping whichever source happened to
 // iterate last would drop the other column nondeterministically.
-func applyRuntimeNormalizeBlock(rows []pipelineexpression.Row, removeSpecial bool) ([]pipelineexpression.Row, error) {
+func applyRuntimeNormalizeBlock(rows []pipelineexpression.Row, removeSpecial bool, declared []string) ([]pipelineexpression.Row, error) {
 	sources := map[string][]string{}
-	for _, name := range deriveRuntimeColumns(rows) {
+	for _, name := range availableColumnNames(rows, declared) {
 		target := normalizeRuntimeColumnName(name, removeSpecial)
 		if target == "" {
 			return nil, fmt.Errorf("column %q normalizes to an empty name", name)
@@ -1245,11 +1249,11 @@ func applyRuntimeCastBlock(rows []pipelineexpression.Row, block runtimeTransform
 	if target == "" {
 		target = source
 	}
-	if err := requireRuntimeColumns(runtimeColumnOracle(rows, declared), []string{source}); err != nil {
+	if err := requireRuntimeColumns(availableColumnNames(rows, declared), []string{source}); err != nil {
 		return nil, err
 	}
 	if target != source {
-		for _, name := range runtimeColumnOracle(rows, declared) {
+		for _, name := range availableColumnNames(rows, declared) {
 			if name == target {
 				return nil, fmt.Errorf("duplicate column name %q", target)
 			}
@@ -1265,7 +1269,7 @@ func applyRuntimeCastBlock(rows []pipelineexpression.Row, block runtimeTransform
 			out = append(out, next)
 			continue
 		}
-		value, err := castRuntimeValue(raw, block.TargetType)
+		value, err := columnCastValue(raw, block.TargetType)
 		if err != nil {
 			return nil, fmt.Errorf("cast column %q at row %d: %w", source, index+1, err)
 		}
@@ -1355,69 +1359,6 @@ func validRuntimeCastTarget(targetType string) bool {
 		return true
 	}
 	return false
-}
-
-// int64 float bounds: 2^63 itself is one past the representable maximum.
-const (
-	maxInt64AsFloat = 9223372036854775808.0
-	minInt64AsFloat = -9223372036854775808.0
-)
-
-// castRuntimeValue converts one non-null JSON value to the target type. Values
-// the type cannot represent return an error so the caller can attribute the
-// failure to the column and row. Integer casts truncate like SQL CAST.
-func castRuntimeValue(raw json.RawMessage, targetType string) (json.RawMessage, error) {
-	kind := strings.ToLower(strings.TrimSpace(targetType))
-	switch kind {
-	case "integer", "long", "int", "bigint":
-		f, ok := runtimeScalarFloat(raw)
-		if !ok {
-			return nil, fmt.Errorf("requires a numeric value, got %s", runtimeValueKind(raw))
-		}
-		if math.IsNaN(f) || f >= maxInt64AsFloat || f < minInt64AsFloat {
-			return nil, fmt.Errorf("value %s is out of range for an integer", runtimeScalarString(raw))
-		}
-		return mustRuntimeJSON(int64(f)), nil
-	case "double", "float":
-		f, ok := runtimeScalarFloat(raw)
-		if !ok {
-			return nil, fmt.Errorf("requires a numeric value, got %s", runtimeValueKind(raw))
-		}
-		return mustRuntimeJSON(f), nil
-	case "boolean", "bool":
-		switch strings.ToLower(runtimeScalarString(raw)) {
-		case "true", "1":
-			return json.RawMessage("true"), nil
-		case "false", "0":
-			return json.RawMessage("false"), nil
-		}
-		return nil, fmt.Errorf("requires a boolean value, got %s", runtimeValueKind(raw))
-	case "string", "varchar", "date", "timestamp":
-		return mustRuntimeJSON(runtimeScalarString(raw)), nil
-	}
-	return nil, fmt.Errorf("cast target %q is not a supported type", targetType)
-}
-
-// runtimeValueKind names a JSON value's shape for cast diagnostics.
-func runtimeValueKind(raw json.RawMessage) string {
-	var probe any
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		return "an unparsable value"
-	}
-	switch probe.(type) {
-	case string:
-		return "a string"
-	case float64:
-		return "a number"
-	case bool:
-		return "a boolean"
-	case []any:
-		return "an array"
-	case map[string]any:
-		return "an object"
-	default:
-		return "a null"
-	}
 }
 
 // normalizeRuntimeColumnName maps one column name onto the snake_case style the
