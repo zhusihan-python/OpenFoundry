@@ -77,7 +77,7 @@ func main() {
 	}
 
 	jwt := authmw.NewJWTConfig(cfg.JWTSecret)
-	h := &handlers.Handlers{Repo: &repo.Repo{Pool: pool}, AllowFakeLLMProvider: cfg.AllowFakeLLMProvider, PurposeCheckpoint: purposeCheckpoint}
+	h := &handlers.Handlers{Repo: &repo.Repo{Pool: pool}, Provider: cfg.ChatProvider, AllowFakeLLMProvider: cfg.AllowFakeLLMProvider, PurposeCheckpoint: purposeCheckpoint}
 	metrics := observability.NewMetrics()
 
 	srv := server.New(cfg, jwt, h, metrics, probes.Postgres("primary", pool))

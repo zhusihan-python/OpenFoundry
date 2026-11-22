@@ -30,10 +30,11 @@ type LLMTransformRunner interface {
 }
 
 type AIServiceLLMConfig struct {
-	BaseURL     string
-	BearerToken string
-	Client      *http.Client
-	Timeout     time.Duration
+	AgentRuntime bool
+	BaseURL      string
+	BearerToken  string
+	Client       *http.Client
+	Timeout      time.Duration
 }
 
 type AIServiceLLMRunner struct {
@@ -74,7 +75,7 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 		cfg.MaxRows = 50
 	}
 	rows := cloneRawRows(req.InputRows)
-	if len(rows) == 0 {
+	if len(rows) == 0 && len(req.Node.Node.DependsOn) == 0 {
 		rows = []map[string]json.RawMessage{{}}
 	}
 	if len(rows) > cfg.MaxRows {
@@ -191,8 +192,31 @@ func (r *AIServiceLLMRunner) complete(ctx context.Context, body aiChatCompletion
 		}
 		client = &http.Client{Timeout: timeout}
 	}
-	payload, _ := json.Marshal(body)
-	url := strings.TrimRight(r.cfg.BaseURL, "/") + "/api/v1/ai/chat/completions"
+	var requestBody any = body
+	path := "/api/v1/ai/chat/completions"
+	if r.cfg.AgentRuntime {
+		path = "/api/v1/agent-runtime/chat/completions"
+		type message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		messages := make([]message, 0, 2)
+		if body.SystemPrompt != "" {
+			messages = append(messages, message{Role: "system", Content: body.SystemPrompt})
+		}
+		messages = append(messages, message{Role: "user", Content: body.UserMessage})
+		requestBody = struct {
+			Model       string    `json:"model,omitempty"`
+			Messages    []message `json:"messages"`
+			MaxTokens   int       `json:"max_tokens,omitempty"`
+			Temperature *float32  `json:"temperature,omitempty"`
+		}{body.Model, messages, body.MaxTokens, body.Temperature}
+	}
+	payload, err := json.Marshal(requestBody)
+	if err != nil {
+		return aiChatCompletion{}, err
+	}
+	url := strings.TrimRight(r.cfg.BaseURL, "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return aiChatCompletion{}, err
@@ -308,10 +332,12 @@ func (r runtimeNodeRunner) runLLM(ctx context.Context, node executor.NodeContext
 		return executor.NodeResult{}, errors.New("ai_service_not_configured: set AI_SERVICE_URL to execute Pipeline Builder LLM nodes")
 	}
 	inputRows := []map[string]json.RawMessage{}
-	if r.Table != nil {
-		if rows, err := r.Table.firstDependencyRows(node); err == nil {
-			inputRows = rowsToMaps(rows)
+	if r.Table != nil && len(node.Node.DependsOn) > 0 {
+		rows, err := r.Table.firstDependencyRows(node)
+		if err != nil {
+			return executor.NodeResult{}, err
 		}
+		inputRows = rowsToMaps(rows)
 	}
 	result, err := r.LLM.RunLLMTransform(ctx, LLMTransformRequest{
 		Node:          node,

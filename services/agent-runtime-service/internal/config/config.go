@@ -11,7 +11,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
+
+	aimodels "github.com/openfoundry/openfoundry-go/libs/ai-kernel-go/models"
 	"strconv"
 )
 
@@ -26,6 +30,7 @@ type Config struct {
 	KafkaBootstrap       string
 	PurposeCheckpointURL string
 	AllowFakeLLMProvider bool
+	ChatProvider         *aimodels.LlmProvider
 }
 
 func FromEnv() (*Config, error) {
@@ -47,6 +52,27 @@ func FromEnv() (*Config, error) {
 	}
 	if cfg.JWTSecret == "" {
 		return nil, &MissingEnvError{Key: "JWT_SECRET"}
+	}
+	// Only an explicitly configured endpoint may receive chat messages.
+	endpoint := strings.TrimSpace(os.Getenv("LLM_PROVIDER_BASE_URL"))
+	model := strings.TrimSpace(os.Getenv("LLM_PROVIDER_MODEL"))
+	if endpoint != "" || model != "" {
+		if model == "" {
+			return nil, &MissingEnvError{Key: "LLM_PROVIDER_MODEL"}
+		}
+		if endpoint == "" {
+			return nil, &MissingEnvError{Key: "LLM_PROVIDER_BASE_URL"}
+		}
+		u, err := url.Parse(endpoint)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return nil, errors.New("LLM_PROVIDER_BASE_URL requires an absolute HTTP(S) base URL without credentials, query or fragment")
+		}
+		tokenEnv := "LLM_PROVIDER_TOKEN"
+		cfg.ChatProvider = &aimodels.LlmProvider{
+			Name: model, ModelName: model, ProviderType: "openai_compatible",
+			EndpointURL: endpoint, APIMode: "chat_completions", Enabled: true,
+			CredentialReference: &tokenEnv, RouteRules: aimodels.DefaultProviderRoutingRules(),
+		}
 	}
 	return cfg, nil
 }

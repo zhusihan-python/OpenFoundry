@@ -133,3 +133,14 @@ func (r *recordingLLMTransformRunner) RunLLMTransform(_ context.Context, req LLM
 	r.seen = req
 	return r.result, r.err
 }
+
+func TestLLMEmptyDependencyDoesNotCreateRowsOrCallModel(t *testing.T) {
+	runner := NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: "http://unused.invalid"})
+	result, err := runner.RunLLMTransform(context.Background(), LLMTransformRequest{
+		Node:    executor.NodeContext{Node: executor.Node{DependsOn: []string{"empty"}}},
+		Payload: json.RawMessage(`{"prompt":"describe the order"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0, result.Metadata["rows_affected"])
+	require.Empty(t, result.Metadata["data_rows"])
+}

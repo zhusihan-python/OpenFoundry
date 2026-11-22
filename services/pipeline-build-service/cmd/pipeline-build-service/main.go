@@ -147,7 +147,7 @@ func main() {
 			Timeout:      time.Duration(cfg.DistributedComputeTimeoutSecs) * time.Second,
 		})
 		aiClient := &http.Client{Timeout: 45 * time.Second}
-		llmRunner := handler.NewAIServiceLLMRunner(handler.AIServiceLLMConfig{BaseURL: cfg.AIServiceURL, BearerToken: cfg.AIServiceBearer, Client: aiClient})
+		llmRunner := handler.NewAIServiceLLMRunner(handler.AIServiceLLMConfig{AgentRuntime: cfg.PipelineLLMProtocol == "agent-runtime", BaseURL: cfg.AIServiceURL, BearerToken: cfg.AIServiceBearer, Client: aiClient})
 		aipGenerator := handler.NewAIServicePipelineAIPGenerator(handler.PipelineAIPGeneratorConfig{BaseURL: cfg.AIServiceURL, BearerToken: cfg.AIServiceBearer, Client: aiClient})
 		// Uses its own redirect-refusing client: the rows endpoint must be
 		// answered directly by dataset-versioning-service, never via a

@@ -317,8 +317,12 @@ func (h *Handlers) CreateChatCompletion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	model := provider.ModelName
-	if strings.TrimSpace(body.Model) != "" {
-		model = body.Model
+	if requested := strings.TrimSpace(body.Model); requested != "" {
+		if h.Provider != nil && requested != provider.ModelName {
+			writeError(w, http.StatusBadRequest, "requested model differs from configured provider model")
+			return
+		}
+		model = requested
 	}
 	temperature := aimodels.DefaultTemperature
 	if body.Temperature != nil {
