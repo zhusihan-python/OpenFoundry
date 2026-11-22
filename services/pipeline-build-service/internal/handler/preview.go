@@ -151,7 +151,11 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 	}
 	runtime := newLightweightTableRuntime()
 	runtime.datasets = ports.DatasetRows
-	runtime.datasetRowsPreview = true
+	// A window can use rows beyond the requested display sample, including
+	// later input rows that sort before it. Read the same bounded input as a
+	// build and apply the display limit after computing the window.
+	usesWindow := previewChainUsesWindow(chain)
+	runtime.datasetRowsPreview = !usesWindow
 	runner := runtimeNodeRunner{Table: runtime, LLM: ports.LLM}
 	var targetMetadata map[string]any
 	for _, node := range chain {
@@ -168,9 +172,12 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 		metadata := map[string]any{
 			"logic_kind":     "transform",
 			"transform_type": transform,
-			"logic_payload":  previewConfigWithSampleSize(node.Config, sampleSize),
+			"logic_payload":  node.Config,
 			"label":          node.Label,
-			"sample_size":    sampleSize,
+		}
+		if !usesWindow {
+			metadata["logic_payload"] = previewConfigWithSampleSize(node.Config, sampleSize)
+			metadata["sample_size"] = sampleSize
 		}
 		if PayloadDeclaresDatasetSnapshot(node.Config) {
 			if ids := uuidStrings(node.InputDatasetIDs); len(ids) > 0 {
@@ -194,7 +201,9 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 		if node.ID == nodeID {
 			targetMetadata = result.Metadata
 		}
-		runtime.trimRows(node.ID, sampleSize)
+		if !usesWindow {
+			runtime.trimRows(node.ID, sampleSize)
+		}
 	}
 	rows := limitRuntimeRows(runtime.snapshotRows(nodeID), sampleSize)
 	response := pipelineNodePreviewResponse{
@@ -215,6 +224,28 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 		response.DatasetSchema = schema
 	}
 	return response, nil
+}
+
+func previewChainUsesWindow(chain []models.PipelineNode) bool {
+	for _, node := range chain {
+		var cfg struct {
+			Stack struct {
+				Blocks []struct {
+					Kind    string `json:"kind"`
+					Applied bool   `json:"applied"`
+				} `json:"blocks"`
+			} `json:"_stack"`
+		}
+		if json.Unmarshal(node.Config, &cfg) != nil {
+			continue
+		}
+		for _, block := range cfg.Stack.Blocks {
+			if block.Applied && strings.EqualFold(strings.TrimSpace(block.Kind), "window_aggregate") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func upstreamExecutionChain(nodes []models.PipelineNode, target string) ([]models.PipelineNode, error) {

@@ -23,6 +23,8 @@ import {
   newRenameColumnsBlock,
   newSelectColumnsBlock,
   newSortRowsBlock,
+  newWindowAggregateBlock,
+  validWindowAggregateConfig,
   validSortKeys,
   type AggregateBlock,
   type Aggregation,
@@ -41,6 +43,7 @@ import {
   type SortRowsBlock,
   type TransformBlock,
   type TransformStack,
+  type WindowAggregateBlock,
   validAggregateConfig,
   validCSVParseConfig,
   validFormulaConfig,
@@ -78,6 +81,7 @@ const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   derive_column: () => newFormulaBlock('derive_column'),
   aggregate: () => newAggregateBlock(),
   conditional_aggregate: () => newAggregateBlock('conditional_aggregate'),
+  window_aggregate: newWindowAggregateBlock,
   csv_parse: () => newCSVParseBlock(),
   explode: () => newExplodeBlock(),
   json_extract: () => newJSONExtractBlock(),
@@ -513,6 +517,10 @@ function BlockCard({
             </label>
           </div>
         )}
+        {block.kind === 'window_aggregate' && (
+          <WindowAggregateBody block={block} schema={schema} catalogEntry={catalogEntry}
+            onPatch={(patch) => onPatch({ ...patch, applied: false })} />
+        )}
         {(block.kind === 'aggregate' || block.kind === 'conditional_aggregate') ? (
           <AggregateBody block={block} schema={schema} catalogEntry={catalogEntry}
             onPatch={(patch) => onPatch({ ...patch, applied: false })} />
@@ -942,9 +950,9 @@ function SortBody({
   schema,
   onPatch,
 }: {
-  block: SortRowsBlock;
+  block: Pick<SortRowsBlock, 'sort_keys'>;
   schema: string[];
-  onPatch: (patch: Partial<SortRowsBlock>) => void;
+  onPatch: (patch: Pick<SortRowsBlock, 'sort_keys'>) => void;
 }) {
   function updateKey(index: number, patch: Partial<SortRowsBlock['sort_keys'][number]>) {
     onPatch({ sort_keys: block.sort_keys.map((key, i) => i === index ? { ...key, ...patch } : key) });
@@ -977,17 +985,46 @@ function SortBody({
   );
 }
 
+function WindowAggregateBody({ block, schema, catalogEntry, onPatch }: {
+  block: WindowAggregateBlock;
+  schema: string[];
+  catalogEntry?: PipelineTransformCatalogEntry;
+  onPatch: (patch: Partial<WindowAggregateBlock>) => void;
+}) {
+  const frame = block.frame ?? { preceding: Number.NaN, following: Number.NaN };
+  const { preceding, following } = frame;
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <SortBody block={{ sort_keys: block.sort_keys ?? [] }} schema={schema} onPatch={onPatch} />
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <label>
+          Rows preceding
+          <input type="number" min={0} step={1} style={inputStyle()} value={Number.isNaN(preceding) ? '' : preceding}
+            onChange={(event) => onPatch({ frame: { ...frame, preceding: event.target.valueAsNumber } })} />
+        </label>
+        <label>
+          Rows following
+          <input type="number" min={0} step={1} style={inputStyle()} value={Number.isNaN(following) ? '' : following}
+            onChange={(event) => onPatch({ frame: { ...frame, following: event.target.valueAsNumber } })} />
+        </label>
+      </div>
+      <AggregateBody block={block} schema={schema} catalogEntry={catalogEntry} onPatch={onPatch} />
+    </div>
+  );
+}
+
 function AggregateBody({
   block,
   schema,
   catalogEntry,
   onPatch,
 }: {
-  block: AggregateBlock;
+  block: AggregateBlock | WindowAggregateBlock;
   schema: string[];
   catalogEntry?: PipelineTransformCatalogEntry;
-  onPatch: (patch: Partial<AggregateBlock>) => void;
+  onPatch: (patch: Partial<Pick<AggregateBlock, 'group_by' | 'aggregations'>>) => void;
 }) {
+  const keyLabel = block.kind === 'window_aggregate' ? 'partition' : 'group';
   const functions = catalogEntry?.form.fields.find((field) => field.name === 'aggregations')?.options ?? [];
   function updateMeasure(index: number, patch: Partial<Aggregation>) {
     onPatch({ aggregations: block.aggregations.map((measure, i) => index === i ? { ...measure, ...patch } : measure) });
@@ -996,14 +1033,14 @@ function AggregateBody({
     <div style={{ display: 'grid', gap: 8 }}>
       {block.group_by.map((column, index) => (
         <div key={index} style={{ display: 'flex', gap: 8 }}>
-          <ColumnInput label={`Group column ${index + 1}`} value={column} schema={schema}
+          <ColumnInput label={`${keyLabel === 'partition' ? 'Partition' : 'Group'} column ${index + 1}`} value={column} schema={schema}
             onChange={(value) => onPatch({ group_by: block.group_by.map((item, i) => i === index ? value : item) })} />
-          <button type="button" className="of-button" aria-label={`Remove group column ${index + 1}`}
+          <button type="button" className="of-button" aria-label={`Remove ${keyLabel} column ${index + 1}`}
             onClick={() => onPatch({ group_by: block.group_by.filter((_, i) => i !== index) })}>Remove</button>
         </div>
       ))}
       <button type="button" className="of-button" style={{ justifySelf: 'start' }}
-        onClick={() => onPatch({ group_by: [...block.group_by, ''] })}>Add group column</button>
+        onClick={() => onPatch({ group_by: [...block.group_by, ''] })}>Add {keyLabel} column</button>
       {block.aggregations.map((measure, index) => (
         <div key={index} style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           <select aria-label={`Measure ${index + 1}`} value={measure.function} style={inputStyle()}
@@ -1160,6 +1197,7 @@ function blockAccent(kind: TransformBlock['kind']): string {
     case 'derive_column':
     case 'aggregate':
     case 'conditional_aggregate':
+    case 'window_aggregate':
     case 'csv_parse':
     case 'explode':
     case 'json_extract':
@@ -1180,6 +1218,8 @@ function hasInvalidConfig(block: TransformBlock): boolean {
     case 'aggregate':
     case 'conditional_aggregate':
       return !validAggregateConfig(block);
+    case 'window_aggregate':
+      return !validWindowAggregateConfig(block);
     case 'csv_parse':
       return !validCSVParseConfig(block);
     case 'explode':

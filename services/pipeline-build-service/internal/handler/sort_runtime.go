@@ -47,7 +47,7 @@ type runtimeSortValue struct {
 }
 
 type runtimeSortRow struct {
-	row    pe.Row
+	index  int
 	values []runtimeSortValue
 }
 
@@ -56,13 +56,25 @@ func applyRuntimeSortBlock(rows []pe.Row, rawKeys []runtimeSortKey) ([]pe.Row, e
 	if err != nil {
 		return nil, err
 	}
+	indices, err := runtimeSortedRowIndices(rows, keys)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]pe.Row, len(indices))
+	for i, index := range indices {
+		result[i] = rows[index]
+	}
+	return result, nil
+}
+
+func runtimeSortedRowIndices(rows []pe.Row, keys []runtimeSortKey) ([]int, error) {
 	families := make([]pe.EvalValueKind, len(keys))
 	for index := range families {
 		families[index] = pe.EvalKindNull
 	}
 	ordered := make([]runtimeSortRow, 0, len(rows))
-	for _, row := range rows {
-		entry := runtimeSortRow{row: row, values: make([]runtimeSortValue, len(keys))}
+	for index, row := range rows {
+		entry := runtimeSortRow{index: index, values: make([]runtimeSortValue, len(keys))}
 		for index, key := range keys {
 			raw := bytes.TrimSpace(row[key.Column])
 			value := pe.EvalValueFromJSON(raw)
@@ -97,9 +109,9 @@ func applyRuntimeSortBlock(rows []pe.Row, rawKeys []runtimeSortKey) ([]pe.Row, e
 		}
 		return 0
 	})
-	result := make([]pe.Row, 0, len(rows))
-	for _, entry := range ordered {
-		result = append(result, entry.row)
+	result := make([]int, len(ordered))
+	for i, entry := range ordered {
+		result[i] = entry.index
 	}
 	return result, nil
 }
