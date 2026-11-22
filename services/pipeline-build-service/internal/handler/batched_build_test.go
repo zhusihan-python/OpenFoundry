@@ -385,6 +385,10 @@ func bareDatasetUUID(path, suffix string) string {
 // Fake batched store (in-memory mirror of the postgres state machine).
 // ---------------------------------------------------------------------------
 
+func (*fakeBatchedStore) GetPipeline(_ context.Context, id uuid.UUID) (*models.Pipeline, error) {
+	return &models.Pipeline{ID: id}, nil
+}
+
 type fakeBatchedStore struct {
 	mu          sync.Mutex
 	configs     map[uuid.UUID]*models.BatchedBuildConfig

@@ -37,48 +37,6 @@ type BuildLifecyclePorts struct {
 
 type buildLifecycleSlot struct{ ports BuildLifecyclePorts }
 
-// buildPipelineLoader is implemented by stores that can load a pipeline's
-// graph. The production postgres repository always can; narrower fakes keep
-// the legacy behavior and rely on the runManualBuild gate.
-type buildPipelineLoader interface {
-	LoadPipeline(ctx context.Context, id uuid.UUID) (*models.Pipeline, error)
-}
-
-// ontologyOutputNodesOfBuildPipeline reports the object/link output nodes a
-// build's parent pipeline graph declares. A nil/empty answer means "no
-// ontology targets visible from the build path".
-func ontologyOutputNodesOfBuildPipeline(ctx context.Context, store any, pipelineRID string) []string {
-	loader, ok := store.(buildPipelineLoader)
-	if !ok || loader == nil {
-		return nil
-	}
-	raw := strings.TrimSpace(pipelineRID)
-	raw = strings.TrimPrefix(raw, "ri.foundry.main.pipeline.")
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return nil
-	}
-	pipeline, err := loader.LoadPipeline(ctx, id)
-	if err != nil || pipeline == nil {
-		return nil
-	}
-	ir, err := pipeline.RuntimeIR()
-	if err != nil {
-		return nil
-	}
-	return ontologyOutputIRNodes(ir)
-}
-
-func ontologyOutputIRNodes(ir models.PipelineIR) []string {
-	var out []string
-	for _, node := range ir.Nodes {
-		if kind := outputKindForIRNode(node, parseOutputDatasetConfig(node.Config)); kind == "object_type" || kind == "link_type" {
-			out = append(out, node.ID)
-		}
-	}
-	return out
-}
-
 var buildLifecyclePorts atomic.Value // stores *buildLifecycleSlot
 
 // SetBuildLifecyclePorts injects resolver and persistence ports for CreateBuild
@@ -100,36 +58,35 @@ type pipelineParentValidator interface {
 // not resolve to a tenant-visible pipeline. Unscoped (legacy internal)
 // callers keep the old behaviour.
 func validatePipelineParent(ctx context.Context, ports BuildLifecyclePorts, pipelineRID string) error {
-	if TenantScopeFromContext(ctx) == nil {
-		return nil
+	_, err := buildPipelineParent(ctx, ports, pipelineRID, false)
+	return err
+}
+
+// A manual resolution also needs the runtime graph for unscoped callers.
+// Scoped callers use the same tenant-visible snapshot for both checks.
+func buildPipelineParent(ctx context.Context, ports BuildLifecyclePorts, pipelineRID string, needGraph bool) (*models.Pipeline, error) {
+	var source any = ports.Builds
+	if TenantScopeFromContext(ctx) != nil {
+		source, _ = currentPipelineAuthoringRepository()
+	} else if !needGraph {
+		return nil, nil
 	}
-	// Scoped callers must PROVE ownership: a missing or non-validating
-	// authoring repository is a fail-closed 503, never a silent bypass.
-	authoring, ok := currentPipelineAuthoringRepository()
-	if !ok || authoring == nil {
-		return ErrPipelineParentValidationUnavailable
+	validator, ok := source.(pipelineParentValidator)
+	if !ok {
+		return nil, ErrPipelineParentValidationUnavailable
 	}
-	validator, isValidator := authoring.(pipelineParentValidator)
-	if !isValidator {
-		return ErrPipelineParentValidationUnavailable
-	}
-	raw := strings.TrimSpace(pipelineRID)
-	raw = strings.TrimPrefix(raw, "ri.foundry.main.pipeline.")
-	id, err := uuid.Parse(raw)
+	id, err := uuid.Parse(strings.TrimPrefix(strings.TrimSpace(pipelineRID), "ri.foundry.main.pipeline."))
 	if err != nil {
-		// Malformed reference: the caller's request is invalid.
-		return &resolver.ClientResolutionError{Message: fmt.Sprintf("pipeline_rid %q is not a valid pipeline reference", pipelineRID)}
+		return nil, &resolver.ClientResolutionError{Message: fmt.Sprintf("pipeline_rid %q is not a valid pipeline reference", pipelineRID)}
 	}
 	pipeline, err := validator.GetPipeline(ctx, id)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("%w: %w", ErrPipelineParentValidationUnavailable, err)
 	}
 	if pipeline == nil {
-		// Well-formed but invisible (foreign tenant or gone): 404, the
-		// isolation answer — never a generic 400.
-		return ErrPipelineParentNotFound
+		return nil, ErrPipelineParentNotFound
 	}
-	return nil
+	return pipeline, nil
 }
 
 // writeResolutionHTTPError maps resolution failures to precise statuses:
@@ -138,6 +95,12 @@ func validatePipelineParent(ctx context.Context, ports BuildLifecyclePorts, pipe
 func writeResolutionHTTPError(w http.ResponseWriter, err error) {
 	var httpErr *DatasetHTTPError
 	switch {
+	case errors.Is(err, errManualJobSpecUnavailable):
+		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_job_spec_unavailable", err)
+	case errors.Is(err, errManualOntologyOutput):
+		writeManualBuildError(w, http.StatusConflict, "manual_build_ontology_output_unsupported", err)
+	case errors.Is(err, errManualTargetInvalid):
+		writeManualBuildError(w, http.StatusConflict, "manual_build_target_invalid", err)
 	case errors.Is(err, ErrDatasetTenantBoundaryUnsupported):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "dataset_tenant_boundary_unsupported", "detail": err.Error()})
 	case errors.Is(err, ErrPipelineParentNotFound):
@@ -330,7 +293,9 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := withCallerBearer(r)
-	if err := validatePipelineParent(ctx, ports, body.PipelineRID); err != nil {
+	manual := args.TriggerKind == "MANUAL" || args.TriggerKind == "FORCE"
+	parent, err := buildPipelineParent(ctx, ports, body.PipelineRID, manual)
+	if err != nil {
 		writeResolutionHTTPError(w, err)
 		return
 	}
@@ -341,21 +306,16 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 		writeResolutionHTTPError(w, err)
 		return
 	}
-	// The build path publishes DATASETS only. A pipeline whose graph
-	// declares object/link outputs must not resolve into a build that
-	// would later report COMPLETED with the ontology side silently
-	// missing — reject before the build row, any reservation or any
-	// remote transaction exists. Graph-declared ontology delivery runs
-	// through POST /pipelines/{id}/runs, which wires the ontology
-	// committer. Stores that cannot load the pipeline graph keep the
-	// legacy behavior (the spec grammar itself is dataset-only); the
-	// execute-time gate in runManualBuild still catches those builds.
-	if nodes := ontologyOutputNodesOfBuildPipeline(ctx, ports.Builds, body.PipelineRID); len(nodes) > 0 {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error":  "manual_build_ontology_output_unsupported",
-			"detail": fmt.Sprintf("pipeline declares object/link output nodes (%s); the build path publishes datasets only — trigger the graph run path (POST /api/v1/pipelines/{id}/runs) for ontology outputs", strings.Join(nodes, ", ")),
-		})
-		return
+	var targets manualOntologyTargets
+	if manual {
+		targets, err = manualGraphTargets(parent)
+		if err == nil {
+			err = targets.checkOutputs(body.OutputDatasetRIDs)
+		}
+		if err != nil {
+			writeResolutionHTTPError(w, err)
+			return
+		}
 	}
 	// Read-only preflight (specs, cycles, inputs, output visibility)
 	// rejects deterministic errors BEFORE the build row, any remote
@@ -364,6 +324,12 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeResolutionHTTPError(w, err)
 		return
+	}
+	if manual {
+		if err := targets.checkSpecs(specs); err != nil {
+			writeResolutionHTTPError(w, err)
+			return
+		}
 	}
 	// WP3.3 3B opt-in detection runs on the REAL preflight specs: the
 	// frozen batched configuration, the build-bound reservation protocol
@@ -419,6 +385,18 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 		switch ports.Versioning.(type) {
 		case DatasetHTTPVersioning, *DatasetHTTPVersioning:
 			args.ReservationPurpose = manualOutputPurpose
+		}
+	}
+	if manual {
+		previous := args.SpecFreezer
+		args.SpecFreezer = func(fresh []models.JobSpec) error {
+			if err := targets.checkSpecs(fresh); err != nil {
+				return err
+			}
+			if previous != nil {
+				return previous(fresh)
+			}
+			return nil
 		}
 	}
 	buildID, err := uuid.NewV7()

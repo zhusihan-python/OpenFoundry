@@ -56,6 +56,10 @@ func (stubJobSpecRepo) Lookup(_ context.Context, _, output, branch string, _ []s
 	return spec, nil
 }
 
+func (*capturingBuildsPort) GetPipeline(_ context.Context, id uuid.UUID) (*models.Pipeline, error) {
+	return &models.Pipeline{ID: id}, nil
+}
+
 type capturingBuildsPort struct {
 	openBuilds int
 	failWith   error

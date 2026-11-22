@@ -29,7 +29,7 @@ func TestCreateBuildHappyPathWithFakes(t *testing.T) {
 	defer restore()
 
 	rr := httptest.NewRecorder()
-	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/api/v1/builds", bytes.NewReader([]byte(`{"pipeline_rid":"ri.pipeline.1","build_branch":"master","output_dataset_rids":["out.users"]}`))))
+	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/api/v1/builds", bytes.NewReader([]byte(`{"pipeline_rid":"ri.foundry.main.pipeline.930d0722-e1f3-425a-b771-35c2f8e4a86c","build_branch":"master","output_dataset_rids":["out.users"]}`))))
 
 	res := rr.Result()
 	defer res.Body.Close()
@@ -53,7 +53,7 @@ func TestCreateBuildMissingJobSpec(t *testing.T) {
 	defer restore()
 
 	rr := httptest.NewRecorder()
-	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/api/v1/builds", bytes.NewReader([]byte(`{"pipeline_rid":"ri.pipeline.1","build_branch":"feature","job_spec_fallback":["master"],"output_dataset_rids":["missing.out"]}`))))
+	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/api/v1/builds", bytes.NewReader([]byte(`{"pipeline_rid":"ri.foundry.main.pipeline.930d0722-e1f3-425a-b771-35c2f8e4a86c","build_branch":"feature","job_spec_fallback":["master"],"output_dataset_rids":["missing.out"]}`))))
 
 	require.Equal(t, http.StatusBadRequest, rr.Result().StatusCode)
 	require.Contains(t, rr.Body.String(), "missing JobSpec")
@@ -76,7 +76,7 @@ func TestCreateBuildLockHeld(t *testing.T) {
 	defer restore()
 
 	rr := httptest.NewRecorder()
-	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/api/v1/builds", bytes.NewReader([]byte(`{"pipeline_rid":"ri.pipeline.1","build_branch":"master","output_dataset_rids":["out.locked"]}`))))
+	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/api/v1/builds", bytes.NewReader([]byte(`{"pipeline_rid":"ri.foundry.main.pipeline.930d0722-e1f3-425a-b771-35c2f8e4a86c","build_branch":"master","output_dataset_rids":["out.locked"]}`))))
 
 	require.Equal(t, http.StatusBadRequest, rr.Result().StatusCode)
 	require.Contains(t, rr.Body.String(), "already locked")
@@ -94,7 +94,7 @@ func TestCreateBuildInputBranchMissing(t *testing.T) {
 	defer restore()
 
 	rr := httptest.NewRecorder()
-	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/api/v1/builds", bytes.NewReader([]byte(`{"pipeline_rid":"ri.pipeline.1","build_branch":"feature","output_dataset_rids":["out.users"]}`))))
+	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/api/v1/builds", bytes.NewReader([]byte(`{"pipeline_rid":"ri.foundry.main.pipeline.930d0722-e1f3-425a-b771-35c2f8e4a86c","build_branch":"feature","output_dataset_rids":["out.users"]}`))))
 
 	require.Equal(t, http.StatusBadRequest, rr.Result().StatusCode)
 	require.Contains(t, rr.Body.String(), "has no branch matching")
@@ -116,7 +116,7 @@ func TestDryRunResolveDoesNotPersist(t *testing.T) {
 	defer restore()
 
 	rr := httptest.NewRecorder()
-	DryRunResolve(rr, httptest.NewRequest(http.MethodPost, "/api/v1/dry-run/resolve", bytes.NewReader([]byte(`{"pipeline_rid":"ri.pipeline.1","build_branch":"master","output_dataset_rids":["out.users"]}`))))
+	DryRunResolve(rr, httptest.NewRequest(http.MethodPost, "/api/v1/dry-run/resolve", bytes.NewReader([]byte(`{"pipeline_rid":"ri.foundry.main.pipeline.930d0722-e1f3-425a-b771-35c2f8e4a86c","build_branch":"master","output_dataset_rids":["out.users"]}`))))
 
 	require.Equal(t, http.StatusOK, rr.Result().StatusCode)
 	require.Equal(t, 0, builds.opened)
@@ -133,7 +133,7 @@ func TestCreateBuildValidation(t *testing.T) {
 	defer restore()
 
 	rr := httptest.NewRecorder()
-	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/api/v1/builds", bytes.NewReader([]byte(`{"pipeline_rid":"ri.pipeline.1","build_branch":"master"}`))))
+	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/api/v1/builds", bytes.NewReader([]byte(`{"pipeline_rid":"ri.foundry.main.pipeline.930d0722-e1f3-425a-b771-35c2f8e4a86c","build_branch":"master"}`))))
 
 	require.Equal(t, http.StatusBadRequest, rr.Result().StatusCode)
 	require.Contains(t, rr.Body.String(), "output_dataset_rids")
@@ -144,6 +144,10 @@ type recordingBuildRepo struct {
 	persisted int
 	failed    int
 	last      *models.ResolvedBuild
+}
+
+func (r *recordingBuildRepo) GetPipeline(_ context.Context, id uuid.UUID) (*models.Pipeline, error) {
+	return &models.Pipeline{ID: id}, nil
 }
 
 func (r *recordingBuildRepo) OpenBuild(_ context.Context, _ resolver.ResolveBuildArgs, _ uuid.UUID) error {
@@ -254,5 +258,5 @@ func handlerJobSpec(rid string, inputs, outputs []string) models.JobSpec {
 	for _, input := range inputs {
 		inputSpecs = append(inputSpecs, models.InputSpec{DatasetRID: input, FallbackChain: []string{"master"}})
 	}
-	return models.JobSpec{RID: rid, PipelineRID: "ri.pipeline.1", BranchName: "master", Inputs: inputSpecs, OutputDatasetRIDs: append([]string(nil), outputs...), LogicKind: "TRANSFORM", LogicPayload: json.RawMessage(`null`), ContentHash: "hash-" + rid}
+	return models.JobSpec{RID: rid, PipelineRID: "ri.foundry.main.pipeline.930d0722-e1f3-425a-b771-35c2f8e4a86c", BranchName: "master", Inputs: inputSpecs, OutputDatasetRIDs: append([]string(nil), outputs...), LogicKind: "TRANSFORM", LogicPayload: json.RawMessage(`null`), ContentHash: "hash-" + rid}
 }

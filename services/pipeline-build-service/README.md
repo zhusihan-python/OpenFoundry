@@ -58,6 +58,19 @@ source of truth for route-shape parity. Productive handlers either execute real
 repository/runtime work or return a machine-readable configuration error that
 names the missing adapter.
 
+## Manual build outputs
+
+A successful MANUAL or FORCE build confirms publication of its selected datasets.
+To publish ontology objects or links, run the graph with
+`POST /api/v1/pipelines/{id}/runs`. During resolution the service checks the
+requested datasets and every output of their selected JobSpecs against the
+pipeline graph. A mixed graph can build its ordinary dataset targets independently.
+
+Execution uses the published JobSpec RID and output reservations saved with the
+build. This also applies to older pending builds. A historical JobSpec that
+described only a dataset cannot establish whether an earlier graph declared
+additional ontology work. Its completion receipt covers the dataset publication.
+
 ## Build & run
 
 ```sh

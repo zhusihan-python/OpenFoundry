@@ -36,10 +36,6 @@ type manualBuildStore interface {
 	ManualGroupPublishFingerprint(context.Context, uuid.UUID) (string, error)
 	SetManualGroupPublishFingerprint(context.Context, uuid.UUID, string, string, []byte) (bool, error)
 	ManualStagedGroupConfig(context.Context, uuid.UUID) (json.RawMessage, error)
-	// The ontology-target gate needs the parent pipeline graph and a way
-	// to terminalize a resolved build before any write happens.
-	LoadPipeline(context.Context, uuid.UUID) (*models.Pipeline, error)
-	MarkBuildFailed(context.Context, uuid.UUID, string) error
 }
 
 func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts, buildID uuid.UUID) {
@@ -84,24 +80,22 @@ func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts
 		writeManualBuildError(w, http.StatusConflict, "manual_build_not_resolved", nil)
 		return
 	}
-	// Execute-time gate (the CreateBuild rejection is the first line):
-	// the build path publishes datasets only, so a resolved build whose
-	// parent pipeline graph declares object/link outputs fails here —
-	// BEFORE MoveManualBuild opens reservations or any DVS write — instead
-	// of completing with the ontology side silently missing.
-	if nodes := ontologyOutputNodesOfBuildPipeline(ctx, store, build.PipelineRID); len(nodes) > 0 {
-		reason := fmt.Sprintf("pipeline declares object/link output nodes (%s); trigger the graph run path (POST /api/v1/pipelines/{id}/runs) for ontology outputs", strings.Join(nodes, ", "))
-		if err := store.MarkBuildFailed(ctx, buildID, "manual_build_ontology_output_unsupported: "+reason); err != nil {
-			writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_finalize_failed", err)
-			return
-		}
-		writeManualBuildError(w, http.StatusConflict, "manual_build_ontology_output_unsupported", errors.New(reason))
-		return
-	}
 	plan, err := store.LoadPlan(ctx, buildID)
 	if err != nil {
-		writeManualBuildError(w, http.StatusInternalServerError, "manual_build_plan_failed", err)
+		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_plan_failed", err)
 		return
+	}
+	// Jobs pin the published JobSpec RID. A later edit of the parent pipeline
+	// cannot change what this build resolved or the meaning of a retry.
+	for _, node := range plan.Nodes {
+		if metadataString(node.Metadata, "logic_kind") == "" {
+			writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_job_spec_unavailable", fmt.Errorf("missing published JobSpec %s", node.ID))
+			return
+		}
+		if err := checkManualSpecTarget(node.ID, metadataString(node.Metadata, "transform_type"), metadataRaw(node.Metadata, "logic_payload")); err != nil {
+			writeResolutionHTTPError(w, err)
+			return
+		}
 	}
 	outputs, err := store.ListManualBuildOutputs(ctx, buildID)
 	if err != nil {
