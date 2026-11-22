@@ -639,7 +639,7 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 			out = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters)
 		case "formula", "derive_column":
 			out, err = applyRuntimeFormulaBlock(out, block)
-		case "aggregate":
+		case "aggregate", "conditional_aggregate":
 			out, err = applyRuntimeAggregateBlock(out, block)
 		case "csv_parse":
 			out, err = applyRuntimeCSVParseBlock(out, block)

@@ -13,9 +13,10 @@ import (
 )
 
 type runtimeAggregation struct {
-	Function     string `json:"function"`
-	SourceColumn string `json:"source_column,omitempty"`
-	TargetColumn string `json:"target_column"`
+	Function        string `json:"function"`
+	SourceColumn    string `json:"source_column,omitempty"`
+	TargetColumn    string `json:"target_column"`
+	ConditionColumn string `json:"condition_column,omitempty"`
 }
 
 func validateRuntimeAggregate(block runtimeTransformBlock) ([]runtimeAggregation, error) {
@@ -29,6 +30,7 @@ func validateRuntimeAggregate(block runtimeTransformBlock) ([]runtimeAggregation
 		}
 		seen[group] = true
 	}
+	conditional := strings.EqualFold(strings.TrimSpace(block.Kind), "conditional_aggregate")
 	measures := make([]runtimeAggregation, 0, len(block.Aggregations))
 	for _, measure := range block.Aggregations {
 		measure.Function = strings.ToLower(strings.TrimSpace(measure.Function))
@@ -45,6 +47,12 @@ func validateRuntimeAggregate(block runtimeTransformBlock) ([]runtimeAggregation
 		}
 		if strings.TrimSpace(measure.TargetColumn) == "" || seen[measure.TargetColumn] {
 			return nil, fmt.Errorf("aggregate output column %q is empty or repeated", measure.TargetColumn)
+		}
+		if conditional && strings.TrimSpace(measure.ConditionColumn) == "" {
+			return nil, fmt.Errorf("aggregate %q requires a Boolean condition column", measure.TargetColumn)
+		}
+		if !conditional {
+			measure.ConditionColumn = ""
 		}
 		seen[measure.TargetColumn] = true
 		measures = append(measures, measure)
@@ -74,6 +82,17 @@ func applyAggregateSchema(nodeID string, schema pipelineStrictSchema, block runt
 		fields = append(fields, field)
 	}
 	for _, measure := range measures {
+		if measure.ConditionColumn != "" {
+			condition, exists := schema.field(measure.ConditionColumn)
+			if !exists {
+				report.addError(nodeID, strPtr(measure.ConditionColumn), "missing_column", fmt.Sprintf("condition column %q does not exist", measure.ConditionColumn))
+				continue
+			}
+			if fieldType(condition).Kind != pe.KindBoolean {
+				report.addError(nodeID, strPtr(measure.ConditionColumn), "invalid_aggregate_condition", "aggregate condition requires a Boolean column")
+				continue
+			}
+		}
 		source, exists := schema.field(measure.SourceColumn)
 		if measure.SourceColumn != "" && !exists {
 			report.addError(nodeID, strPtr(measure.SourceColumn), "missing_column", fmt.Sprintf("aggregate source column %q does not exist", measure.SourceColumn))
@@ -125,7 +144,7 @@ func applyRuntimeAggregateBlock(rows []pe.Row, block runtimeTransformBlock) ([]p
 		groups[""] = 0
 		ordered = append(ordered, runtimeAggregateGroup{row: make(pe.Row, len(measures)), measures: make([]runtimeAggregateState, len(measures))})
 	}
-	for _, row := range rows {
+	for rowIndex, row := range rows {
 		key, _, err := runtimeCompositeKey(row, block.GroupBy, true)
 		if err != nil {
 			return nil, fmt.Errorf("aggregate %w", err)
@@ -145,6 +164,15 @@ func applyRuntimeAggregateBlock(rows []pe.Row, block runtimeTransformBlock) ([]p
 			ordered = append(ordered, runtimeAggregateGroup{row: groupRow, measures: make([]runtimeAggregateState, len(measures))})
 		}
 		for i, measure := range measures {
+			if measure.ConditionColumn != "" {
+				switch string(bytes.TrimSpace(row[measure.ConditionColumn])) {
+				case "true":
+				case "false", "null":
+					continue
+				default:
+					return nil, fmt.Errorf("aggregate %q: condition column %q must be Boolean or NULL in row %d", measure.TargetColumn, measure.ConditionColumn, rowIndex+1)
+				}
+			}
 			if err := ordered[index].measures[i].add(row[measure.SourceColumn], measure); err != nil {
 				return nil, fmt.Errorf("aggregate %q: %w", measure.TargetColumn, err)
 			}

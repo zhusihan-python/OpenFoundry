@@ -77,6 +77,7 @@ const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   formula: newFormulaBlock,
   derive_column: () => newFormulaBlock('derive_column'),
   aggregate: () => newAggregateBlock(),
+  conditional_aggregate: () => newAggregateBlock('conditional_aggregate'),
   csv_parse: () => newCSVParseBlock(),
   explode: () => newExplodeBlock(),
   json_extract: () => newJSONExtractBlock(),
@@ -512,7 +513,7 @@ function BlockCard({
             </label>
           </div>
         )}
-        {block.kind === 'aggregate' ? (
+        {(block.kind === 'aggregate' || block.kind === 'conditional_aggregate') ? (
           <AggregateBody block={block} schema={schema} catalogEntry={catalogEntry}
             onPatch={(patch) => onPatch({ ...patch, applied: false })} />
         ) : null}
@@ -1004,13 +1005,17 @@ function AggregateBody({
       <button type="button" className="of-button" style={{ justifySelf: 'start' }}
         onClick={() => onPatch({ group_by: [...block.group_by, ''] })}>Add group column</button>
       {block.aggregations.map((measure, index) => (
-        <div key={index} style={{ display: 'flex', gap: 8 }}>
+        <div key={index} style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           <select aria-label={`Measure ${index + 1}`} value={measure.function} style={inputStyle()}
             onChange={(event) => updateMeasure(index, { function: event.target.value })}>
             {functions.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
           </select>
           <ColumnInput label={`Measure source ${index + 1}`} value={measure.source_column} schema={schema}
             onChange={(source_column) => updateMeasure(index, { source_column })} />
+          {block.kind === 'conditional_aggregate' && (
+            <ColumnInput label={`Boolean condition column ${index + 1}`} value={measure.condition_column ?? ''} schema={schema}
+              onChange={(condition_column) => updateMeasure(index, { condition_column })} />
+          )}
           <input aria-label={`Measure output ${index + 1}`} value={measure.target_column} placeholder="Output column"
             onChange={(event) => updateMeasure(index, { target_column: event.target.value })} style={inputStyle()} />
           <button type="button" className="of-button" disabled={block.aggregations.length === 1}
@@ -1022,7 +1027,7 @@ function AggregateBody({
         onClick={() => onPatch({ aggregations: [...block.aggregations, { function: 'count', source_column: '', target_column: '' }] })}>
         Add measure
       </button>
-      <p className="of-text-muted" style={{ fontSize: 12 }}>Count uses all rows when its source is blank.</p>
+      <p className="of-text-muted" style={{ fontSize: 12 }}>{block.kind === 'conditional_aggregate' ? 'Only true condition rows contribute. Count with no source counts those rows.' : 'Count uses all rows when its source is blank.'}</p>
     </div>
   );
 }
@@ -1154,6 +1159,7 @@ function blockAccent(kind: TransformBlock['kind']): string {
     case 'formula':
     case 'derive_column':
     case 'aggregate':
+    case 'conditional_aggregate':
     case 'csv_parse':
     case 'explode':
     case 'json_extract':
@@ -1172,6 +1178,7 @@ function hasInvalidConfig(block: TransformBlock): boolean {
     case 'derive_column':
       return !validFormulaConfig(block);
     case 'aggregate':
+    case 'conditional_aggregate':
       return !validAggregateConfig(block);
     case 'csv_parse':
       return !validCSVParseConfig(block);

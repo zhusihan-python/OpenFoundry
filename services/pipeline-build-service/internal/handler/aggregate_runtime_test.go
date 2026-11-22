@@ -74,3 +74,77 @@ func TestRuntimeAggregateSchemaTypes(t *testing.T) {
 		in.Fields[0], {Name: "rows", FieldType: "LONG"}, {Name: "total", FieldType: "LONG", Nullable: true}, {Name: "mean", FieldType: "DOUBLE", Nullable: true},
 	}, out.Fields)
 }
+
+func TestConditionalAggregateKeepsGroupsAndFiltersEachMeasure(t *testing.T) {
+	var input, expected []pe.Row
+	require.NoError(t, json.Unmarshal([]byte(`[
+		{"g":"a","flag":true,"priority":false,"v":9007199254740993},
+		{"g":"a","flag":false,"priority":true,"v":1},
+		{"g":"a","flag":null,"priority":false,"v":8},
+		{"g":"b","flag":false,"priority":null,"v":9},
+		{"g":"a","flag":true,"priority":false,"v":null}
+	]`), &input))
+	block := runtimeTransformBlock{
+		Kind: "conditional_aggregate", GroupBy: []string{"g"},
+		Aggregations: []runtimeAggregation{
+			{Function: "count", TargetColumn: "selected", ConditionColumn: "flag"},
+			{Function: "count", SourceColumn: "v", TargetColumn: "present", ConditionColumn: "flag"},
+			{Function: "sum", SourceColumn: "v", TargetColumn: "total", ConditionColumn: "flag"},
+			{Function: "max", SourceColumn: "v", TargetColumn: "highest_priority", ConditionColumn: "priority"},
+		},
+	}
+	require.NoError(t, json.Unmarshal([]byte(`[
+		{"g":"a","selected":2,"present":1,"total":9007199254740993,"highest_priority":1},
+		{"g":"b","selected":0,"present":0,"total":null,"highest_priority":null}
+	]`), &expected))
+	out, err := applyRuntimeAggregateBlock(input, block)
+	require.NoError(t, err)
+	require.Equal(t, expected, out)
+	out, err = applyRuntimeAggregateBlock(nil, block)
+	require.NoError(t, err)
+	require.Empty(t, out)
+	block.GroupBy = nil
+	out, err = applyRuntimeAggregateBlock(nil, block)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Equal(t, json.RawMessage("0"), out[0]["selected"])
+	require.Equal(t, json.RawMessage("null"), out[0]["total"])
+
+	block.Kind = "aggregate"
+	out, err = applyRuntimeAggregateBlock(input, block)
+	require.NoError(t, err)
+	require.Equal(t, json.RawMessage("5"), out[0]["selected"])
+}
+
+func TestConditionalAggregateRejectsInvalidCondition(t *testing.T) {
+	block := runtimeTransformBlock{Kind: "conditional_aggregate", Aggregations: []runtimeAggregation{
+		{Function: "count", TargetColumn: "matched"},
+	}}
+	_, err := applyRuntimeAggregateBlock(nil, block)
+	require.ErrorContains(t, err, "requires a Boolean condition column")
+
+	block.Aggregations[0].ConditionColumn = "flag"
+	for _, value := range []json.RawMessage{nil, json.RawMessage(`"true"`), json.RawMessage("1")} {
+		out, err := applyRuntimeAggregateBlock([]pe.Row{{"flag": json.RawMessage("true")}, {"flag": value}}, block)
+		require.ErrorContains(t, err, "must be Boolean or NULL in row 2")
+		require.Nil(t, out)
+	}
+	for _, tc := range []struct {
+		fields []pipelineStrictValidationField
+		code   string
+	}{
+		{nil, "missing_column"},
+		{[]pipelineStrictValidationField{{Name: "flag", FieldType: "STRING"}}, "invalid_aggregate_condition"},
+	} {
+		var report pipelineStrictValidationReport
+		applyAggregateSchema("conditional", pipelineStrictSchema{Known: true, Fields: tc.fields}, block, &report)
+		require.Len(t, report.Errors, 1)
+		require.Equal(t, tc.code, report.Errors[0].Code)
+	}
+	var report pipelineStrictValidationReport
+	out := applyAggregateSchema("conditional", pipelineStrictSchema{Known: true, Fields: []pipelineStrictValidationField{
+		{Name: "flag", FieldType: "BOOLEAN", Nullable: true},
+	}}, block, &report)
+	require.Empty(t, report.Errors)
+	require.Equal(t, []pipelineStrictValidationField{{Name: "matched", FieldType: "LONG"}}, out.Fields)
+}
