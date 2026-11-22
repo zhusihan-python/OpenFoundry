@@ -62,13 +62,13 @@ func TestUnionCastSchemaRequiresSameLogicalType(t *testing.T) {
 			rightName = "other"
 		}
 		base := pipelineStrictSchema{Known: true, Fields: []pipelineStrictValidationField{{Name: "gross", FieldType: "Double"}}}
-		peer := pipelineStrictSchema{Known: true, Fields: []pipelineStrictValidationField{{Name: rightName, FieldType: "DOUBLE", castTarget: true}}}
-		merged := unionCastSchema([]pipelineStrictSchema{base, peer}, positional)
-		require.True(t, merged.Fields[0].castTarget)
+		peer := pipelineStrictSchema{Known: true, Fields: []pipelineStrictValidationField{{Name: rightName, FieldType: "DOUBLE", typedOutput: true}}}
+		merged := unionTypedSchema([]pipelineStrictSchema{base, peer}, positional)
+		require.True(t, merged.Fields[0].typedOutput)
 		require.Equal(t, "DOUBLE", strictTypeName(fieldType(merged.Fields[0])))
 		peer.Fields[0].FieldType = "LONG"
-		merged = unionCastSchema([]pipelineStrictSchema{base, peer}, positional)
-		require.False(t, merged.Fields[0].castTarget)
+		merged = unionTypedSchema([]pipelineStrictSchema{base, peer}, positional)
+		require.False(t, merged.Fields[0].typedOutput)
 	}
 }
 

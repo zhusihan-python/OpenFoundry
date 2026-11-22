@@ -301,25 +301,6 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		columns = table.schema.columnNames()
 	}
 
-	var castFields map[string]datasetOutputField
-	if table.castLineage && (kind == "output" || len(node.Node.Outputs) > 0) {
-		resolved := rt.tableSchema(node.Node.ID)
-		for _, field := range resolved.Fields {
-			if field.castTarget {
-				if castFields == nil {
-					castFields = make(map[string]datasetOutputField)
-				}
-				castFields[field.Name] = datasetOutputField{Name: field.Name, Type: strictTypeName(fieldType(field)), Nullable: field.Nullable}
-			}
-		}
-		if resolved.Known && !table.positional {
-			// Keep declared columns even when every row is filtered out or a
-			// nullable field is absent. Ordinary results use alphabetical order.
-			columns = resolved.columnNames()
-			sort.Strings(columns)
-		}
-	}
-
 	metaRows := cloneRows(rows)
 	if len(metaRows) > 5 {
 		metaRows = metaRows[:5]
@@ -333,9 +314,7 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		"sample_rows":    rowsToMaps(metaRows),
 		"data_rows":      rowsToMaps(rows),
 	}
-	if len(castFields) > 0 {
-		meta["cast_output_fields"] = castFields
-	}
+	rt.applyTypedOutput(node.Node.ID, table, meta, kind == "output" || len(node.Node.Outputs) > 0)
 	for key, value := range datasetMeta {
 		meta[key] = value
 	}
@@ -349,6 +328,39 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		OutputContentHash: hashRuntimeRows(node.Node.ID, transformType, rows),
 		Metadata:          meta,
 	}, nil
+}
+
+// Carry logical types that row JSON cannot represent, such as the type of
+// an empty column or a DOUBLE returned as an integral number.
+func (rt *lightweightTableRuntime) applyTypedOutput(id string, table lightweightTable, meta map[string]any, publish bool) {
+	if !table.typedLineage || (!publish && len(table.rows) > 0) {
+		return
+	}
+	schema := rt.tableSchema(id)
+	if !schema.Known {
+		return
+	}
+	if !table.positional {
+		columns := schema.columnNames()
+		sort.Strings(columns)
+		meta["columns"] = columns
+	}
+	if !publish {
+		return
+	}
+	fields := make(map[string]datasetOutputField)
+	for _, field := range schema.Fields {
+		if field.typedOutput {
+			kind := strings.ToUpper(field.FieldType)
+			if parsed, ok := parseStrictType(kind); ok {
+				kind = strictTypeName(parsed)
+			}
+			fields[field.Name] = datasetOutputField{Name: field.Name, Type: kind, Nullable: field.Nullable}
+		}
+	}
+	if len(fields) > 0 {
+		meta["cast_output_fields"] = fields
+	}
 }
 
 func parseTableRuntimeConfig(payload json.RawMessage) (tableRuntimeConfig, error) {

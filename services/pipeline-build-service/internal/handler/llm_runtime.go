@@ -23,6 +23,7 @@ type LLMTransformRequest struct {
 	TransformType string
 	InputRows     []map[string]json.RawMessage
 	SampleSize    int
+	Preview       bool
 }
 
 type LLMTransformRunner interface {
@@ -65,21 +66,21 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 	if strings.TrimSpace(cfg.Prompt) == "" {
 		return executor.NodeResult{}, errors.New("llm_prompt_required")
 	}
-	if strings.TrimSpace(cfg.OutputColumn) == "" {
-		cfg.OutputColumn = "llm_output"
+	if _, err := cfg.fieldType(); err != nil {
+		return executor.NodeResult{}, err
 	}
-	if cfg.MaxRows <= 0 {
-		cfg.MaxRows = firstPositiveInt(req.SampleSize, 5)
-	}
-	if cfg.MaxRows > 50 {
-		cfg.MaxRows = 50
-	}
-	rows := cloneRawRows(req.InputRows)
+	const maxModelCalls = 50
+	rows := req.InputRows
 	if len(rows) == 0 && len(req.Node.Node.DependsOn) == 0 {
 		rows = []map[string]json.RawMessage{{}}
 	}
-	if len(rows) > cfg.MaxRows {
-		rows = rows[:cfg.MaxRows]
+	if req.Preview {
+		limit := min(firstPositiveInt(cfg.MaxRows, req.SampleSize, 5), maxModelCalls)
+		if len(rows) > limit {
+			rows = rows[:limit]
+		}
+	} else if len(rows) > maxModelCalls {
+		return executor.NodeResult{}, fmt.Errorf("llm_row_limit_exceeded: %d input rows exceed the build limit of %d", len(rows), maxModelCalls)
 	}
 
 	outRows := make([]map[string]json.RawMessage, 0, len(rows))
@@ -102,7 +103,11 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 			return executor.NodeResult{}, err
 		}
 		next := cloneRawRow(row)
-		next[cfg.OutputColumn] = mustRuntimeJSON(completion.Text)
+		value, err := cfg.outputValue(completion.Text)
+		if err != nil {
+			return executor.NodeResult{}, fmt.Errorf("llm_invalid_output: row %d: %w", len(outRows)+1, err)
+		}
+		next[cfg.OutputColumn] = value
 		outRows = append(outRows, next)
 		totalPromptTokens += completion.PromptTokens
 		totalCompletionTokens += completion.CompletionTokens
@@ -147,6 +152,18 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 }
 
 func parseLLMNodeConfig(raw json.RawMessage) llmNodeConfig {
+	cfg := decodeLLMNodeConfig(raw)
+	if strings.TrimSpace(cfg.OutputColumn) == "" {
+		cfg.OutputColumn = "llm_output"
+	}
+	cfg.OutputType = strings.ToLower(strings.TrimSpace(cfg.OutputType))
+	if cfg.OutputType == "" {
+		cfg.OutputType = "string"
+	}
+	return cfg
+}
+
+func decodeLLMNodeConfig(raw json.RawMessage) llmNodeConfig {
 	var cfg llmNodeConfig
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return cfg
@@ -338,7 +355,10 @@ func (r runtimeNodeRunner) runLLM(ctx context.Context, node executor.NodeContext
 		return executor.NodeResult{}, errors.New("ai_service_not_configured: set AI_SERVICE_URL to execute Pipeline Builder LLM nodes")
 	}
 	inputRows := []map[string]json.RawMessage{}
-	if r.Table != nil && len(node.Node.DependsOn) > 0 {
+	if len(node.Node.DependsOn) > 0 {
+		if r.Table == nil {
+			return executor.NodeResult{}, errors.New("llm_input_not_ready: upstream table is unavailable")
+		}
 		rows, err := r.Table.firstDependencyRows(node)
 		if err != nil {
 			return executor.NodeResult{}, err
@@ -351,6 +371,7 @@ func (r runtimeNodeRunner) runLLM(ctx context.Context, node executor.NodeContext
 		TransformType: metadataString(node.Node.Metadata, "transform_type"),
 		InputRows:     inputRows,
 		SampleSize:    metadataInt(node.Node.Metadata, "sample_size"),
+		Preview:       r.Preview,
 	})
 	if err != nil {
 		return executor.NodeResult{}, err
@@ -358,7 +379,9 @@ func (r runtimeNodeRunner) runLLM(ctx context.Context, node executor.NodeContext
 	if r.Table != nil {
 		rows := rowsFromLLMResult(result)
 		if rows != nil {
-			r.Table.storeRows(node.Node.ID, rows)
+			table := r.Table.runtimeTable(node.Node, "llm", "llm", payload, tableRuntimeConfig{}, nil, rows)
+			r.Table.storeTable(node.Node.ID, table)
+			r.Table.applyTypedOutput(node.Node.ID, table, result.Metadata, len(node.Node.Outputs) > 0)
 		}
 	}
 	return result, nil

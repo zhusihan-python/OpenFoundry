@@ -158,7 +158,7 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 	sampleInputs := !previewChainRequiresBuildInputs(chain)
 	runtime.datasetRowsPreview = sampleInputs
 	runtime.joinExpansionLimit = maxLightweightExpandedRows
-	runner := runtimeNodeRunner{Table: runtime, LLM: ports.LLM}
+	runner := runtimeNodeRunner{Table: runtime, LLM: ports.LLM, Preview: true}
 	var targetMetadata map[string]any
 	for _, node := range chain {
 		transform := strings.TrimSpace(node.TransformType)
@@ -221,6 +221,9 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 		Seed:        pipelinePreviewSeed(pipelineID, nodeID),
 		SourceChain: chainIDs(chain),
 		Fresh:       true,
+	}
+	if columns := resultColumns(targetMetadata); len(rows) == 0 && len(columns) > 0 {
+		response.Columns = columns
 	}
 	if columns := runtime.positionalColumns(nodeID); columns != nil {
 		response.Columns = columns

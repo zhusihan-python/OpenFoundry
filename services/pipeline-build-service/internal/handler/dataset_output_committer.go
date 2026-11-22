@@ -237,7 +237,7 @@ func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputT
 				for i, field := range schema.Fields {
 					if cast, exists := castFields[field.Name]; exists {
 						schema.Fields[i].Type = cast.Type
-						schema.Fields[i].Nullable = cast.Nullable || field.Nullable
+						schema.Fields[i].Nullable = cast.Nullable || (len(rows) > 0 && field.Nullable)
 					}
 				}
 			}

@@ -53,6 +53,8 @@ unsupported IR versions.
 | Iceberg output client (ADR-0041) | 🟡 config-gated by `FOUNDRY_ICEBERG_CATALOG_URL`; boot warning remains intentional |
 | Legacy pipeline authoring CRUD aliases | ✅ mounted through the repository-backed authoring lifecycle when `DATABASE_URL` is configured; otherwise explicit `503` configuration errors |
 
+LLM node previews honor `max_rows`. A build processes the complete input up to 50 rows per node. Larger inputs fail before the first model request. Empty inputs retain their columns and produce zero rows. An independent prompt with no upstream node generates one row. The `boolean` and `double` output types write typed cells. The `json` output type writes validated JSON text to a string column that can feed a JSON extraction step.
+
 Use `openfoundry-go/docs/migration/route-parity-audit.md` as the generated
 source of truth for route-shape parity. Productive handlers either execute real
 repository/runtime work or return a machine-readable configuration error that

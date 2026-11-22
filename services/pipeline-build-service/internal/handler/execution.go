@@ -838,6 +838,7 @@ func upstreamInputDatasetRIDs(nodes []models.PipelineNode, nodeID string) []stri
 }
 
 type runtimeNodeRunner struct {
+	Preview   bool
 	JobRunner runners.JobRunner
 	Python    runtimepkg.TransformExecutor
 	LLM       LLMTransformRunner
