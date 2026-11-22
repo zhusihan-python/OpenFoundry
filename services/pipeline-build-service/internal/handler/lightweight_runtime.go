@@ -314,7 +314,7 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		"sample_rows":    rowsToMaps(metaRows),
 		"data_rows":      rowsToMaps(rows),
 	}
-	rt.applyTypedOutput(node.Node.ID, table, meta, kind == "output" || len(node.Node.Outputs) > 0)
+	rt.applyTypedOutput(node.Node, table, meta, kind == "output" || len(node.Node.Outputs) > 0)
 	for key, value := range datasetMeta {
 		meta[key] = value
 	}
@@ -332,11 +332,18 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 
 // Carry logical types that row JSON cannot represent, such as the type of
 // an empty column or a DOUBLE returned as an integral number.
-func (rt *lightweightTableRuntime) applyTypedOutput(id string, table lightweightTable, meta map[string]any, publish bool) {
-	if !table.typedLineage || (!publish && len(table.rows) > 0) {
+func (rt *lightweightTableRuntime) applyTypedOutput(node executor.Node, table lightweightTable, meta map[string]any, publish bool) {
+	projecting := false
+	for _, output := range node.Outputs {
+		if len(output.OutputColumns) > 0 {
+			projecting = true
+			break
+		}
+	}
+	if !projecting && (!table.typedLineage || (!publish && len(table.rows) > 0)) {
 		return
 	}
-	schema := rt.tableSchema(id)
+	schema := rt.tableSchema(node.ID)
 	if !schema.Known {
 		return
 	}
@@ -350,7 +357,7 @@ func (rt *lightweightTableRuntime) applyTypedOutput(id string, table lightweight
 	}
 	fields := make(map[string]datasetOutputField)
 	for _, field := range schema.Fields {
-		if field.typedOutput {
+		if field.typedOutput || (projecting && len(table.rows) == 0) {
 			kind := strings.ToUpper(field.FieldType)
 			if parsed, ok := parseStrictType(kind); ok {
 				kind = strictTypeName(parsed)

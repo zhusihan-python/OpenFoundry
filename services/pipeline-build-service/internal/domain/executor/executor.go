@@ -54,8 +54,8 @@ type OutputTransaction struct {
 	WriteMode              string
 	FileFormat             string
 	LogicalPath            string
-	OutputSchemaVersion    string `json:"-"`
-	OutputColumns          []string
+	OutputSchemaVersion    string   `json:"-"`
+	OutputColumns          []string `json:"-"`
 	OutputKind             string
 	OutputNodeID           string
 	SourceNodeID           string

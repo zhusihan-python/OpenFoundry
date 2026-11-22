@@ -381,7 +381,7 @@ func (r runtimeNodeRunner) runLLM(ctx context.Context, node executor.NodeContext
 		if rows != nil {
 			table := r.Table.runtimeTable(node.Node, "llm", "llm", payload, tableRuntimeConfig{}, nil, rows)
 			r.Table.storeTable(node.Node.ID, table)
-			r.Table.applyTypedOutput(node.Node.ID, table, result.Metadata, len(node.Node.Outputs) > 0)
+			r.Table.applyTypedOutput(node.Node, table, result.Metadata, len(node.Node.Outputs) > 0)
 		}
 	}
 	return result, nil
