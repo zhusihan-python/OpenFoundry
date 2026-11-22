@@ -149,7 +149,7 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 	if err != nil {
 		return pipelineNodePreviewResponse{}, err
 	}
-	runtime := newLightweightTableRuntime()
+	runtime := newLightweightTableRuntime(ports.Functions)
 	runtime.datasets = ports.DatasetRows
 	// Windows and left anti joins can depend on input rows beyond the display
 	// sample. Use the bounded build inputs before limiting the final result.
