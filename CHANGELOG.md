@@ -46,10 +46,12 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - _(add entries here)_
 
 ### Fixed
+- Manual and forced builds reject selected ontology targets before reserving
+  dataset outputs. A mixed pipeline can still publish an independent dataset.
+  Executing a resolved build uses its saved JobSpec even after the graph changes.
 - Geospatial joins and positional unions execute in the declared input order.
   Short geospatial previews include matches outside the display sample.
 - By-name Union reads its bounded inputs before serving a short preview.
-
 - Published lightweight NDJSON datasets retain the logical type of whole-column casts after filtering or renaming, including empty results.
 - Manual canonical dataset builds now publish through their own output reservation.
   After publication, retrying a build can reconcile its recorded output without
