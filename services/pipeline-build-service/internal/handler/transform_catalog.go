@@ -318,7 +318,7 @@ func transformCatalogFilter(docs []string) pipelineTransformCatalogEntry {
 }
 
 func transformCatalogFormula(docs []string) pipelineTransformCatalogEntry {
-	entry := baseTransformCatalogEntry("formula", "Formula", "Compute a value from a Pipeline Builder expression and write it into a target column.", "column_shaping", "stack_block", "transform_stack", "planned", "catalog_only", "fx", docs)
+	entry := baseTransformCatalogEntry("formula", "Formula", "Compute a value from a Pipeline Builder expression and write it into a target column.", "column_shaping", "stack_block", "transform_stack", "available", "lightweight_table", "fx", docs)
 	entry.Tags = []string{"expression", "functions"}
 	entry.DefaultConfig = map[string]any{"kind": "formula", "applied": false, "expression": "", "target_column": ""}
 	entry.Form.Fields = []pipelineTransformCatalogField{
