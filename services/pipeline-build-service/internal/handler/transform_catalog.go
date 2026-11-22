@@ -547,13 +547,14 @@ func transformCatalogAggregate(docs []string) pipelineTransformCatalogEntry {
 }
 
 func transformCatalogExplode(docs []string) pipelineTransformCatalogEntry {
-	entry := baseTransformCatalogEntry("explode", "Explode", "Turn array-like values into multiple output rows.", "relational", "stack_block", "transform_stack", "planned", "catalog_only", "explode", docs)
+	entry := baseTransformCatalogEntry("explode", "Explode", "Create one row for each element in an array or JSON array string.", "relational", "stack_block", "transform_stack", "available", "lightweight_table", "explode", docs)
 	entry.Tags = []string{"arrays", "rows"}
 	entry.DefaultConfig = map[string]any{"kind": "explode", "applied": false, "source_column": "", "target_column": ""}
 	entry.Form.Fields = []pipelineTransformCatalogField{
-		columnField("source_column", "Array column", true, "Column containing array-like values."),
+		columnField("source_column", "Array column", true, "Column containing arrays or JSON-encoded arrays."),
 		{Name: "target_column", Label: "Target column", FieldType: "text", Required: false, Placeholder: "Defaults to source column"},
 	}
+	entry.OutputContract = pipelineTransformOutputContract{Mode: "schema_add_or_replace_column", Description: "Adds or replaces the target with the array element. Empty, missing and null arrays emit no rows."}
 	return entry
 }
 

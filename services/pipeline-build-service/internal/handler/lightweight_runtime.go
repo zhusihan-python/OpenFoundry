@@ -629,6 +629,8 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 			out, err = applyRuntimeNormalizeUnitsBlock(out, block)
 		case "normalize":
 			out = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters)
+		case "explode":
+			out, err = applyRuntimeExplodeBlock(out, block)
 		case "json_extract":
 			out, err = applyRuntimeJSONExtractBlock(out, block)
 		case "cast":
