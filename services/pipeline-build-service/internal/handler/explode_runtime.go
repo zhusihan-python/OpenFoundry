@@ -10,10 +10,6 @@ import (
 	pe "github.com/openfoundry/openfoundry-go/libs/pipeline-expression"
 )
 
-// The lightweight stack stores expanded rows in memory. Limit both large
-// values and the number of small rows whose object overhead also adds up.
-const maxExplodedRows = 100_000
-
 func explodeColumns(block runtimeTransformBlock) (string, string, error) {
 	source := block.SourceColumn
 	if strings.TrimSpace(source) == "" {
@@ -70,7 +66,7 @@ func applyRuntimeExplodeBlock(rows []pe.Row, block runtimeTransformBlock) ([]pe.
 	remainingBytes := int64(maxDatasetInputTotalBytes)
 	out := make([]pe.Row, 0, len(rows))
 	for index, row := range rows {
-		elements, err := decodeExplodeArray(row[source], maxExplodedRows-len(out))
+		elements, err := decodeExplodeArray(row[source], maxLightweightExpandedRows-len(out))
 		if err != nil {
 			return nil, fmt.Errorf("explode column %q at row %d: %w", source, index+1, err)
 		}
@@ -127,7 +123,7 @@ func decodeExplodeArray(raw json.RawMessage, remainingRows int) ([]json.RawMessa
 	var elements []json.RawMessage
 	for decoder.More() {
 		if len(elements) == remainingRows {
-			return nil, fmt.Errorf("output exceeds the %d-row lightweight limit", maxExplodedRows)
+			return nil, fmt.Errorf("output exceeds the %d-row lightweight limit", maxLightweightExpandedRows)
 		}
 		var element json.RawMessage
 		if err := decoder.Decode(&element); err != nil {

@@ -47,7 +47,7 @@ func TestExplodeRejectsInvalidAndExcessiveInput(t *testing.T) {
 		require.ErrorContains(t, err, "expected a JSON array")
 		require.Nil(t, out)
 	}
-	tooMany := "[" + strings.Repeat("0,", maxExplodedRows) + "0]"
+	tooMany := "[" + strings.Repeat("0,", maxLightweightExpandedRows) + "0]"
 	_, err := applyRuntimeExplodeBlock([]pe.Row{{"items": json.RawMessage(tooMany)}}, block)
 	require.ErrorContains(t, err, "100000-row lightweight limit")
 

@@ -10,6 +10,7 @@ import {
   FILTER_OPERATORS,
   blockSectionLabel,
   newCastBlock,
+  newCSVParseBlock,
   newDropColumnsBlock,
   newExplodeBlock,
   newFilterBlock,
@@ -22,6 +23,7 @@ import {
   newSortRowsBlock,
   validSortKeys,
   type CastBlock,
+  type CSVParseBlock,
   type DropColumnsBlock,
   type ExplodeBlock,
   type FilterBlock,
@@ -35,6 +37,7 @@ import {
   type SortRowsBlock,
   type TransformBlock,
   type TransformStack,
+  validCSVParseConfig,
   validJSONExtractConfig,
   validNormalizeUnitsConfig,
 } from './transformStack';
@@ -65,6 +68,7 @@ const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   normalize_columns: () => newNormalizeColumnsBlock(),
   normalize_units: () => newNormalizeUnitsBlock(),
   haversine_distance: () => newHaversineDistanceBlock(),
+  csv_parse: () => newCSVParseBlock(),
   explode: () => newExplodeBlock(),
   json_extract: () => newJSONExtractBlock(),
 };
@@ -484,6 +488,9 @@ function BlockCard({
         {block.kind === 'normalize_units' ? (
           <NormalizeUnitsBody block={block} schema={schema} catalogEntry={catalogEntry}
             onPatch={(patch) => onPatch({ ...patch, applied: false })} />
+        ) : null}
+        {block.kind === 'csv_parse' ? (
+          <CSVParseBody block={block} schema={schema} onPatch={(patch) => onPatch({ ...patch, applied: false })} />
         ) : null}
         {block.kind === 'explode' ? (
           <ExplodeBody block={block} schema={schema} onPatch={(patch) => onPatch({ ...patch, applied: false })} />
@@ -942,6 +949,33 @@ function SortBody({
   );
 }
 
+function CSVParseBody({
+  block,
+  schema,
+  onPatch,
+}: {
+  block: CSVParseBlock;
+  schema: string[];
+  onPatch: (patch: Partial<CSVParseBlock>) => void;
+}) {
+  const delimiterId = `csv-delimiter-${block.id}`;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 8, alignItems: 'center' }}>
+      <span className="of-text-muted" style={{ fontSize: 12 }}>CSV column</span>
+      <ColumnInput label="CSV column" value={block.source_column} schema={schema}
+        onChange={(source_column) => onPatch({ source_column })} />
+      <label htmlFor={delimiterId}>Delimiter</label>
+      <input id={delimiterId} value={block.delimiter}
+        onChange={(event) => onPatch({ delimiter: event.target.value })} style={inputStyle()} />
+      <label style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input type="checkbox" checked={block.has_header}
+          onChange={(event) => onPatch({ has_header: event.target.checked })} />
+        First record in each cell is a header
+      </label>
+    </div>
+  );
+}
+
 function ExplodeBody({
   block,
   schema,
@@ -1039,6 +1073,7 @@ function blockAccent(kind: TransformBlock['kind']): string {
     case 'normalize':
     case 'normalize_units':
       return '#7c5dd6';
+    case 'csv_parse':
     case 'explode':
     case 'json_extract':
     case 'sort':
@@ -1052,6 +1087,8 @@ function hasInvalidConfig(block: TransformBlock): boolean {
   switch (block.kind) {
     case 'normalize_units':
       return !validNormalizeUnitsConfig(block);
+    case 'csv_parse':
+      return !validCSVParseConfig(block);
     case 'explode':
       return !block.source_column.trim();
     case 'json_extract':
