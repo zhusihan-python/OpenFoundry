@@ -180,8 +180,8 @@ func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputT
 	if err != nil {
 		return datasetOutputCommitRequest{}, err
 	}
-	if parquet && len(tx.OutputColumns) > 0 {
-		return datasetOutputCommitRequest{}, errors.New("dataset_output_projection_invalid: _output.columns cannot be combined with the fixed typed Parquet declaration")
+	if len(tx.OutputColumns) > 0 && (tx.OutputSchemaVersion != "" || !projectionSupportsFormat(tx.FileFormat)) {
+		return datasetOutputCommitRequest{}, errors.New("dataset_output_projection_invalid: _output.columns requires unversioned NDJSON output")
 	}
 	logicalPath := strings.Trim(strings.TrimSpace(tx.LogicalPath), "/")
 	var (
@@ -212,6 +212,9 @@ func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputT
 		var hasFullRows bool
 		rows, hasFullRows = fullResultRows(result.Metadata)
 		if !hasFullRows {
+			if len(tx.OutputColumns) > 0 {
+				return datasetOutputCommitRequest{}, errors.New("dataset_output_projection_invalid: projection requires complete data_rows")
+			}
 			rows = resultRows(result.Metadata)
 		}
 		columns = resultColumns(result.Metadata)
@@ -239,6 +242,13 @@ func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputT
 		digest = hex.EncodeToString(sum[:])
 		if workbookSchema, ok := result.Metadata["excel_files_output_schema"].(*datasetOutputSchema); ok && hasFullRows {
 			schema = workbookSchema
+			if len(tx.OutputColumns) > 0 {
+				projected, err := projectedOutputFields(workbookSchema.Fields, columns)
+				if err != nil {
+					return datasetOutputCommitRequest{}, err
+				}
+				schema = &datasetOutputSchema{Fields: projected, FileFormat: workbookSchema.FileFormat}
+			}
 		} else {
 			schema = inferOutputSchema(columns, rows, format)
 			if castFields, ok := result.Metadata["cast_output_fields"].(map[string]datasetOutputField); ok && hasFullRows {

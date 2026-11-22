@@ -43,7 +43,7 @@ func datasetOutputConfigFields(payload []byte) (map[string]json.RawMessage, map[
 // deduplication. Presence counts even when the declaration is malformed.
 func PayloadDeclaresDatasetOutputSchema(payload []byte) bool {
 	fields, nested := datasetOutputConfigFields(payload)
-	return fields["output_schema_version"] != nil || nested["output_schema_version"] != nil
+	return fields["output_schema_version"] != nil || nested["output_schema_version"] != nil || nested["columns"] != nil
 }
 
 // BindDatasetOutputSchema restores a typed publication declaration from
@@ -51,6 +51,26 @@ func PayloadDeclaresDatasetOutputSchema(payload []byte) bool {
 // declaration keep their output transaction and encoding behavior.
 func BindDatasetOutputSchema(payload json.RawMessage, outputs []executor.OutputTransaction) error {
 	fields, nested := datasetOutputConfigFields(payload)
+	columns, err := declaredOutputColumns(fields, nested)
+	if err != nil {
+		return err
+	}
+	return bindDatasetOutputSchema(fields, nested, columns, outputs)
+}
+
+func bindDatasetOutputSchema(fields, nested map[string]json.RawMessage, columns []string, outputs []executor.OutputTransaction) error {
+	if len(columns) > 0 {
+		if len(outputs) == 0 {
+			return errors.New("dataset_output_projection_invalid: _output.columns requires a dataset output")
+		}
+		for i := range outputs {
+			if kind := outputs[i].OutputKind; kind != "" && kind != "dataset" {
+				return errors.New("dataset_output_projection_invalid: _output.columns requires a dataset output")
+			}
+			outputs[i].OutputColumns = columns
+			outputs[i].FileFormat = "NDJSON"
+		}
+	}
 	if _, nestedDeclares := nested["output_schema_version"]; nestedDeclares {
 		if fields["output_schema_version"] != nil {
 			return errors.New("dataset_output_config_invalid: output_schema_version is declared twice")

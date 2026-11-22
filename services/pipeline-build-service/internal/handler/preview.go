@@ -151,11 +151,22 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 	if err != nil {
 		return pipelineNodePreviewResponse{}, err
 	}
+	// A publication preview uses the same binding and row projection as a run.
+	// Validate it before executing upstream nodes, including external calls.
+	target := chain[len(chain)-1]
+	_, nested := datasetOutputConfigFields(target.Config)
+	var projection []executor.OutputTransaction
+	if nested["columns"] != nil {
+		projection, _, err = plannedNodeOutputs(pipelineID, pipelineID, target, nodes)
+		if err != nil {
+			return pipelineNodePreviewResponse{}, previewExecutionError{status: http.StatusBadRequest, err: pipelineNodePreviewError{Kind: "transform_failed", NodeID: nodeID, Transform: target.TransformType, Message: err.Error()}}
+		}
+	}
 	runtime := newLightweightTableRuntime(ports.Functions)
 	runtime.datasets = ports.DatasetRows
 	// Windows, joins and unions can depend on rows beyond the display
 	// sample. Use the bounded build inputs before limiting the final result.
-	sampleInputs := !previewChainRequiresBuildInputs(chain)
+	sampleInputs := len(projection) == 0 && !previewChainRequiresBuildInputs(chain)
 	runtime.datasetRowsPreview = sampleInputs
 	runtime.joinExpansionLimit = maxLightweightExpandedRows
 	runner := runtimeNodeRunner{Table: runtime, LLM: ports.LLM, Preview: true}
@@ -189,6 +200,10 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 				metadata["input_dataset_ids"] = ids
 			}
 		}
+		var outputs []executor.OutputTransaction
+		if node.ID == nodeID {
+			outputs = projection
+		}
 		result, err := runner.Run(ctx, executor.NodeContext{
 			BuildID:     pipelineID,
 			BuildBranch: "preview",
@@ -197,6 +212,7 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 				ID:        node.ID,
 				JobID:     uuid.NewSHA1(uuid.NameSpaceOID, []byte(pipelineID.String()+":preview:"+node.ID)),
 				DependsOn: node.DependsOn,
+				Outputs:   outputs,
 				Metadata:  metadata,
 			},
 		})
@@ -233,6 +249,18 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 		response.DatasetFileFormat = metadataString(targetMetadata, "dataset_file_format")
 		response.DatasetSchemaVersion = metadataString(targetMetadata, "dataset_schema_version")
 		response.DatasetSchema = schema
+	}
+	if len(projection) > 0 {
+		response.Columns, response.Rows, err = applyOutputColumnProjection(projection[0], resultColumns(targetMetadata), response.Rows)
+		if err == nil && response.DatasetSchema != nil {
+			source := response.DatasetSchema
+			var fields []datasetOutputField
+			fields, err = projectedOutputFields(source.Fields, response.Columns)
+			response.DatasetSchema = &datasetRowsSchema{FileFormat: source.FileFormat, Fields: fields}
+		}
+		if err != nil {
+			return pipelineNodePreviewResponse{}, previewExecutionError{status: http.StatusBadRequest, err: pipelineNodePreviewError{Kind: "transform_failed", NodeID: nodeID, Transform: target.TransformType, Message: err.Error()}}
+		}
 	}
 	return response, nil
 }
