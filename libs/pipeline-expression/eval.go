@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	geospatialcore "github.com/openfoundry/openfoundry-go/libs/geospatial-core"
@@ -25,6 +26,8 @@ const (
 	EvalKindString
 	// EvalKindNull — null marker.
 	EvalKindNull
+	EvalKindDate
+	EvalKindTimestamp
 )
 
 // EvalValue is a runtime value produced by the row evaluator.
@@ -34,6 +37,7 @@ type EvalValue struct {
 	Int    int64
 	Double float64
 	Str    string
+	Time   time.Time
 }
 
 // EvalBool builds a boolean EvalValue.
@@ -65,6 +69,8 @@ func (v EvalValue) Equal(other EvalValue) bool {
 		return v.Double == other.Double
 	case EvalKindString:
 		return v.Str == other.Str
+	case EvalKindDate, EvalKindTimestamp:
+		return v.Time.Equal(other.Time)
 	}
 	return true
 }
@@ -90,12 +96,10 @@ func EvalValueFromJSON(raw json.RawMessage) EvalValue {
 	case bool:
 		return EvalBool(v)
 	case float64:
-		// json.Unmarshal decodes all numbers as float64. We promote
-		// integral-valued floats back to Integer so downstream
-		// arithmetic stays in the integer lane (matches the Rust
-		// behaviour where serde_json exposes both as_i64 and as_f64).
-		if v == math.Trunc(v) && v >= math.MinInt64 && v <= math.MaxInt64 && !looksLikeFloatJSON(raw) {
-			return EvalInt(int64(v))
+		if !looksLikeFloatJSON(raw) {
+			if value, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64); err == nil {
+				return EvalInt(value)
+			}
 		}
 		return EvalDouble(v)
 	case string:
@@ -136,6 +140,10 @@ func (v EvalValue) ToJSON() json.RawMessage {
 		// json.Marshal handles escaping for free.
 		out, _ := json.Marshal(v.Str)
 		return out
+	case EvalKindDate:
+		return strconv.AppendQuote(nil, v.Time.Format(time.DateOnly))
+	case EvalKindTimestamp:
+		return strconv.AppendQuote(nil, v.Time.Format(time.RFC3339Nano))
 	}
 	return json.RawMessage("null")
 }
@@ -160,6 +168,10 @@ func (v EvalValue) TypeHint() PipelineType {
 		return DoubleType()
 	case EvalKindString:
 		return StringType()
+	case EvalKindDate:
+		return DateType()
+	case EvalKindTimestamp:
+		return TimestampType()
 	}
 	return StringType()
 }
@@ -369,6 +381,8 @@ func arith(l, r EvalValue, fi func(int64, int64) int64, fd func(float64, float64
 
 func compareValues(l, r EvalValue) (int, error) {
 	switch {
+	case l.isTemporal() && r.isTemporal():
+		return l.Time.Compare(r.Time), nil
 	case l.Kind == EvalKindInteger && r.Kind == EvalKindInteger:
 		return cmpInt64(l.Int, r.Int), nil
 	case l.Kind == EvalKindInteger && r.Kind == EvalKindDouble:
@@ -425,6 +439,8 @@ const f64Epsilon = 2.220446049250313e-16
 
 func valueEq(l, r EvalValue) bool {
 	switch {
+	case l.isTemporal() && r.isTemporal():
+		return l.Time.Equal(r.Time)
 	case l.Kind == EvalKindInteger && r.Kind == EvalKindDouble:
 		return math.Abs(float64(l.Int)-r.Double) < f64Epsilon
 	case l.Kind == EvalKindDouble && r.Kind == EvalKindInteger:
@@ -460,117 +476,179 @@ func typeHintDebug(t PipelineType) string {
 }
 
 func evalCall(name string, args []Expr, row Row) (EvalValue, error) {
-	nameLC := strings.ToLower(name)
-	switch nameLC {
+	evaluate := scalarEvaluator(name)
+	if evaluate == nil {
+		return EvalValue{}, &EvalError{Kind: EvalErrUnknownFunction, Name: name}
+	}
+	return evaluate(name, args, row)
+}
+
+// scalarEvaluator supplies the implementation used by both runtime dispatch
+// and catalog availability checks.
+func scalarEvaluator(name string) func(string, []Expr, Row) (EvalValue, error) {
+	switch strings.ToLower(name) {
 	case "is_null":
-		if err := needArity(name, args, 1); err != nil {
-			return EvalValue{}, err
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			if err := needArity(name, args, 1); err != nil {
+				return EvalValue{}, err
+			}
+			v, err := Eval(args[0], row)
+			if err != nil {
+				return EvalValue{}, err
+			}
+			return EvalBool(v.Kind == EvalKindNull), nil
 		}
-		v, err := Eval(args[0], row)
-		if err != nil {
-			return EvalValue{}, err
-		}
-		return EvalBool(v.Kind == EvalKindNull), nil
 	case "is_not_null":
-		if err := needArity(name, args, 1); err != nil {
-			return EvalValue{}, err
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			if err := needArity(name, args, 1); err != nil {
+				return EvalValue{}, err
+			}
+			v, err := Eval(args[0], row)
+			if err != nil {
+				return EvalValue{}, err
+			}
+			return EvalBool(v.Kind != EvalKindNull), nil
 		}
-		v, err := Eval(args[0], row)
-		if err != nil {
-			return EvalValue{}, err
-		}
-		return EvalBool(v.Kind != EvalKindNull), nil
 	case "title_case":
-		if err := needArity(name, args, 1); err != nil {
-			return EvalValue{}, err
-		}
-		v, err := Eval(args[0], row)
-		if err != nil {
-			return EvalValue{}, err
-		}
-		switch v.Kind {
-		case EvalKindString:
-			return EvalString(toTitleCase(v.Str)), nil
-		case EvalKindNull:
-			return EvalNull(), nil
-		}
-		return EvalValue{}, &EvalError{
-			Kind:    EvalErrTypeMismatch,
-			Message: fmt.Sprintf("title_case expects String, got %s", typeHintDebug(v.TypeHint())),
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			if err := needArity(name, args, 1); err != nil {
+				return EvalValue{}, err
+			}
+			v, err := Eval(args[0], row)
+			if err != nil {
+				return EvalValue{}, err
+			}
+			switch v.Kind {
+			case EvalKindString:
+				return EvalString(toTitleCase(v.Str)), nil
+			case EvalKindNull:
+				return EvalNull(), nil
+			}
+			return EvalValue{}, &EvalError{
+				Kind:    EvalErrTypeMismatch,
+				Message: fmt.Sprintf("title_case expects String, got %s", typeHintDebug(v.TypeHint())),
+			}
 		}
 	case "lower":
-		return unaryString(name, args, row, strings.ToLower)
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return unaryString(name, args, row, strings.ToLower)
+		}
 	case "upper":
-		return unaryString(name, args, row, strings.ToUpper)
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return unaryString(name, args, row, strings.ToUpper)
+		}
 	case "trim":
-		return unaryString(name, args, row, func(s string) string { return strings.TrimSpace(s) })
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return unaryString(name, args, row, func(s string) string { return strings.TrimSpace(s) })
+		}
 	case "clean_string":
-		return unaryString(name, args, row, func(s string) string {
-			return strings.Join(strings.Fields(s), " ")
-		})
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return unaryString(name, args, row, func(s string) string {
+				return strings.Join(strings.Fields(s), " ")
+			})
+		}
 	case "concat":
-		if err := needArity(name, args, 2); err != nil {
-			return EvalValue{}, err
-		}
-		a, err := Eval(args[0], row)
-		if err != nil {
-			return EvalValue{}, err
-		}
-		b, err := Eval(args[1], row)
-		if err != nil {
-			return EvalValue{}, err
-		}
-		if a.Kind == EvalKindString && b.Kind == EvalKindString {
-			return EvalString(a.Str + b.Str), nil
-		}
-		return EvalValue{}, &EvalError{Kind: EvalErrTypeMismatch, Message: "concat expects two strings"}
-	case "abs":
-		if err := needArity(name, args, 1); err != nil {
-			return EvalValue{}, err
-		}
-		v, err := Eval(args[0], row)
-		if err != nil {
-			return EvalValue{}, err
-		}
-		switch v.Kind {
-		case EvalKindInteger:
-			abs := v.Int
-			if abs < 0 {
-				abs = -abs
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			if err := needArity(name, args, 2); err != nil {
+				return EvalValue{}, err
 			}
-			return EvalInt(abs), nil
-		case EvalKindDouble:
-			return EvalDouble(math.Abs(v.Double)), nil
+			a, err := Eval(args[0], row)
+			if err != nil {
+				return EvalValue{}, err
+			}
+			b, err := Eval(args[1], row)
+			if err != nil {
+				return EvalValue{}, err
+			}
+			if a.Kind == EvalKindString && b.Kind == EvalKindString {
+				return EvalString(a.Str + b.Str), nil
+			}
+			return EvalValue{}, &EvalError{Kind: EvalErrTypeMismatch, Message: "concat expects two strings"}
 		}
-		return EvalValue{}, &EvalError{
-			Kind:    EvalErrTypeMismatch,
-			Message: fmt.Sprintf("abs expects numeric, got %s", typeHintDebug(v.TypeHint())),
+	case "abs":
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			if err := needArity(name, args, 1); err != nil {
+				return EvalValue{}, err
+			}
+			v, err := Eval(args[0], row)
+			if err != nil {
+				return EvalValue{}, err
+			}
+			switch v.Kind {
+			case EvalKindInteger:
+				if v.Int == math.MinInt64 {
+					return EvalValue{}, &EvalError{Kind: EvalErrTypeMismatch, Message: "abs integer overflow"}
+				}
+				abs := v.Int
+				if abs < 0 {
+					abs = -abs
+				}
+				return EvalInt(abs), nil
+			case EvalKindDouble:
+				return EvalDouble(math.Abs(v.Double)), nil
+			}
+			return EvalValue{}, &EvalError{
+				Kind:    EvalErrTypeMismatch,
+				Message: fmt.Sprintf("abs expects numeric, got %s", typeHintDebug(v.TypeHint())),
+			}
 		}
+	case "ceil":
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return evalRounding(name, args, row, math.Ceil)
+		}
+	case "floor":
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return evalRounding(name, args, row, math.Floor)
+		}
+	case "round":
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return evalRounding(name, args, row, math.Round)
+		}
+	case "to_date":
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return evalTemporal(name, args, row, EvalKindDate, time.DateOnly)
+		}
+	case "to_timestamp":
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return evalTemporal(name, args, row, EvalKindTimestamp, time.RFC3339Nano)
+		}
+	case "geom_within":
+		return evalGeomWithin
 	case "haversine_meters":
-		return evalHaversineDistance(name, args, row, "meters")
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return evalHaversineDistance(name, args, row, "meters")
+		}
 	case "haversine_km":
-		return evalHaversineDistance(name, args, row, "km")
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return evalHaversineDistance(name, args, row, "km")
+		}
 	case "haversine_miles":
-		return evalHaversineDistance(name, args, row, "miles")
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return evalHaversineDistance(name, args, row, "miles")
+		}
 	case "haversine_distance":
-		return evalHaversineDistance(name, args, row, "")
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			return evalHaversineDistance(name, args, row, "")
+		}
 	case "cast":
-		if err := needArity(name, args, 2); err != nil {
-			return EvalValue{}, err
+		return func(name string, args []Expr, row Row) (EvalValue, error) {
+			if err := needArity(name, args, 2); err != nil {
+				return EvalValue{}, err
+			}
+			v, err := Eval(args[0], row)
+			if err != nil {
+				return EvalValue{}, err
+			}
+			var target string
+			if args[1].Kind == ExprLit && args[1].Lit.Kind == LitString {
+				target = args[1].Lit.Str
+			} else {
+				return EvalValue{}, &EvalError{Kind: EvalErrTypeMismatch, Message: "cast target must be a String literal"}
+			}
+			return castValue(v, target)
 		}
-		v, err := Eval(args[0], row)
-		if err != nil {
-			return EvalValue{}, err
-		}
-		var target string
-		if args[1].Kind == ExprLit && args[1].Lit.Kind == LitString {
-			target = args[1].Lit.Str
-		} else {
-			return EvalValue{}, &EvalError{Kind: EvalErrTypeMismatch, Message: "cast target must be a String literal"}
-		}
-		return castValue(v, target)
 	}
-	return EvalValue{}, &EvalError{Kind: EvalErrUnknownFunction, Name: name}
+	return nil
 }
 
 func needArity(name string, args []Expr, expected int) error {
