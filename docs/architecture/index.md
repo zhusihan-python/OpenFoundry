@@ -39,3 +39,4 @@ generated outputs.
 - [WP7.1 Data Lineage Contract Draft](data-integration-wp7-1-lineage-contract.md) for cross-team review of dataset, pipeline, ontology and application lineage.
 - [WP10.3 Pipeline Builder Read-Only Audit](data-integration-wp10-3-pipeline-readonly-audit.md) for the four capabilities to preserve and their verification.
 - [WP10.2 Read-Only Canvas and Code Publication Acceptance](data-integration-wp10-2-readonly-publication-acceptance.md) for the live build and committed-output recovery results.
+- [WP6.4 Pipeline Transform Catalog and Reusable Functions](data-integration-wp6-4-udf-catalog-boundary.md) for catalog declarations, runtime requirements, and regression coverage.
