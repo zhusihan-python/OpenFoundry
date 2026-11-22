@@ -1253,7 +1253,15 @@ func applyNormalizeSchema(nodeID string, schema pipelineStrictSchema, removeSpec
 	}
 	fields := cloneStrictFields(schema.Fields)
 	for i := range fields {
-		fields[i].Name = normalizeRuntimeColumnName(fields[i].Name, removeSpecial)
+		target := normalizeRuntimeColumnName(fields[i].Name, removeSpecial)
+		if target == "" {
+			// The runtime cannot materialise an empty column name; validate
+			// must agree instead of quietly keeping the original name.
+			report.addError(nodeID, strPtr(fields[i].Name), "normalize_column_name_empty",
+				fmt.Sprintf("column %q normalizes to an empty name", fields[i].Name))
+			continue
+		}
+		fields[i].Name = target
 	}
 	out := pipelineStrictSchema{Known: true, Fields: fields}
 	checkSchemaDuplicateFields(nodeID, out, report)

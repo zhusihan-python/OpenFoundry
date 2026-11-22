@@ -236,6 +236,13 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 
 func previewChainRequiresBuildInputs(chain []models.PipelineNode) bool {
 	for _, node := range chain {
+		// A pinned dataset_snapshot read never truncates — pushing the display
+		// sample size into it fails the read outright (dataset_input_row_limit_
+		// exceeded). Chains that pin any input therefore read the bounded build
+		// inputs like a real run; the response still limits to the sample size.
+		if PayloadDeclaresDatasetSnapshot(node.Config) {
+			return true
+		}
 		if normaliseTableTransform(node.TransformType) != "sql" {
 			continue
 		}
