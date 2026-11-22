@@ -9,6 +9,7 @@ import {
   CAST_TYPES,
   FILTER_OPERATORS,
   blockSectionLabel,
+  newAggregateBlock,
   newCastBlock,
   newCSVParseBlock,
   newDropColumnsBlock,
@@ -22,6 +23,8 @@ import {
   newSelectColumnsBlock,
   newSortRowsBlock,
   validSortKeys,
+  type AggregateBlock,
+  type Aggregation,
   type CastBlock,
   type CSVParseBlock,
   type DropColumnsBlock,
@@ -37,6 +40,7 @@ import {
   type SortRowsBlock,
   type TransformBlock,
   type TransformStack,
+  validAggregateConfig,
   validCSVParseConfig,
   validJSONExtractConfig,
   validNormalizeUnitsConfig,
@@ -68,6 +72,7 @@ const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   normalize_columns: () => newNormalizeColumnsBlock(),
   normalize_units: () => newNormalizeUnitsBlock(),
   haversine_distance: () => newHaversineDistanceBlock(),
+  aggregate: () => newAggregateBlock(),
   csv_parse: () => newCSVParseBlock(),
   explode: () => newExplodeBlock(),
   json_extract: () => newJSONExtractBlock(),
@@ -487,6 +492,10 @@ function BlockCard({
         ) : null}
         {block.kind === 'normalize_units' ? (
           <NormalizeUnitsBody block={block} schema={schema} catalogEntry={catalogEntry}
+            onPatch={(patch) => onPatch({ ...patch, applied: false })} />
+        ) : null}
+        {block.kind === 'aggregate' ? (
+          <AggregateBody block={block} schema={schema} catalogEntry={catalogEntry}
             onPatch={(patch) => onPatch({ ...patch, applied: false })} />
         ) : null}
         {block.kind === 'csv_parse' ? (
@@ -949,6 +958,57 @@ function SortBody({
   );
 }
 
+function AggregateBody({
+  block,
+  schema,
+  catalogEntry,
+  onPatch,
+}: {
+  block: AggregateBlock;
+  schema: string[];
+  catalogEntry?: PipelineTransformCatalogEntry;
+  onPatch: (patch: Partial<AggregateBlock>) => void;
+}) {
+  const functions = catalogEntry?.form.fields.find((field) => field.name === 'aggregations')?.options ?? [];
+  function updateMeasure(index: number, patch: Partial<Aggregation>) {
+    onPatch({ aggregations: block.aggregations.map((measure, i) => index === i ? { ...measure, ...patch } : measure) });
+  }
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {block.group_by.map((column, index) => (
+        <div key={index} style={{ display: 'flex', gap: 8 }}>
+          <ColumnInput label={`Group column ${index + 1}`} value={column} schema={schema}
+            onChange={(value) => onPatch({ group_by: block.group_by.map((item, i) => i === index ? value : item) })} />
+          <button type="button" className="of-button" aria-label={`Remove group column ${index + 1}`}
+            onClick={() => onPatch({ group_by: block.group_by.filter((_, i) => i !== index) })}>Remove</button>
+        </div>
+      ))}
+      <button type="button" className="of-button" style={{ justifySelf: 'start' }}
+        onClick={() => onPatch({ group_by: [...block.group_by, ''] })}>Add group column</button>
+      {block.aggregations.map((measure, index) => (
+        <div key={index} style={{ display: 'flex', gap: 8 }}>
+          <select aria-label={`Measure ${index + 1}`} value={measure.function} style={inputStyle()}
+            onChange={(event) => updateMeasure(index, { function: event.target.value })}>
+            {functions.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+          </select>
+          <ColumnInput label={`Measure source ${index + 1}`} value={measure.source_column} schema={schema}
+            onChange={(source_column) => updateMeasure(index, { source_column })} />
+          <input aria-label={`Measure output ${index + 1}`} value={measure.target_column} placeholder="Output column"
+            onChange={(event) => updateMeasure(index, { target_column: event.target.value })} style={inputStyle()} />
+          <button type="button" className="of-button" disabled={block.aggregations.length === 1}
+            aria-label={`Remove measure ${index + 1}`}
+            onClick={() => onPatch({ aggregations: block.aggregations.filter((_, i) => i !== index) })}>Remove</button>
+        </div>
+      ))}
+      <button type="button" className="of-button" style={{ justifySelf: 'start' }}
+        onClick={() => onPatch({ aggregations: [...block.aggregations, { function: 'count', source_column: '', target_column: '' }] })}>
+        Add measure
+      </button>
+      <p className="of-text-muted" style={{ fontSize: 12 }}>Count uses all rows when its source is blank.</p>
+    </div>
+  );
+}
+
 function CSVParseBody({
   block,
   schema,
@@ -1073,6 +1133,7 @@ function blockAccent(kind: TransformBlock['kind']): string {
     case 'normalize':
     case 'normalize_units':
       return '#7c5dd6';
+    case 'aggregate':
     case 'csv_parse':
     case 'explode':
     case 'json_extract':
@@ -1087,6 +1148,8 @@ function hasInvalidConfig(block: TransformBlock): boolean {
   switch (block.kind) {
     case 'normalize_units':
       return !validNormalizeUnitsConfig(block);
+    case 'aggregate':
+      return !validAggregateConfig(block);
     case 'csv_parse':
       return !validCSVParseConfig(block);
     case 'explode':

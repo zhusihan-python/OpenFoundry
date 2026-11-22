@@ -42,6 +42,14 @@ func joinLeftAnti(left, right []pe.Row, matches []runtimeJoinMatch, leftColumns 
 }
 
 func antiJoinKey(row pe.Row, columns []string) (string, bool, error) {
+	key, matchable, err := runtimeCompositeKey(row, columns, false)
+	if err != nil {
+		return "", false, fmt.Errorf("left anti join %w", err)
+	}
+	return key, matchable, nil
+}
+
+func runtimeCompositeKey(row pe.Row, columns []string, groupNulls bool) (string, bool, error) {
 	var key []byte
 	for _, column := range columns {
 		raw := bytes.TrimSpace(row[column])
@@ -50,10 +58,13 @@ func antiJoinKey(row pe.Row, columns []string) (string, bool, error) {
 		var kind byte
 		switch value.Kind {
 		case pe.EvalKindNull:
-			if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+			if len(raw) != 0 && !bytes.Equal(raw, []byte("null")) {
+				return "", false, fmt.Errorf("key column %q requires a scalar value", column)
+			}
+			if !groupNulls {
 				return "", false, nil
 			}
-			return "", false, fmt.Errorf("left anti join key column %q requires a scalar value", column)
+			kind = 'z'
 		case pe.EvalKindString:
 			text, kind = value.Str, 's'
 		case pe.EvalKindBool:
@@ -65,7 +76,7 @@ func antiJoinKey(row pe.Row, columns []string) (string, bool, error) {
 			// int64 keys through float64 and collapsing adjacent integers.
 			text, kind = new(big.Rat).SetFloat64(value.Double).RatString(), 'n'
 		default:
-			return "", false, fmt.Errorf("left anti join key column %q requires a scalar value", column)
+			return "", false, fmt.Errorf("key column %q requires a scalar value", column)
 		}
 		// Include type and length so distinct composite tuples cannot collide.
 		key = append(key, kind)

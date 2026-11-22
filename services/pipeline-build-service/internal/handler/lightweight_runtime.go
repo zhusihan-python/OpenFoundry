@@ -95,6 +95,8 @@ type runtimeTransformStack struct {
 }
 
 type runtimeTransformBlock struct {
+	GroupBy                 []string                  `json:"group_by,omitempty"`
+	Aggregations            []runtimeAggregation      `json:"aggregations,omitempty"`
 	CSVDelimiter            string                    `json:"delimiter,omitempty"`
 	CSVHasHeader            *bool                     `json:"has_header,omitempty"`
 	JSONPath                string                    `json:"json_path,omitempty"`
@@ -634,6 +636,8 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 			out, err = applyRuntimeNormalizeUnitsBlock(out, block)
 		case "normalize":
 			out = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters)
+		case "aggregate":
+			out, err = applyRuntimeAggregateBlock(out, block)
 		case "csv_parse":
 			out, err = applyRuntimeCSVParseBlock(out, block)
 		case "explode":
