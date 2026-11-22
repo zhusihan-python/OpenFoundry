@@ -68,6 +68,11 @@ func BindDatasetOutputSchema(payload json.RawMessage, outputs []executor.OutputT
 	if len(outputs) == 0 {
 		return errors.New("dataset_output_config_invalid: output_schema_version requires a dataset output")
 	}
+	for _, tx := range outputs {
+		if len(tx.OutputColumns) > 0 {
+			return errors.New("dataset_output_projection_invalid: _output.columns cannot be combined with the typed output_schema_version declaration")
+		}
+	}
 	var version string
 	if err := json.Unmarshal(fields["output_schema_version"], &version); err != nil || version != ordersSchemaVersion {
 		return fmt.Errorf("dataset_output_config_invalid: output_schema_version must be %q", ordersSchemaVersion)
