@@ -266,21 +266,12 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 }
 
 func previewChainRequiresBuildInputs(chain []models.PipelineNode) bool {
-	var pinned, cleaning, rowLocal bool
+	var pinned, needsPinnedInput bool
 	for _, node := range chain {
 		pinned = pinned || PayloadDeclaresDatasetSnapshot(node.Config)
 		kind := normaliseTableTransform(node.TransformType)
-		if kind == "drop" {
-			cleaning = true
-		}
-		// gpx_parse maps every input row to exactly one output row, like the
-		// haversine stack block below writes one scalar per row: their output
-		// prefix is the transform of the input prefix. On a pinned chain the
-		// page sample size must not become the snapshot read's hard bound
-		// (pinned reads never truncate), so they too read the bounded build
-		// inputs and the final rows are sampled for display.
-		if kind == "gpx_parse" {
-			rowLocal = true
+		if kind == "drop" || kind == "gpx_parse" {
+			needsPinnedInput = true
 		}
 		if kind != "sql" {
 			continue
@@ -290,38 +281,29 @@ func previewChainRequiresBuildInputs(chain []models.PipelineNode) bool {
 			continue
 		}
 		if cfg.Stack == nil {
-			// Every relational (_join) and geospatial (_geo_join) join
-			// derives its output rows from the complete input relations —
-			// matches and fan-out can pair rows far beyond the display
-			// sample, and a left row's nearest neighbour can sit anywhere in
-			// the right relation, so a sampled input would silently return
-			// the wrong neighbour. Pinned reads never truncate, so pushing
-			// the sample size into the inputs would also fail them; join
-			// chains read the bounded build inputs like a real run.
-			if cfg.Join != nil || cfg.GeoJoin != nil {
-				return true
-			}
-			// A by-name union can gain columns from any later input row.
-			if cfg.GeoJoin == nil && cfg.Union != nil {
+			// A matching neighbor or a union column may first appear beyond the
+			// display window. Limit the final result after reading bounded inputs.
+			if cfg.Join != nil || cfg.GeoJoin != nil || cfg.Union != nil {
 				return true
 			}
 			continue
 		}
 		for _, block := range cfg.Stack.Blocks {
-			cleaning = cleaning || block.shapesColumns()
-			if block.Applied && isHaversineBlockKind(block.Kind) {
-				rowLocal = true
+			if !block.Applied {
+				continue
 			}
-			if block.Applied && strings.EqualFold(strings.TrimSpace(block.Kind), "window_aggregate") {
+			if strings.EqualFold(strings.TrimSpace(block.Kind), "window_aggregate") {
 				return true
+			}
+			if block.shapesColumns() || isHaversineBlockKind(block.Kind) {
+				needsPinnedInput = true
 			}
 		}
 	}
-	return pinned && (cleaning || rowLocal)
+	// A pinned read rejects truncation. The preview size limits the display.
+	return pinned && needsPinnedInput
 }
 
-// isHaversineBlockKind mirrors the stack block kinds the haversine runtime
-// accepts (applyRuntimeHaversineBlock).
 func isHaversineBlockKind(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "haversine", "haversine_distance", "geo_distance":

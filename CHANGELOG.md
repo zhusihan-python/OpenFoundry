@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 ## [Unreleased]
 
 ### Added
+- Dataset output nodes support ordered column selection for NDJSON previews
+  and publications. Empty results retain their declared columns.
 - Pipeline LLM nodes can use the agent-runtime chat endpoint with a configured
   OpenAI-compatible model. Set `PIPELINE_LLM_PROTOCOL=agent-runtime`.
 - DVS can publish a group of reserved manual build outputs in one transaction
@@ -44,6 +46,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - _(add entries here)_
 
 ### Fixed
+- Geospatial joins and positional unions execute in the declared input order.
+  Short geospatial previews include matches outside the display sample.
 - By-name Union reads its bounded inputs before serving a short preview.
 
 - Published lightweight NDJSON datasets retain the logical type of whole-column casts after filtering or renaming, including empty results.

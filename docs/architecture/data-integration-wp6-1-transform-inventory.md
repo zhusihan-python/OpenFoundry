@@ -31,7 +31,7 @@
 | `gpx_parse` | 解析 GPX | available | 轻量 GPX 节点；别名 `parse_gpx`、`gpx`、`gpx_parser` |
 | `python_transform` | Python 变换 | requires_python_sidecar | Python 节点依赖 sidecar；与动态 Python UDF 复用入口的计数由产品确认 |
 | `llm_node` | 调用 LLM | requires_ai_service | Go agent-runtime 的鉴权 chat 接口支持接入实际模型。提供方返回的模型标识和 token 用量可在节点执行记录核对。 |
-| `output_mapping` | 输出映射 | available | 构建器输出配置与发布路径；数据集、对象、链接和目录表单中其他选项需按目标分别核对 |
+| `output_mapping` | 输出映射 | available | 图运行支持数据集、对象和链接发布。数据集字段投影及固定格式边界见下文。 |
 | `function.<name>@<version>` | 可复用函数（动态族） | 表达式可用 / Python 仅声明 | 动态族。注入注册表后追加各函数版本，生产启动当前未接注册表。调用别名和版本共享函数引用语义。 |
 
 [目录与状态](../../services/pipeline-build-service/internal/handler/transform_catalog.go) · [轻量执行与别名](../../services/pipeline-build-service/internal/handler/lightweight_runtime.go) · [地理连接](../../services/pipeline-build-service/internal/handler/geo_join_runtime.go) · [生产接线](../../services/pipeline-build-service/cmd/pipeline-build-service/main.go)
@@ -43,6 +43,10 @@
 含通用连接的轻量预览按构建的输入上限读取数据，再从执行结果中取 `sample_size` 指定的前几行。因此，即使右侧匹配行位于展示行数之外，预览也能显示这次匹配。若连接产生的行数超过预览允许的连接输出上限，即使只请求展示一行，预览也会报错。[预览执行入口](../../services/pipeline-build-service/internal/handler/preview.go)
 
 普通等值连接保留 64 位整数键的精度。字符串与数字按各自的类型匹配；数值键 `1` 和 `1.0` 匹配，两个数值相邻的大整数订单号分别匹配。
+
+数据集输出可在 `_output.columns` 中按顺序指定 NDJSON 字段，例如 `["order_id", "amount"]`。保存预览、草稿预览和发布 schema 沿用该顺序，输入为空时仍保留列和类型。未配置时输出全部结果列。未知或重复的列名、错型配置会使操作失败，原发布版本仍可读取。固定的 `orders.v1` 文件及显式 Parquet 输出沿用各自的 schema，拒绝可变列投影。
+
+几何相交、阈值及最近邻连接按管道中声明的左右顺序取表。短预览先读取有界输入，再从匹配结果取前几行，因此样本窗口之外的右侧对象仍可成为最近邻。
 
 ## WP6.3 新增能力
 

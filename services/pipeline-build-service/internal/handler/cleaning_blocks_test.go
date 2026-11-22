@@ -258,12 +258,12 @@ func TestPreviewChainWithPinnedSnapshotReadsBuildInputs(t *testing.T) {
 	assert.False(t, previewChainRequiresBuildInputs(unpinned))
 }
 
-// Geo joins pair rows across the complete relations — a nearest neighbour can
+// Geo joins pair rows across the complete relations — a nearest neighbor can
 // sit far beyond the right side's first sample row — so their preview chains
 // must read the bounded build inputs like a real run, pin or no pin.
 func TestPreviewChainGeoJoinReadsBuildInputs(t *testing.T) {
 	geoJoin := json.RawMessage(`{"_geo_join":{"mode":"nearest","left_lat_column":"lat","left_lon_column":"lon","right_lat_column":"lat","right_lon_column":"lon","k":1}}`)
-	for _, pinned := range []bool {true, false} {
+	for _, pinned := range []bool{true, false} {
 		config := json.RawMessage(`{"dataset_id":"ri.foundry.main.dataset.00000000-0000-0000-0000-000000000000"}`)
 		if pinned {
 			config = json.RawMessage(`{"dataset_id":"ri.foundry.main.dataset.00000000-0000-0000-0000-000000000000","dataset_snapshot":{"branch":"main","version":1,"transaction_id":"ri.foundry.main.transaction.00000000-0000-0000-0000-000000000000"}}`)
