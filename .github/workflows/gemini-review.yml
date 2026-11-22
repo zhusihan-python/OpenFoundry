@@ -1,0 +1,70 @@
+name: Gemini PR review
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions: {}
+
+jobs:
+  review:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: gemini-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      statuses: write
+    steps:
+      - name: Check pilot configuration
+        id: configuration
+        shell: bash
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [[ -z "$GEMINI_API_KEY" ]]; then
+            echo '::notice::Gemini review skipped because GEMINI_API_KEY is not configured.'
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      # The Action fetches PR patches from GitHub. Local files provide base-branch guidance.
+      - name: Check out review context from the base commit
+        if: steps.configuration.outputs.enabled == 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /AGENTS.md
+            /CLAUDE.md
+            /CONTRIBUTING.md
+            /.github/pull_request_template.md
+            /apps/web/CLAUDE.md
+            /libs/*/CLAUDE.md
+            /services/*/CLAUDE.md
+
+      - name: Request Gemini review
+        if: steps.configuration.outputs.enabled == 'true'
+        uses: derailed-dash/gemini-review-action@aaf0094c47ba7cd10a2fc05c0db5b3d29b2582f9 # v1.5.1
+        env:
+          DISABLE_DEVELOPER_KNOWLEDGE: 'true'
+        with:
+          command: review
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          github_token: ${{ github.token }}
+          gemini_model: gemini-3.6-flash
+          language: Simplified Chinese
+          include_comment_history: 'false'
+          skip_inline_suggestions: 'false'
