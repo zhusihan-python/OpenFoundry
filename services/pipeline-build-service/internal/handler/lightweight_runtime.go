@@ -93,6 +93,7 @@ type runtimeTransformStack struct {
 
 type runtimeTransformBlock struct {
 	JSONPath                string                    `json:"json_path,omitempty"`
+	SortKeys                []runtimeSortKey          `json:"sort_keys,omitempty"`
 	Kind                    string                    `json:"kind,omitempty"`
 	Applied                 bool                      `json:"applied,omitempty"`
 	Columns                 []string                  `json:"columns,omitempty"`
@@ -620,6 +621,8 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 			out = applyRuntimeDropBlock(out, block.Columns)
 		case "rename":
 			out = applyRuntimeRenameBlock(out, block.Renames)
+		case "sort":
+			out, err = applyRuntimeSortBlock(out, block.SortKeys)
 		case "normalize":
 			out = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters)
 		case "json_extract":

@@ -92,6 +92,13 @@ export interface JSONExtractBlock {
   target_column: string;
 }
 
+export interface SortRowsBlock {
+  id: string;
+  kind: 'sort';
+  applied: boolean;
+  sort_keys: Array<{ column: string; direction: 'asc' | 'desc' }>;
+}
+
 export type TransformBlock =
   | CastBlock
   | FilterBlock
@@ -100,7 +107,8 @@ export type TransformBlock =
   | RenameColumnsBlock
   | NormalizeColumnsBlock
   | HaversineDistanceBlock
-  | JSONExtractBlock;
+  | JSONExtractBlock
+  | SortRowsBlock;
 
 export interface TransformStack {
   source_dataset_id: string;
@@ -184,6 +192,15 @@ export function validJSONExtractConfig(block: JSONExtractBlock): boolean {
     block.source_column !== block.target_column && block.json_path.trim().startsWith('$');
 }
 
+export function newSortRowsBlock(): SortRowsBlock {
+  return { id: newBlockId('sort'), kind: 'sort', applied: false, sort_keys: [{ column: '', direction: 'asc' }] };
+}
+
+export function validSortKeys(keys: SortRowsBlock['sort_keys']): boolean {
+  return keys.length > 0 && keys.every((key) => key.column.trim() !== '') &&
+    new Set(keys.map((key) => key.column)).size === keys.length;
+}
+
 export function newHaversineDistanceBlock(): HaversineDistanceBlock {
   return {
     id: newBlockId('haversine_distance'),
@@ -214,6 +231,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Normalize column names';
     case 'json_extract':
       return 'JSON extract';
+    case 'sort':
+      return 'Sort rows';
     case 'haversine_distance':
       return 'Haversine distance';
   }
@@ -235,6 +254,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Normalize column names';
     case 'json_extract':
       return 'JSON extract';
+    case 'sort':
+      return 'Sort rows';
     case 'haversine_distance':
       return 'Haversine distance';
   }
@@ -365,6 +386,14 @@ export function composeTransformStackSql(stack: TransformStack): string {
       case 'json_extract': {
         if (!validJSONExtractConfig(block)) break;
         ctes.push(`${cte} AS (SELECT * FROM ${previous} /* json_extract: see structured stack config */)`);
+        previous = cte;
+        return;
+      }
+      case 'sort': {
+        if (!validSortKeys(block.sort_keys)) break;
+        const order = block.sort_keys.map(({ column, direction }) =>
+          `${quoteIdent(column)} ${direction === 'desc' ? 'DESC' : 'ASC'} NULLS LAST`).join(', ');
+        ctes.push(`${cte} AS (SELECT * FROM ${previous} ORDER BY ${order})`);
         previous = cte;
         return;
       }

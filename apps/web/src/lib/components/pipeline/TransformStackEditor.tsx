@@ -17,6 +17,8 @@ import {
   newNormalizeColumnsBlock,
   newRenameColumnsBlock,
   newSelectColumnsBlock,
+  newSortRowsBlock,
+  validSortKeys,
   type CastBlock,
   type DropColumnsBlock,
   type FilterBlock,
@@ -26,6 +28,7 @@ import {
   type NormalizeColumnsBlock,
   type RenameColumnsBlock,
   type SelectColumnsBlock,
+  type SortRowsBlock,
   type TransformBlock,
   type TransformStack,
   validJSONExtractConfig,
@@ -49,6 +52,7 @@ interface AddBlockOption {
 
 const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   select: () => newSelectColumnsBlock(),
+  sort: () => newSortRowsBlock(),
   cast: () => newCastBlock(),
   filter: () => newFilterBlock(),
   drop: () => newDropColumnsBlock(),
@@ -155,7 +159,7 @@ export function TransformStackEditor({ open, stack, schema = [], onClose, onAppl
   }
 
   const cannotApplyAll = alreadySaved || draft.blocks.length === 0 ||
-    draft.blocks.some((block) => block.kind === 'json_extract' && !validJSONExtractConfig(block));
+    draft.blocks.some(hasInvalidConfig);
 
   function applyAll() {
     if (!draft) return;
@@ -473,6 +477,9 @@ function BlockCard({
         {block.kind === 'json_extract' ? (
           <JSONExtractBody block={block} schema={schema} onPatch={(patch) => onPatch({ ...patch, applied: false })} />
         ) : null}
+        {block.kind === 'sort' ? (
+          <SortBody block={block} schema={schema} onPatch={(patch) => onPatch({ ...patch, applied: false })} />
+        ) : null}
         {block.kind === 'haversine_distance' ? (
           <HaversineBody block={block} schema={schema} onPatch={(patch) => onPatch(patch)} />
         ) : null}
@@ -483,7 +490,7 @@ function BlockCard({
           <button
             type="button"
             onClick={onApply}
-            disabled={block.applied || (block.kind === 'json_extract' && !validJSONExtractConfig(block))}
+            disabled={block.applied || hasInvalidConfig(block)}
             style={{
               padding: '6px 12px',
               border: 0,
@@ -881,6 +888,46 @@ function JSONExtractBody({
   );
 }
 
+function SortBody({
+  block,
+  schema,
+  onPatch,
+}: {
+  block: SortRowsBlock;
+  schema: string[];
+  onPatch: (patch: Partial<SortRowsBlock>) => void;
+}) {
+  function updateKey(index: number, patch: Partial<SortRowsBlock['sort_keys'][number]>) {
+    onPatch({ sort_keys: block.sort_keys.map((key, i) => i === index ? { ...key, ...patch } : key) });
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <p className="of-text-muted" style={{ fontSize: 12 }}>Keys apply in order. Nulls appear last.</p>
+      {block.sort_keys.map((key, index) => (
+        <div key={index} style={{ display: 'flex', gap: 8 }}>
+          <ColumnInput label={`Sort column ${index + 1}`} value={key.column} schema={schema}
+            onChange={(column) => updateKey(index, { column })} />
+          <select aria-label={`Sort direction ${index + 1}`} value={key.direction} style={inputStyle()}
+            onChange={(event) => updateKey(index, { direction: event.target.value === 'desc' ? 'desc' : 'asc' })}>
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
+          </select>
+          <button type="button" className="of-button" disabled={block.sort_keys.length === 1}
+            aria-label={`Remove sort key ${index + 1}`}
+            onClick={() => onPatch({ sort_keys: block.sort_keys.filter((_, i) => i !== index) })}>
+            Remove
+          </button>
+        </div>
+      ))}
+      <button type="button" className="of-button" style={{ justifySelf: 'start' }}
+        onClick={() => onPatch({ sort_keys: [...block.sort_keys, { column: '', direction: 'asc' }] })}>
+        Add sort key
+      </button>
+    </div>
+  );
+}
+
 function ColumnInput({ value, onChange, schema, label }: { value: string; onChange: (value: string) => void; schema: string[]; label?: string }) {
   const datalistId = useMemo(() => `column-list-${Math.random().toString(36).slice(2, 8)}`, []);
   return (
@@ -915,9 +962,21 @@ function blockAccent(kind: TransformBlock['kind']): string {
     case 'normalize':
       return '#7c5dd6';
     case 'json_extract':
+    case 'sort':
       return '#2563eb';
     case 'haversine_distance':
       return '#047857';
+  }
+}
+
+function hasInvalidConfig(block: TransformBlock): boolean {
+  switch (block.kind) {
+    case 'json_extract':
+      return !validJSONExtractConfig(block);
+    case 'sort':
+      return !validSortKeys(block.sort_keys);
+    default:
+      return false;
   }
 }
 

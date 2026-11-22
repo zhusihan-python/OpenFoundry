@@ -468,6 +468,19 @@ func validateTransformStack(nodeID string, stack runtimeTransformStack, schema p
 			out = validateDropNode(nodeID, tableRuntimeConfig{Columns: block.Columns}, out, report)
 		case "rename":
 			out = applyRenameMappings(nodeID, out, block.Renames, report)
+		case "sort":
+			keys, err := normalizeRuntimeSortKeys(block.SortKeys)
+			if err != nil {
+				report.addError(nodeID, nil, "invalid_sort_keys", err.Error())
+				continue
+			}
+			if out.Known {
+				for _, key := range keys {
+					if _, ok := out.field(key.Column); !ok {
+						report.addError(nodeID, strPtr(key.Column), "missing_column", fmt.Sprintf("column %q does not exist in upstream schema", key.Column))
+					}
+				}
+			}
 		case "normalize":
 			out = applyNormalizeSchema(nodeID, out, block.RemoveSpecialCharacters, report)
 		case "json_extract":
