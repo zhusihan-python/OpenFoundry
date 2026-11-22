@@ -367,10 +367,15 @@ func newExecutionGraph(plan Plan) (executionGraph, error) {
 		if _, exists := graph.byID[node.ID]; exists {
 			return graph, &DuplicateNodeError{NodeID: node.ID}
 		}
-		node.DependsOn = cloneAndSort(node.DependsOn)
+		// Scheduling bookkeeping keeps a sorted copy for deterministic
+		// traversal, but the node handed to the runner must keep its
+		// DECLARED dependency order: role-sensitive transforms (geo and
+		// relational joins, positional unions) read left/right inputs as
+		// depends_on[0]/[1], and sorting here silently swaps them whenever
+		// the declared order is not alphabetical.
+		graph.dependsOn[node.ID] = cloneAndSort(node.DependsOn)
 		graph.nodes = append(graph.nodes, node)
 		graph.byID[node.ID] = node
-		graph.dependsOn[node.ID] = node.DependsOn
 	}
 	sort.SliceStable(graph.nodes, func(i, j int) bool { return graph.nodes[i].ID < graph.nodes[j].ID })
 	for _, node := range graph.nodes {

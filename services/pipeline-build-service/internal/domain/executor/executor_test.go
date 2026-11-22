@@ -131,6 +131,39 @@ func TestExecuteRejectsInvalidGraphCycle(t *testing.T) {
 	require.NotEmpty(t, cycle.CyclePath)
 }
 
+type dependencyRecordingRunner struct {
+	mu   sync.Mutex
+	deps map[string][]string
+}
+
+func (r *dependencyRecordingRunner) Run(_ context.Context, ctx NodeContext) (NodeResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deps[ctx.Node.ID] = append([]string(nil), ctx.Node.DependsOn...)
+	return NodeResult{OutputContentHash: "hash-" + ctx.Node.ID}, nil
+}
+
+// Join-style nodes read their inputs positionally: depends_on[0] is the left
+// relation. The runner must see the declared order, not a sorted one, or left
+// and right silently swap whenever the declared order is not alphabetical
+// (WP6.5 geo-join builds failed exactly that way: trails>areas flipped the
+// join and the left geometry column went missing).
+func TestExecutePreservesDeclaredDependencyOrder(t *testing.T) {
+	plan := Plan{BuildBranch: "master", Parallelism: 2, Nodes: []Node{
+		node("zebra", nil),
+		node("alpha", nil),
+		node("join", []string{"zebra", "alpha"}),
+	}}
+	runner := &dependencyRecordingRunner{deps: map[string][]string{}}
+
+	outcome, err := Execute(context.Background(), plan, runner, &recordingTransactions{}, &recordingCommitter{}, nil)
+	require.NoError(t, err)
+	require.Equal(t, models.BuildCompleted, outcome.FinalState)
+	require.Equal(t, []string{"zebra", "alpha"}, runner.deps["join"])
+	// The plan's node keeps its own declared slice untouched.
+	require.Equal(t, []string{"zebra", "alpha"}, plan.Nodes[2].DependsOn)
+}
+
 func node(id string, deps []string) Node {
 	return Node{ID: id, DependsOn: deps, Outputs: []OutputTransaction{{DatasetRID: "out." + id, TransactionRID: "txn." + id}}}
 }
