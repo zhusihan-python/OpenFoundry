@@ -117,6 +117,15 @@ export interface ExplodeBlock {
   target_column: string;
 }
 
+export interface CSVParseBlock {
+  id: string;
+  kind: 'csv_parse';
+  applied: boolean;
+  source_column: string;
+  delimiter: string;
+  has_header: boolean;
+}
+
 export type TransformBlock =
   | CastBlock
   | FilterBlock
@@ -128,7 +137,8 @@ export type TransformBlock =
   | JSONExtractBlock
   | SortRowsBlock
   | NormalizeUnitsBlock
-  | ExplodeBlock;
+  | ExplodeBlock
+  | CSVParseBlock;
 
 export interface TransformStack {
   source_dataset_id: string;
@@ -203,6 +213,15 @@ export function newNormalizeColumnsBlock(): NormalizeColumnsBlock {
   };
 }
 
+export function newCSVParseBlock(): CSVParseBlock {
+  return { id: newBlockId('csv_parse'), kind: 'csv_parse', applied: false, source_column: '', delimiter: ',', has_header: true };
+}
+
+export function validCSVParseConfig(block: CSVParseBlock): boolean {
+  return Boolean(block.source_column.trim()) && Array.from(block.delimiter).length === 1 &&
+    !['"', '\r', '\n', '\0', '\uFFFD'].includes(block.delimiter);
+}
+
 export function newExplodeBlock(): ExplodeBlock {
   return { id: newBlockId('explode'), kind: 'explode', applied: false, source_column: '', target_column: '' };
 }
@@ -271,6 +290,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Normalize column names';
     case 'normalize_units':
       return 'Normalize units';
+    case 'csv_parse':
+      return 'CSV parse';
     case 'explode':
       return 'Explode';
     case 'json_extract':
@@ -298,6 +319,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Normalize column names';
     case 'normalize_units':
       return 'Normalize units';
+    case 'csv_parse':
+      return 'CSV parse';
     case 'explode':
       return 'Explode';
     case 'json_extract':
@@ -434,6 +457,12 @@ export function composeTransformStackSql(stack: TransformStack): string {
       case 'normalize_units': {
         if (!validNormalizeUnitsConfig(block)) break;
         ctes.push(`${cte} AS (SELECT * FROM ${previous} /* normalize_units: see structured stack config */)`);
+        previous = cte;
+        return;
+      }
+      case 'csv_parse': {
+        if (!validCSVParseConfig(block)) break;
+        ctes.push(`${cte} AS (SELECT * FROM ${previous} /* csv_parse: see structured stack config */)`);
         previous = cte;
         return;
       }

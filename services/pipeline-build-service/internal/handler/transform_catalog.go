@@ -572,15 +572,15 @@ func transformCatalogJSONExtract(docs []string) pipelineTransformCatalogEntry {
 }
 
 func transformCatalogCSVParse(docs []string) pipelineTransformCatalogEntry {
-	entry := baseTransformCatalogEntry("csv_parse", "CSV parse", "Parse CSV text into tabular columns.", "parsing", "stack_block", "transform_stack", "planned", "catalog_only", "csv", docs)
+	entry := baseTransformCatalogEntry("csv_parse", "CSV parse", "Expand CSV text into rows and text columns.", "parsing", "stack_block", "transform_stack", "available", "lightweight_table", "csv", docs)
 	entry.Tags = []string{"csv", "parse"}
 	entry.DefaultConfig = map[string]any{"kind": "csv_parse", "applied": false, "source_column": "", "delimiter": ",", "has_header": true}
 	entry.Form.Fields = []pipelineTransformCatalogField{
-		columnField("source_column", "CSV column", true, "Column containing CSV text."),
+		columnField("source_column", "CSV column", true, "Column containing one CSV document per row."),
 		{Name: "delimiter", Label: "Delimiter", FieldType: "text", Required: true, Default: ","},
 		{Name: "has_header", Label: "Has header", FieldType: "boolean", Required: false, Default: true},
 	}
-	entry.OutputContract = pipelineTransformOutputContract{Mode: "schema_expand", Description: "Output schema expands parsed CSV fields into columns."}
+	entry.OutputContract = pipelineTransformOutputContract{Mode: "schema_expand", Description: "Adds text columns and emits one row per CSV record. Headerless columns are named column_1, column_2, and so on."}
 	return entry
 }
 

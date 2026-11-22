@@ -87,11 +87,16 @@ type tableRuntimeConfig struct {
 	FileNameColumn      string                    `json:"file_name_column,omitempty"`
 }
 
+// Row-expanding blocks store their results in memory before publication.
+const maxLightweightExpandedRows = 100_000
+
 type runtimeTransformStack struct {
 	Blocks []runtimeTransformBlock `json:"blocks,omitempty"`
 }
 
 type runtimeTransformBlock struct {
+	CSVDelimiter            string                    `json:"delimiter,omitempty"`
+	CSVHasHeader            *bool                     `json:"has_header,omitempty"`
 	JSONPath                string                    `json:"json_path,omitempty"`
 	SortKeys                []runtimeSortKey          `json:"sort_keys,omitempty"`
 	Kind                    string                    `json:"kind,omitempty"`
@@ -629,6 +634,8 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 			out, err = applyRuntimeNormalizeUnitsBlock(out, block)
 		case "normalize":
 			out = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters)
+		case "csv_parse":
+			out, err = applyRuntimeCSVParseBlock(out, block)
 		case "explode":
 			out, err = applyRuntimeExplodeBlock(out, block)
 		case "json_extract":
