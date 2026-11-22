@@ -53,6 +53,7 @@ function crumbsFor(pathname: string) {
 
 export function Topbar() {
   const { pathname } = useLocation();
+  const isPipelineRoute = pathname === '/pipelines' || pathname.startsWith('/pipelines/');
   const crumbs = crumbsFor(pathname);
   const current = crumbs[crumbs.length - 1]?.label ?? 'Home';
 
@@ -88,19 +89,21 @@ export function Topbar() {
         </div>
       </div>
 
-      <div className="of-topbar__center">
-        <button type="button" className="of-topbar__icon-button" aria-label="Undo">
-          ↶
-        </button>
-        <button type="button" className="of-topbar__icon-button" aria-label="Redo" disabled>
-          ↷
-        </button>
-        <button type="button" className="of-topbar__branch">
-          <Glyph name="graph" size={16} />
-          <span>Main</span>
-          <Glyph name="chevron-down" size={13} />
-        </button>
-      </div>
+      {!isPipelineRoute && (
+        <div className="of-topbar__center">
+          <button type="button" className="of-topbar__icon-button" aria-label="Undo">
+            ↶
+          </button>
+          <button type="button" className="of-topbar__icon-button" aria-label="Redo" disabled>
+            ↷
+          </button>
+          <button type="button" className="of-topbar__branch">
+            <Glyph name="graph" size={16} />
+            <span>Main</span>
+            <Glyph name="chevron-down" size={13} />
+          </button>
+        </div>
+      )}
 
       <div className="of-topbar__actions">
         <span className="of-topbar__build-status">
@@ -116,9 +119,11 @@ export function Topbar() {
           <Glyph name="users" size={15} />
           Share
         </button>
-        <button type="button" className="of-topbar__action of-topbar__action--primary">
-          Save
-        </button>
+        {!isPipelineRoute && (
+          <button type="button" className="of-topbar__action of-topbar__action--primary">
+            Save
+          </button>
+        )}
         <span className="of-topbar__avatar">OF</span>
       </div>
     </header>

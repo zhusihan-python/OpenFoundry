@@ -7,6 +7,8 @@ import { ConfirmDialog } from '@/lib/components/ConfirmDialog';
 import { Glyph } from '@/lib/components/ui/Glyph';
 import { deletePipeline, listPipelines, pipelineNodesFromDAG, runDuePipelines, type Pipeline } from '@/lib/api/pipelines';
 
+import { usePipelineAuthoringAccess } from './usePipelineAuthoringAccess';
+
 type StatusTab = 'all' | 'draft' | 'active' | 'paused' | 'archived';
 type ScheduleFacet = 'all' | 'scheduled' | 'manual';
 type SortKey = 'updated_desc' | 'updated_asc' | 'created_desc' | 'name_asc' | 'name_desc';
@@ -64,6 +66,7 @@ function tsOf(value: string | null | undefined) {
 }
 
 export function PipelinesPage() {
+  const { canEdit } = usePipelineAuthoringAccess();
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [statusTab, setStatusTab] = useState<StatusTab>('all');
   const [search, setSearch] = useState('');
@@ -73,7 +76,8 @@ export function PipelinesPage() {
   const [sortKey, setSortKey] = useState<SortKey>('updated_desc');
   const [sortOpen, setSortOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
-  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkRequested, setBulkOpen] = useState(false);
+  const bulkOpen = canEdit && bulkRequested;
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
   const [total, setTotal] = useState(0);
   const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
@@ -439,30 +443,32 @@ export function PipelinesPage() {
             </button>
           ) : null}
         </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
-          <button
-            type="button"
-            onClick={() => void handleRunDue()}
-            disabled={busy}
-            className="of-button"
-            title="Trigger due scheduled runs"
-          >
-            <Glyph name="run" size={13} />
-            {busy ? 'Dispatching…' : 'Run due'}
-          </button>
-          <Link to="/pipelines/new" className="of-button" title="Create pipeline from JSON definition">
-            <Glyph name="code" size={13} />
-            JSON create
-          </Link>
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            className="of-button of-button--success"
-          >
-            <Glyph name="plus" size={13} />
-            New pipeline
-          </button>
-        </div>
+        {canEdit && (
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button
+              type="button"
+              onClick={() => void handleRunDue()}
+              disabled={busy}
+              className="of-button"
+              title="Trigger due scheduled runs"
+            >
+              <Glyph name="run" size={13} />
+              {busy ? 'Dispatching…' : 'Run due'}
+            </button>
+            <Link to="/pipelines/new" className="of-button" title="Create pipeline from JSON definition">
+              <Glyph name="code" size={13} />
+              JSON create
+            </Link>
+            <button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+              className="of-button of-button--success"
+            >
+              <Glyph name="plus" size={13} />
+              New pipeline
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Center toolbar — Sort / Select / Filter / Filter input */}
@@ -535,21 +541,23 @@ export function PipelinesPage() {
           </div>
 
           {/* Select pipelines (bulk toggle) */}
-          <button
-            type="button"
-            className={`of-button ${bulkOpen ? 'of-chip-active' : ''}`}
-            onClick={() => {
-              setBulkOpen((open) => !open);
-              if (bulkOpen) clearBulk();
-            }}
-            style={{ minWidth: 160, justifyContent: 'space-between' }}
-          >
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <Glyph name="bookmark" size={13} />
-              {bulkOpen ? `${bulkSelected.size} selected` : 'Select pipelines…'}
-            </span>
-            {bulkOpen ? <Glyph name="x" size={12} /> : <Glyph name="chevron-down" size={12} />}
-          </button>
+          {canEdit && (
+            <button
+              type="button"
+              className={`of-button ${bulkOpen ? 'of-chip-active' : ''}`}
+              onClick={() => {
+                setBulkOpen((open) => !open);
+                if (bulkOpen) clearBulk();
+              }}
+              style={{ minWidth: 160, justifyContent: 'space-between' }}
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Glyph name="bookmark" size={13} />
+                {bulkOpen ? `${bulkSelected.size} selected` : 'Select pipelines…'}
+              </span>
+              {bulkOpen ? <Glyph name="x" size={12} /> : <Glyph name="chevron-down" size={12} />}
+            </button>
+          )}
 
           {/* Filter dropdown — facets */}
           <div ref={filterRef} style={{ position: 'relative' }}>
@@ -817,14 +825,16 @@ export function PipelinesPage() {
                   <div style={{ display: 'grid', justifyItems: 'center', gap: 10 }}>
                     <Glyph name="run" size={28} tone="var(--text-soft)" />
                     <span className="of-text-muted">No pipelines match these filters.</span>
-                    <button
-                      type="button"
-                      className="of-button of-button--success"
-                      onClick={() => setCreateOpen(true)}
-                    >
-                      <Glyph name="plus" size={14} />
-                      New pipeline
-                    </button>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        className="of-button of-button--success"
+                        onClick={() => setCreateOpen(true)}
+                      >
+                        <Glyph name="plus" size={14} />
+                        New pipeline
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -917,7 +927,7 @@ export function PipelinesPage() {
                           className="of-button"
                           style={{ fontSize: 11 }}
                         >
-                          Builder
+                          {canEdit ? 'Builder' : 'View pipeline'}
                         </button>
                         <button
                           type="button"
@@ -930,22 +940,24 @@ export function PipelinesPage() {
                         >
                           Runs
                         </button>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setDeleteTarget(pipeline);
-                          }}
-                          disabled={busy}
-                          className="of-button"
-                          style={{
-                            fontSize: 11,
-                            color: 'var(--status-danger)',
-                            borderColor: '#e0b4b1',
-                          }}
-                        >
-                          Delete
-                        </button>
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setDeleteTarget(pipeline);
+                            }}
+                            disabled={busy}
+                            className="of-button"
+                            style={{
+                              fontSize: 11,
+                              color: 'var(--status-danger)',
+                              borderColor: '#e0b4b1',
+                            }}
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1014,14 +1026,14 @@ export function PipelinesPage() {
                 className="of-button"
                 style={{ fontSize: 11 }}
               >
-                Open builder
+                {canEdit ? 'Open builder' : 'View pipeline'}
               </button>
             </div>
           ) : null}
         </div>
         {selectedPipeline ? (
           <div style={{ padding: 10 }}>
-            <RunHistory pipelineId={selectedPipeline.id} />
+            <RunHistory pipelineId={selectedPipeline.id} readOnly={!canEdit} />
           </div>
         ) : (
           <p className="of-text-muted" style={{ margin: 0, padding: 18, fontSize: 12 }}>
@@ -1031,13 +1043,13 @@ export function PipelinesPage() {
       </section>
 
       <CreatePipelineModal
-        open={createOpen}
+        open={canEdit && createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={(pipelineId) => navigate(`/pipelines/${pipelineId}/edit`)}
       />
 
       <ConfirmDialog
-        open={Boolean(deleteTarget)}
+        open={canEdit && Boolean(deleteTarget)}
         title="Delete pipeline"
         message={deleteTarget ? `Delete pipeline “${deleteTarget.name}”? This cannot be undone.` : ''}
         confirmLabel="Delete"
