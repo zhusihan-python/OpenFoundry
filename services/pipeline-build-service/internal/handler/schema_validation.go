@@ -60,11 +60,11 @@ type pipelineGraphValidationResponse struct {
 }
 
 type pipelineStrictValidationField struct {
-	castTarget bool                       // established by an applied whole-column cast
-	Name       string                     `json:"name"`
-	FieldType  string                     `json:"field_type"`
-	Nullable   bool                       `json:"nullable"`
-	Metadata   map[string]json.RawMessage `json:"metadata,omitempty"`
+	typedOutput bool                       // retain the logical type in dataset publication
+	Name        string                     `json:"name"`
+	FieldType   string                     `json:"field_type"`
+	Nullable    bool                       `json:"nullable"`
+	Metadata    map[string]json.RawMessage `json:"metadata,omitempty"`
 }
 
 type pipelineStrictSchema struct {
@@ -237,6 +237,9 @@ func validatePipelineIRStrictWithSchemas(pipelineID string, ir models.PipelineIR
 			declared := schemaFromIRSchema(*node.OutputSchema)
 			validateDeclaredOutputSchema(node.ID, schema, declared, &report)
 			if declared.Known {
+				if isLLMTransform(node.TransformType) {
+					declared = llmDeclaredSchema(declared, schema)
+				}
 				schema = declared
 			}
 		}
@@ -262,6 +265,9 @@ func validateStrictNode(node models.PipelineIRNode, deps []pipelineStrictSchema,
 	if err != nil {
 		report.addError(node.ID, nil, "invalid_config_json", err.Error())
 		return firstSchema(deps)
+	}
+	if isLLMTransform(node.TransformType) {
+		return validateLLMSchema(node, deps, report)
 	}
 	kind := normaliseTableTransform(node.TransformType)
 	switch kind {
@@ -642,7 +648,7 @@ func applyCastBlock(nodeID string, schema pipelineStrictSchema, block runtimeTra
 		if targetName == "" {
 			targetName = source
 		}
-		fields[i] = pipelineStrictValidationField{castTarget: true, Name: targetName, FieldType: strictTypeName(targetType), Nullable: field.Nullable, Metadata: cloneRawMap(field.Metadata)}
+		fields[i] = pipelineStrictValidationField{typedOutput: true, Name: targetName, FieldType: strictTypeName(targetType), Nullable: field.Nullable, Metadata: cloneRawMap(field.Metadata)}
 		checkSchemaDuplicateFields(nodeID, pipelineStrictSchema{Known: true, Fields: fields}, report)
 		return pipelineStrictSchema{Known: true, Fields: fields}
 	}
@@ -787,7 +793,7 @@ func validateUnionNode(nodeID string, draft runtimeUnionDraft, deps []pipelineSt
 				}
 			}
 		}
-		return unionCastSchema(deps, true)
+		return unionTypedSchema(deps, true)
 	}
 	base := deps[0]
 	for idx, dep := range deps[1:] {
@@ -807,16 +813,16 @@ func validateUnionNode(nodeID string, draft runtimeUnionDraft, deps []pipelineSt
 			}
 		}
 	}
-	return unionCastSchema(deps, false)
+	return unionTypedSchema(deps, false)
 }
 
-// A compatible Union may mix promoted numeric types. Only carry a cast
+// A compatible Union may mix promoted numeric types. Only carry a logical
 // type into publication if it describes every contributing input column.
-func unionCastSchema(deps []pipelineStrictSchema, positional bool) pipelineStrictSchema {
+func unionTypedSchema(deps []pipelineStrictSchema, positional bool) pipelineStrictSchema {
 	out := deps[0]
 	out.Fields = append([]pipelineStrictValidationField(nil), out.Fields...)
 	for i, base := range out.Fields {
-		hasCast := base.castTarget
+		hasType := base.typedOutput
 		for _, dep := range deps[1:] {
 			field, ok := dep.field(base.Name)
 			if positional {
@@ -826,12 +832,12 @@ func unionCastSchema(deps []pipelineStrictSchema, positional bool) pipelineStric
 				}
 			}
 			if !ok || !fieldType(field).Equal(fieldType(base)) {
-				hasCast = false
+				hasType = false
 				break
 			}
-			hasCast = hasCast || field.castTarget
+			hasType = hasType || field.typedOutput
 		}
-		out.Fields[i].castTarget = hasCast
+		out.Fields[i].typedOutput = hasType
 	}
 	return out
 }
