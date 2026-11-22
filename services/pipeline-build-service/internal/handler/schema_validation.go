@@ -483,6 +483,8 @@ func validateTransformStack(nodeID string, stack runtimeTransformStack, schema p
 			}
 		case "normalize":
 			out = applyNormalizeSchema(nodeID, out, block.RemoveSpecialCharacters, report)
+		case "json_extract":
+			out = applyJSONExtractSchema(nodeID, out, block, report)
 		case "cast":
 			out = applyCastBlock(nodeID, out, block, report)
 		case "haversine", "haversine_distance", "geo_distance":

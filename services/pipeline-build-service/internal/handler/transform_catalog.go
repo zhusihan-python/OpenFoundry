@@ -558,15 +558,15 @@ func transformCatalogExplode(docs []string) pipelineTransformCatalogEntry {
 }
 
 func transformCatalogJSONExtract(docs []string) pipelineTransformCatalogEntry {
-	entry := baseTransformCatalogEntry("json_extract", "JSON extract", "Extract a value from a JSON object column using a path.", "parsing", "stack_block", "transform_stack", "planned", "catalog_only", "json", docs)
+	entry := baseTransformCatalogEntry("json_extract", "JSON extract", "Extract one JSON value into a nullable text column.", "parsing", "stack_block", "transform_stack", "available", "lightweight_table", "json", docs)
 	entry.Tags = []string{"json", "parse"}
-	entry.DefaultConfig = map[string]any{"kind": "json_extract", "applied": false, "source_column": "", "json_path": "$.", "target_column": ""}
+	entry.DefaultConfig = map[string]any{"kind": "json_extract", "applied": false, "source_column": "", "json_path": "$", "target_column": ""}
 	entry.Form.Fields = []pipelineTransformCatalogField{
 		columnField("source_column", "JSON column", true, "Column containing JSON objects or strings."),
-		{Name: "json_path", Label: "JSON path", FieldType: "text", Required: true, Default: "$.", Placeholder: "$.trail.name"},
+		{Name: "json_path", Label: "JSON path", FieldType: "text", Required: true, Default: "$", Placeholder: "$.trail.name", HelpText: "Use $ for the root, .name for members, and [0] for array indexes."},
 		{Name: "target_column", Label: "Target column", FieldType: "text", Required: true, Placeholder: "trail_name"},
 	}
-	entry.OutputContract = pipelineTransformOutputContract{Mode: "schema_add_column", Description: "Output schema adds the extracted value column."}
+	entry.OutputContract = pipelineTransformOutputContract{Mode: "schema_add_column", Description: "Output schema adds a nullable STRING column."}
 	return entry
 }
 

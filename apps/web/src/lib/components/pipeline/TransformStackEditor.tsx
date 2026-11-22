@@ -12,6 +12,7 @@ import {
   newCastBlock,
   newDropColumnsBlock,
   newFilterBlock,
+  newJSONExtractBlock,
   newHaversineDistanceBlock,
   newNormalizeColumnsBlock,
   newRenameColumnsBlock,
@@ -23,12 +24,14 @@ import {
   type FilterBlock,
   type FilterCondition,
   type HaversineDistanceBlock,
+  type JSONExtractBlock,
   type NormalizeColumnsBlock,
   type RenameColumnsBlock,
   type SelectColumnsBlock,
   type SortRowsBlock,
   type TransformBlock,
   type TransformStack,
+  validJSONExtractConfig,
 } from './transformStack';
 
 interface TransformStackEditorProps {
@@ -56,6 +59,7 @@ const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   rename: () => newRenameColumnsBlock(),
   normalize_columns: () => newNormalizeColumnsBlock(),
   haversine_distance: () => newHaversineDistanceBlock(),
+  json_extract: () => newJSONExtractBlock(),
 };
 
 const FALLBACK_ADD_BLOCK_OPTIONS: AddBlockOption[] = [
@@ -155,7 +159,7 @@ export function TransformStackEditor({ open, stack, schema = [], onClose, onAppl
   }
 
   const cannotApplyAll = alreadySaved || draft.blocks.length === 0 ||
-    draft.blocks.some((block) => block.kind === 'sort' && !validSortKeys(block.sort_keys));
+    draft.blocks.some(hasInvalidConfig);
 
   function applyAll() {
     if (!draft) return;
@@ -470,6 +474,9 @@ function BlockCard({
         {block.kind === 'normalize' ? (
           <NormalizeBody block={block} onPatch={(patch) => onPatch(patch)} />
         ) : null}
+        {block.kind === 'json_extract' ? (
+          <JSONExtractBody block={block} schema={schema} onPatch={(patch) => onPatch({ ...patch, applied: false })} />
+        ) : null}
         {block.kind === 'sort' ? (
           <SortBody block={block} schema={schema} onPatch={(patch) => onPatch({ ...patch, applied: false })} />
         ) : null}
@@ -483,7 +490,7 @@ function BlockCard({
           <button
             type="button"
             onClick={onApply}
-            disabled={block.applied || (block.kind === 'sort' && !validSortKeys(block.sort_keys))}
+            disabled={block.applied || hasInvalidConfig(block)}
             style={{
               padding: '6px 12px',
               border: 0,
@@ -854,6 +861,33 @@ function HaversineBody({
   );
 }
 
+function JSONExtractBody({
+  block,
+  schema,
+  onPatch,
+}: {
+  block: JSONExtractBlock;
+  schema: string[];
+  onPatch: (patch: Partial<JSONExtractBlock>) => void;
+}) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 8, alignItems: 'center' }}>
+      <span className="of-text-muted" style={{ fontSize: 12 }}>JSON column</span>
+      <ColumnInput label="JSON column" value={block.source_column} schema={schema}
+        onChange={(source_column) => onPatch({ source_column })} />
+      <label htmlFor={`json-path-${block.id}`}>JSON path</label>
+      <input id={`json-path-${block.id}`} value={block.json_path} placeholder="$.items[0].name"
+        onChange={(event) => onPatch({ json_path: event.target.value })} style={inputStyle()} />
+      <label htmlFor={`json-target-${block.id}`}>New column</label>
+      <input id={`json-target-${block.id}`} value={block.target_column}
+        onChange={(event) => onPatch({ target_column: event.target.value })} style={inputStyle()} />
+      <p className="of-text-muted" style={{ gridColumn: '1 / -1', fontSize: 12 }}>
+        Extracts one value as text. Missing values become null.
+      </p>
+    </div>
+  );
+}
+
 function SortBody({
   block,
   schema,
@@ -927,10 +961,22 @@ function blockAccent(kind: TransformBlock['kind']): string {
       return '#9a5b00';
     case 'normalize':
       return '#7c5dd6';
+    case 'json_extract':
     case 'sort':
       return '#2563eb';
     case 'haversine_distance':
       return '#047857';
+  }
+}
+
+function hasInvalidConfig(block: TransformBlock): boolean {
+  switch (block.kind) {
+    case 'json_extract':
+      return !validJSONExtractConfig(block);
+    case 'sort':
+      return !validSortKeys(block.sort_keys);
+    default:
+      return false;
   }
 }
 
