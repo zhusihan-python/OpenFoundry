@@ -128,6 +128,7 @@ func transformCatalogV1() pipelineTransformCatalogResponse {
 			transformCatalogGeoDistanceJoin(docs),
 			transformCatalogGeoNearestJoin(docs),
 			transformCatalogAggregate(docs),
+			transformCatalogConditionalAggregate(docs),
 			transformCatalogExplode(docs),
 			transformCatalogJSONExtract(docs),
 			transformCatalogCSVParse(docs),
@@ -543,6 +544,17 @@ func transformCatalogAggregate(docs []string) pipelineTransformCatalogEntry {
 		{Name: "aggregations", Label: "Aggregations", FieldType: "aggregations", Required: true, Repeated: true, Options: valueLabelOptions("count", "Count", "sum", "Sum", "avg", "Average", "min", "Minimum", "max", "Maximum")},
 	}
 	entry.OutputContract = pipelineTransformOutputContract{Mode: "schema_aggregate", Description: "Output schema contains group keys and aggregate result columns."}
+	return entry
+}
+
+func transformCatalogConditionalAggregate(docs []string) pipelineTransformCatalogEntry {
+	entry := transformCatalogAggregate(docs)
+	entry.ID = "conditional_aggregate"
+	entry.Label = "Conditional aggregate"
+	entry.Description = "Group rows and calculate each measure over rows with a true Boolean condition column."
+	entry.DefaultConfig["kind"] = entry.ID
+	entry.DefaultConfig["aggregations"] = []map[string]string{{"function": "count", "source_column": "", "target_column": "matched_rows", "condition_column": ""}}
+	entry.Form.Fields[1].HelpText = "Each measure requires a condition_column. Only true rows contribute."
 	return entry
 }
 

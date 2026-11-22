@@ -128,13 +128,14 @@ export interface CSVParseBlock {
 
 export type Aggregation = {
   function: string;
+  condition_column?: string;
   source_column: string;
   target_column: string;
 };
 
 export interface AggregateBlock {
   id: string;
-  kind: 'aggregate';
+  kind: 'aggregate' | 'conditional_aggregate';
   applied: boolean;
   group_by: string[];
   aggregations: Aggregation[];
@@ -245,13 +246,17 @@ export function validFormulaConfig(block: FormulaBlock): boolean {
   return Boolean(block.expression.trim() && block.target_column.trim());
 }
 
-export function newAggregateBlock(): AggregateBlock {
+export function newAggregateBlock(kind: AggregateBlock['kind'] = 'aggregate'): AggregateBlock {
   return {
-    id: newBlockId('aggregate'),
-    kind: 'aggregate',
+    id: newBlockId(kind),
+    kind,
     applied: false,
     group_by: [],
-    aggregations: [{ function: 'count', source_column: '', target_column: 'row_count' }],
+    aggregations: [{
+      function: 'count',
+      source_column: '',
+      target_column: kind === 'conditional_aggregate' ? 'matched_rows' : 'row_count',
+    }],
   };
 }
 
@@ -259,7 +264,10 @@ export function validAggregateConfig(block: AggregateBlock): boolean {
   const columns = [...block.group_by, ...block.aggregations.map((measure) => measure.target_column)];
   return block.aggregations.length > 0 && columns.every((column) => column.trim()) &&
     new Set(columns).size === columns.length &&
-    block.aggregations.every((measure) => measure.function === 'count' || measure.source_column.trim());
+    block.aggregations.every((measure) =>
+      (measure.function === 'count' || measure.source_column.trim()) &&
+      (block.kind !== 'conditional_aggregate' || measure.condition_column?.trim())
+    );
 }
 
 export function newCSVParseBlock(): CSVParseBlock {
@@ -345,6 +353,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Derive column';
     case 'aggregate':
       return 'Aggregate';
+    case 'conditional_aggregate':
+      return 'Conditional aggregate';
     case 'csv_parse':
       return 'CSV parse';
     case 'explode':
@@ -380,6 +390,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Derive column';
     case 'aggregate':
       return 'Aggregate';
+    case 'conditional_aggregate':
+      return 'Conditional aggregate';
     case 'csv_parse':
       return 'CSV parse';
     case 'explode':
@@ -528,9 +540,10 @@ export function composeTransformStackSql(stack: TransformStack): string {
         previous = cte;
         return;
       }
-      case 'aggregate': {
+      case 'aggregate':
+      case 'conditional_aggregate': {
         if (!validAggregateConfig(block)) break;
-        ctes.push(`${cte} AS (SELECT * FROM ${previous} /* aggregate: see structured stack config */)`);
+        ctes.push(`${cte} AS (SELECT * FROM ${previous} /* ${block.kind}: see structured stack config */)`);
         previous = cte;
         return;
       }

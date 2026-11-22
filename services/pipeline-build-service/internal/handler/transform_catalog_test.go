@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const expectedTransformCatalogSnapshotSHA256 = "f3b15d8944cf2c77e88bdcde48e46acc2ae3d1a7573b28f06d2109ef8f2f9833"
+const expectedTransformCatalogSnapshotSHA256 = "c207d4d57e76cb9ebf31b87b8981a1de29e634c36b1730dc4fdf3e1576f8f303"
 
 func TestListPipelineTransformCatalogSnapshot(t *testing.T) {
 	rr := httptest.NewRecorder()
@@ -61,6 +61,7 @@ func TestTransformCatalogContainsRequiredPB5Entries(t *testing.T) {
 		"normalize_units",
 		"derive_column",
 		"aggregate",
+		"conditional_aggregate",
 		"sort",
 		"join",
 		"union",
