@@ -301,6 +301,22 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		columns = table.schema.columnNames()
 	}
 
+	var castTypes map[string]string
+	if table.castLineage && (kind == "output" || len(node.Node.Outputs) > 0) {
+		resolved := rt.tableSchema(node.Node.ID)
+		for _, field := range resolved.Fields {
+			if field.castTarget {
+				if castTypes == nil {
+					castTypes = make(map[string]string)
+				}
+				castTypes[field.Name] = field.FieldType
+			}
+		}
+		if len(rows) == 0 && len(castTypes) > 0 {
+			columns = resolved.columnNames()
+		}
+	}
+
 	metaRows := cloneRows(rows)
 	if len(metaRows) > 5 {
 		metaRows = metaRows[:5]
@@ -313,6 +329,9 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		"columns":        columns,
 		"sample_rows":    rowsToMaps(metaRows),
 		"data_rows":      rowsToMaps(rows),
+	}
+	if len(castTypes) > 0 {
+		meta["cast_column_types"] = castTypes
 	}
 	for key, value := range datasetMeta {
 		meta[key] = value
@@ -1296,7 +1315,7 @@ func (rt *lightweightTableRuntime) selectRuntimeJoinColumns(dep string, explicit
 // own duplicate_column_name text.
 var (
 	errJoinDuplicateColumn = errors.New("lightweight_join_duplicate_column_name")
-	errJoinRowsExceeded = errors.New("lightweight_join_rows_exceeded")
+	errJoinRowsExceeded    = errors.New("lightweight_join_rows_exceeded")
 )
 
 // rejectRuntimeJoinColumnCollision keeps the lightweight join consistent

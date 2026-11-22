@@ -233,6 +233,13 @@ func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputT
 			schema = workbookSchema
 		} else {
 			schema = inferOutputSchema(columns, rows, format)
+			if castTypes, ok := result.Metadata["cast_column_types"].(map[string]string); ok && hasFullRows {
+				for i, field := range schema.Fields {
+					if typ, exists := castTypes[field.Name]; exists {
+						schema.Fields[i].Type = typ
+					}
+				}
+			}
 		}
 	}
 	fileMetadata := map[string]any{
