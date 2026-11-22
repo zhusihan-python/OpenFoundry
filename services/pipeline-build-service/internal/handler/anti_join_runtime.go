@@ -12,10 +12,7 @@ import (
 const runtimeJoinLeftAnti = "left_anti"
 
 func joinLeftAnti(left, right []pe.Row, matches []runtimeJoinMatch, leftColumns []string) ([]pe.Row, error) {
-	leftKeys, rightKeys := make([]string, len(matches)), make([]string, len(matches))
-	for i, match := range matches {
-		leftKeys[i], rightKeys[i] = match.LeftColumn, match.RightColumn
-	}
+	leftKeys, rightKeys := joinKeyColumns(matches)
 	rightIndex := make(map[string]struct{}, len(right))
 	for _, row := range right {
 		key, matchable, err := antiJoinKey(row, rightKeys)

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pipelineexpression "github.com/openfoundry/openfoundry-go/libs/pipeline-expression"
+	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/domain/executor"
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/models"
 )
 
@@ -46,9 +47,13 @@ func TestRowsJoinMatchTypedScalarKeys(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := rowsJoinMatch(tc.left, tc.right, match, false)
+			rt := newLightweightTableRuntime()
+			rt.storeTable("orders", lightweightTable{rows: []pipelineexpression.Row{tc.left}})
+			rt.storeTable("refunds", lightweightTable{rows: []pipelineexpression.Row{tc.right}})
+			node := executor.NodeContext{Node: executor.Node{ID: "link", DependsOn: []string{"orders", "refunds"}}}
+			rows, err := rt.runJoin(node, runtimeJoinDraft{JoinType: "inner", Matches: match, LeftColumns: []string{"k"}})
 			require.NoError(t, err)
-			assert.Equal(t, tc.match, got)
+			assert.Equal(t, tc.match, len(rows) == 1)
 		})
 	}
 }
@@ -207,12 +212,12 @@ func TestRunJoinInt64KeysPairExactly(t *testing.T) {
 	out, err := executeLocalPipelinePreview(t.Context(), uuid.New(), "output", nodes, 50)
 	require.NoError(t, err)
 	require.Len(t, out.Rows, 2)
-	assert.JSONEq(t, `9007199254740992`, string(out.Rows[0]["order_id"]))
-	assert.JSONEq(t, `9007199254740992`, string(out.Rows[0]["refund_order_id"]))
+	assert.Equal(t, "9007199254740992", string(out.Rows[0]["order_id"]))
+	assert.Equal(t, "9007199254740992", string(out.Rows[0]["refund_order_id"]))
 	assert.JSONEq(t, `"R1"`, string(out.Rows[0]["refund_refund_id"]))
 	// The adjacent order stays unmatched — never paired with R1 — and the
 	// exact integer is preserved, not rounded through float64.
-	assert.JSONEq(t, `9007199254740993`, string(out.Rows[1]["order_id"]))
+	assert.Equal(t, "9007199254740993", string(out.Rows[1]["order_id"]))
 	assert.JSONEq(t, `null`, string(out.Rows[1]["refund_order_id"]))
 	assert.JSONEq(t, `null`, string(out.Rows[1]["refund_refund_id"]))
 	assert.JSONEq(t, `null`, string(out.Rows[1]["refund_reason"]))
@@ -285,71 +290,43 @@ func TestRunJoinAutoColumnsUseTableSchema(t *testing.T) {
 	})
 }
 
-// withJoinPreviewBudget lowers the preview join expansion budget for one
-// test and restores it afterwards.
-func withJoinPreviewBudget(t *testing.T, limit int) {
-	t.Helper()
-	previous := previewJoinExpansionLimit
-	previewJoinExpansionLimit = limit
-	t.Cleanup(func() { previewJoinExpansionLimit = previous })
-}
-
 func TestJoinPreviewExpansionBudgetIsHardCap(t *testing.T) {
-	joinRows := func(t *testing.T, join string, leftRows, rightRows string) (pipelineNodePreviewResponse, error) {
-		t.Helper()
-		nodes := joinPreviewNodes(leftRows, rightRows, join)
-		return executeLocalPipelinePreview(t.Context(), uuid.New(), "output", nodes, 50)
+	matches := []runtimeJoinMatch{{LeftColumn: "order_id", RightColumn: "order_id"}}
+	orders := []pipelineexpression.Row{
+		{"order_id": json.RawMessage(`"O-1"`)},
+		{"order_id": json.RawMessage(`"O-2"`)},
 	}
-	const match = `{"left_column":"order_id","right_column":"order_id"}`
-	const leftJoin = `{"_join":{"join_type":"left","auto_select_right":true,"matches":[` + match + `],"right_prefix":"refund_"}}`
-	const crossJoin = `{"_join":{"join_type":"cross","auto_select_right":true,"right_prefix":"refund_"}}`
+	joins := []struct {
+		name     string
+		joinType string
+		left     []pipelineexpression.Row
+		right    []pipelineexpression.Row
+		wantRows int
+	}{
+		{"matching rows", "inner", orders, orders, 2},
+		{"unmatched left rows", "left", orders, nil, 2},
+		{"unmatched right rows", "right", nil, orders, 2},
+		{"cross product", "cross", orders, orders, 4},
+	}
+	for _, tc := range joins {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := newLightweightTableRuntime()
+			rt.storeRows("orders", tc.left)
+			rt.storeRows("refunds", tc.right)
+			node := executor.NodeContext{Node: executor.Node{ID: "link", DependsOn: []string{"orders", "refunds"}}}
+			draft := runtimeJoinDraft{JoinType: tc.joinType, Matches: matches, AutoSelectRight: true, RightPrefix: "refund_"}
 
-	t.Run("matched rows at the cap pass and beyond fail", func(t *testing.T) {
-		const leftRows = `{"rows":[{"order_id":"O-1"},{"order_id":"O-2"},{"order_id":"O-3"}]}`
-		const rightRows = `{"rows":[{"order_id":"O-1","reason":"a"},{"order_id":"O-2","reason":"b"},{"order_id":"O-3","reason":"c"}]}`
-		withJoinPreviewBudget(t, 3)
-		out, err := joinRows(t, leftJoin, leftRows, rightRows)
-		require.NoError(t, err)
-		require.Len(t, out.Rows, 3)
+			rt.joinExpansionLimit = tc.wantRows
+			rows, err := rt.runJoin(node, draft)
+			require.NoError(t, err)
+			require.Len(t, rows, tc.wantRows)
 
-		withJoinPreviewBudget(t, 2)
-		_, err = joinRows(t, leftJoin, leftRows, rightRows)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "lightweight_join_rows_exceeded")
-	})
-
-	t.Run("left-join retained rows count toward the cap", func(t *testing.T) {
-		const leftRows = `{"rows":[{"order_id":"O-1"},{"order_id":"O-2"},{"order_id":"O-3"}]}`
-		const emptyRight = `{"rows":[]}`
-		withJoinPreviewBudget(t, 3)
-		out, err := joinRows(t, leftJoin, leftRows, emptyRight)
-		require.NoError(t, err)
-		require.Len(t, out.Rows, 3)
-
-		withJoinPreviewBudget(t, 2)
-		_, err = joinRows(t, leftJoin, leftRows, emptyRight)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "lightweight_join_rows_exceeded")
-	})
-
-	t.Run("cross products count toward the cap", func(t *testing.T) {
-		const leftRows = `{"rows":[{"order_id":"O-1"},{"order_id":"O-2"}]}`
-		const rightRows = `{"rows":[{"reason":"a"},{"reason":"b"}]}`
-		withJoinPreviewBudget(t, 4)
-		out, err := joinRows(t, crossJoin, leftRows, rightRows)
-		require.NoError(t, err)
-		require.Len(t, out.Rows, 4)
-
-		withJoinPreviewBudget(t, 3)
-		_, err = joinRows(t, crossJoin, leftRows, rightRows)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "lightweight_join_rows_exceeded")
-	})
-
+			rt.joinExpansionLimit = tc.wantRows - 1
+			_, err = rt.runJoin(node, draft)
+			require.ErrorContains(t, err, "lightweight_join_rows_exceeded")
+		})
+	}
 	t.Run("build runners stay uncapped", func(t *testing.T) {
-		// newRuntimeNodeRunner is the FASTER build path's wiring: the join
-		// budget must remain zero there so build output capability is
-		// unchanged.
 		runner := newRuntimeNodeRunner(ExecutionPorts{})
 		assert.Zero(t, runner.Table.joinExpansionLimit)
 	})

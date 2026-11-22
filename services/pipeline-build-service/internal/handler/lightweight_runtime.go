@@ -866,50 +866,59 @@ func (rt *lightweightTableRuntime) runJoin(node executor.NodeContext, draft runt
 	if err := rejectRuntimeJoinColumnCollision(node.Node.ID, leftColumns, rightColumns, draft.RightPrefix); err != nil {
 		return nil, err
 	}
-	out := make([]pipelineexpression.Row, 0)
-	// Preview joins fully materialize their expansion; when a budget is set
-	// (preview runs) fail BEFORE composing the row that would exceed it —
-	// never truncate silently. Builds leave the budget at zero.
-	joinRowBudgetExceeded := func() bool {
-		return rt.joinExpansionLimit > 0 && len(out) >= rt.joinExpansionLimit
+	// A cross join has no key columns, so every row shares the empty tuple.
+	if joinType == "cross" {
+		matches = nil
 	}
-	joinRowsExceededError := func() error {
-		return fmt.Errorf("lightweight_join_rows_exceeded: node %q would materialize more than %d joined rows; narrow the join or run the build", node.Node.ID, rt.joinExpansionLimit)
+	leftKeys, rightKeys := joinKeyColumns(matches)
+	rightIndex := make(map[string][]int, len(right))
+	for i, row := range right {
+		key, matchable, err := runtimeCompositeKey(row, rightKeys, false)
+		if err != nil {
+			return nil, fmt.Errorf("lightweight join: %w", err)
+		}
+		if matchable {
+			rightIndex[key] = append(rightIndex[key], i)
+		}
+	}
+
+	out := make([]pipelineexpression.Row, 0)
+	appendRow := func(lrow, rrow pipelineexpression.Row) error {
+		if rt.joinExpansionLimit > 0 && len(out) >= rt.joinExpansionLimit {
+			return fmt.Errorf("%w: node %q exceeds %d joined rows", errJoinRowsExceeded, node.Node.ID, rt.joinExpansionLimit)
+		}
+		out = append(out, composeRuntimeJoinRow(lrow, rrow, leftColumns, rightColumns, draft.RightPrefix))
+		return nil
 	}
 	rightMatched := make([]bool, len(right))
 	for _, lrow := range left {
-		matched := false
-		for idx, rrow := range right {
-			match, err := rowsJoinMatch(lrow, rrow, matches, joinType == "cross")
-			if err != nil {
+		key, matchable, err := runtimeCompositeKey(lrow, leftKeys, false)
+		if err != nil {
+			return nil, fmt.Errorf("lightweight join: %w", err)
+		}
+		var hits []int
+		if matchable {
+			hits = rightIndex[key]
+		}
+		for _, i := range hits {
+			rightMatched[i] = true
+			if err := appendRow(lrow, right[i]); err != nil {
 				return nil, err
 			}
-			if !match {
-				continue
-			}
-			matched = true
-			rightMatched[idx] = true
-			if joinRowBudgetExceeded() {
-				return nil, joinRowsExceededError()
-			}
-			out = append(out, composeRuntimeJoinRow(lrow, rrow, leftColumns, rightColumns, draft.RightPrefix))
 		}
-		if !matched && (joinType == "left" || joinType == "outer") {
-			if joinRowBudgetExceeded() {
-				return nil, joinRowsExceededError()
+		if len(hits) == 0 && (joinType == "left" || joinType == "outer") {
+			if err := appendRow(lrow, nil); err != nil {
+				return nil, err
 			}
-			out = append(out, composeRuntimeJoinRow(lrow, nil, leftColumns, rightColumns, draft.RightPrefix))
 		}
 	}
 	if joinType == "right" || joinType == "outer" {
-		for idx, rrow := range right {
-			if rightMatched[idx] {
-				continue
+		for i, rrow := range right {
+			if !rightMatched[i] {
+				if err := appendRow(nil, rrow); err != nil {
+					return nil, err
+				}
 			}
-			if joinRowBudgetExceeded() {
-				return nil, joinRowsExceededError()
-			}
-			out = append(out, composeRuntimeJoinRow(nil, rrow, leftColumns, rightColumns, draft.RightPrefix))
 		}
 	}
 	return out, nil
@@ -1254,31 +1263,12 @@ func validJoinMatches(matches []runtimeJoinMatch) []runtimeJoinMatch {
 	return out
 }
 
-// rowsJoinMatch evaluates one row pair against the pre-validated match
-// conditions (runJoin passes its validJoinMatches result — the slice is
-// computed once and reused across the whole match loop). Keys compare
-// through the typed scalar encoding the anti join already uses
-// (runtimeCompositeKey): NULL or missing keys never match, adjacent int64
-// values never collapse through float64, and 1 == 1.0 across
-// integer/double spellings while "1" (string) is a different key from 1.
-func rowsJoinMatch(left, right pipelineexpression.Row, matches []runtimeJoinMatch, cross bool) (bool, error) {
-	if cross {
-		return true, nil
-	}
+func joinKeyColumns(matches []runtimeJoinMatch) (left, right []string) {
 	for _, match := range matches {
-		leftKey, leftMatchable, err := runtimeCompositeKey(left, []string{match.LeftColumn}, false)
-		if err != nil {
-			return false, fmt.Errorf("lightweight_join %w", err)
-		}
-		rightKey, rightMatchable, err := runtimeCompositeKey(right, []string{match.RightColumn}, false)
-		if err != nil {
-			return false, fmt.Errorf("lightweight_join %w", err)
-		}
-		if !leftMatchable || !rightMatchable || leftKey != rightKey {
-			return false, nil
-		}
+		left = append(left, match.LeftColumn)
+		right = append(right, match.RightColumn)
 	}
-	return true, nil
+	return left, right
 }
 
 func selectRuntimeColumns(rows []pipelineexpression.Row, explicit []string, auto bool) []string {
@@ -1304,7 +1294,10 @@ func (rt *lightweightTableRuntime) selectRuntimeJoinColumns(dep string, explicit
 // errJoinDuplicateColumn marks a lightweight join whose composed output
 // names one column twice; the wrapped message is the strict validation's
 // own duplicate_column_name text.
-var errJoinDuplicateColumn = errors.New("lightweight_join_duplicate_column_name")
+var (
+	errJoinDuplicateColumn = errors.New("lightweight_join_duplicate_column_name")
+	errJoinRowsExceeded = errors.New("lightweight_join_rows_exceeded")
+)
 
 // rejectRuntimeJoinColumnCollision keeps the lightweight join consistent
 // with the strict build validation: it feeds the composed output names

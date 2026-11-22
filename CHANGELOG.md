@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - Manual canonical dataset builds now publish through their own output reservation.
   After publication, retrying a build can reconcile its recorded output without
   creating another dataset version.
+- Lightweight equality joins preserve 64-bit integer keys and leave rows with
+  missing or null keys unmatched.
+  Joins reject duplicate output column names. Join previews read inputs up to
+  the build limits and show the first requested rows of the result. A join
+  that exceeds the preview's output row limit returns an error.
 
 ### Security
 - _(add entries here)_

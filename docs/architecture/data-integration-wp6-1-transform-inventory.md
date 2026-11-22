@@ -36,6 +36,14 @@
 
 [目录与状态](../../services/pipeline-build-service/internal/handler/transform_catalog.go) · [轻量执行与别名](../../services/pipeline-build-service/internal/handler/lightweight_runtime.go) · [地理连接](../../services/pipeline-build-service/internal/handler/geo_join_runtime.go) · [生产接线](../../services/pipeline-build-service/cmd/pipeline-build-service/main.go)
 
+### 轻量通用连接
+
+普通等值连接要求每对连接键都有值。任一侧的键缺失或为 NULL 时，两行无法匹配。两个空字符串可以匹配。连接按所选列和右侧前缀生成输出列名，遇到重名会报错。要保留左右两侧的同名列，可用 `right_prefix` 区分它们。如果只需其中一列，可在投影中选取该列。
+
+含通用连接的轻量预览按构建的输入上限读取数据，再从执行结果中取 `sample_size` 指定的前几行。因此，即使右侧匹配行位于展示行数之外，预览也能显示这次匹配。若连接产生的行数超过预览允许的连接输出上限，即使只请求展示一行，预览也会报错。[预览执行入口](../../services/pipeline-build-service/internal/handler/preview.go)
+
+普通等值连接保留 64 位整数键的精度。字符串与数字按各自的类型匹配；数值键 `1` 和 `1.0` 匹配，两个数值相邻的大整数订单号分别匹配。
+
 ## WP6.3 新增能力
 
 | 产品新增项 | 本仓入口 | 已验收的轻量路径 |
