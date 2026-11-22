@@ -36,3 +36,4 @@ generated outputs.
 - [Services and Ports](/architecture/services-and-ports) for local runtime defaults.
 - [Contracts and SDKs](/architecture/contracts-and-sdks) for generation pipelines.
 - [Capability Map](/architecture/capability-map) for the domain areas validated by the smoke suites.
+- [WP7.1 Data Lineage Contract Draft](data-integration-wp7-1-lineage-contract.md) for cross-team review of dataset, pipeline, ontology and application lineage.
