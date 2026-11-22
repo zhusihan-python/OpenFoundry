@@ -112,7 +112,7 @@ func TestPipelineAIPProviderSmokeGated(t *testing.T) {
 	}
 	baseURL := strings.TrimSpace(os.Getenv("AI_SERVICE_URL"))
 	require.NotEmpty(t, baseURL, "AI_SERVICE_URL is required for provider smoke")
-	generator := NewAIServicePipelineAIPGenerator(PipelineAIPGeneratorConfig{BaseURL: baseURL, BearerToken: os.Getenv("AI_SERVICE_BEARER")})
+	generator := NewAIServicePipelineAIPGenerator(PipelineAIPGeneratorConfig{BaseURL: baseURL, AgentRuntime: os.Getenv("PIPELINE_LLM_PROTOCOL") == "agent-runtime", BearerToken: os.Getenv("AI_SERVICE_BEARER")})
 	result, err := generator.GeneratePipelineTransform(context.Background(), PipelineAIPGenerateRequest{
 		Prompt:          "Create a filter node that keeps rows where distance is greater than 3.",
 		SelectedNodeIDs: []string{"source"},
