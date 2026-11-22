@@ -380,7 +380,7 @@ func transformCatalogJoin(docs []string) pipelineTransformCatalogEntry {
 	entry.Tags = []string{"relational", "multi_input"}
 	entry.DefaultConfig = map[string]any{"_join": map[string]any{"join_type": "left", "matches": []map[string]string{{"left_column": "", "right_column": ""}}, "auto_select_left": true, "auto_select_right": false}}
 	entry.Form.Fields = []pipelineTransformCatalogField{
-		{Name: "join_type", Label: "Join type", FieldType: "select", Required: true, Default: "left", Options: valueLabelOptions("left", "Left", "right", "Right", "inner", "Inner", "outer", "Full outer", "cross", "Cross")},
+		{Name: "join_type", Label: "Join type", FieldType: "select", Required: true, Default: "left", Options: valueLabelOptions("left", "Left", "right", "Right", "inner", "Inner", "outer", "Full outer", runtimeJoinLeftAnti, "Left anti", "cross", "Cross")},
 		{Name: "matches", Label: "Match conditions", FieldType: "join_matches", Required: true, Repeated: true},
 		columnsField("left_columns", "Left columns", false, "Optional projection from the left input."),
 		columnsField("right_columns", "Right columns", false, "Optional projection from the right input."),

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const expectedTransformCatalogSnapshotSHA256 = "ebd7d5c767bf34bbcc94b91f3e824905fad50aadd776ca5ee8ca5a211b6d21bc"
+const expectedTransformCatalogSnapshotSHA256 = "9db662c5f7422550b6bb41578c08e0ddbe9b1267dbfbd3045ab253c3a024e64f"
 
 func TestListPipelineTransformCatalogSnapshot(t *testing.T) {
 	rr := httptest.NewRecorder()
