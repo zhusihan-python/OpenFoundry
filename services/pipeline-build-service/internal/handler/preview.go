@@ -85,7 +85,7 @@ func PreviewPipelineNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sampleSize := clampPipelinePreviewSampleSize(firstPositiveInt(body.SampleSize, queryInt(r, "sample_size")))
-	nodes, err := previewNodesForRequest(r.Context(), pipelineID, body)
+	ir, err := previewIRForRequest(r.Context(), pipelineID, body)
 	if err != nil {
 		var execErr previewExecutionError
 		if errors.As(err, &execErr) {
@@ -98,7 +98,9 @@ func PreviewPipelineNode(w http.ResponseWriter, r *http.Request) {
 	// Dataset-backed input nodes read as the calling user, not as the
 	// service account.
 	previewCtx := contextWithCallerBearer(r.Context(), callerBearerFromRequest(r))
-	response, err := executeLocalPipelinePreview(previewCtx, pipelineID, nodeID, nodes, sampleSize)
+	nodes := ir.LegacyNodes()
+	ports, _ := currentExecutionPorts()
+	response, err := executeLocalPreviewWithSchemas(previewCtx, pipelineID, nodeID, nodes, sampleSize, ports, declaredTableSchemas(ir))
 	if err != nil {
 		var execErr previewExecutionError
 		if errors.As(err, &execErr) {
@@ -111,32 +113,28 @@ func PreviewPipelineNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func previewNodesForRequest(ctx context.Context, pipelineID uuid.UUID, req previewPipelineNodeRequest) ([]models.PipelineNode, error) {
+func previewIRForRequest(ctx context.Context, pipelineID uuid.UUID, req previewPipelineNodeRequest) (models.PipelineIR, error) {
 	if req.IR != nil {
-		return req.IR.Normalize().LegacyNodes(), nil
+		return req.IR.Normalize(), nil
 	}
 	if len(req.Nodes) > 0 {
-		return append([]models.PipelineNode(nil), req.Nodes...), nil
+		return models.NewPipelineIRFromNodes(req.Nodes), nil
 	}
 	if len(bytes.TrimSpace(req.DAG)) > 0 {
-		ir, err := models.ParsePipelineIR(req.DAG)
-		if err != nil {
-			return nil, err
-		}
-		return ir.LegacyNodes(), nil
+		return models.ParsePipelineIR(req.DAG)
 	}
 	repo, ok := currentPipelineAuthoringRepository()
 	if !ok {
-		return nil, previewExecutionError{status: http.StatusServiceUnavailable, err: pipelineNodePreviewError{Kind: "pipeline_authoring_repository_not_configured", Message: "PreviewPipelineNode requires a draft graph body or a configured pipeline authoring repository"}}
+		return models.PipelineIR{}, previewExecutionError{status: http.StatusServiceUnavailable, err: pipelineNodePreviewError{Kind: "pipeline_authoring_repository_not_configured", Message: "PreviewPipelineNode requires a draft graph body or a configured pipeline authoring repository"}}
 	}
 	pipeline, err := repo.GetPipeline(ctx, pipelineID)
 	if err != nil {
-		return nil, err
+		return models.PipelineIR{}, err
 	}
 	if pipeline == nil {
-		return nil, previewExecutionError{status: http.StatusNotFound, err: pipelineNodePreviewError{Kind: "pipeline_not_found", Message: "pipeline not found"}}
+		return models.PipelineIR{}, previewExecutionError{status: http.StatusNotFound, err: pipelineNodePreviewError{Kind: "pipeline_not_found", Message: "pipeline not found"}}
 	}
-	return pipeline.ParsedNodes()
+	return pipeline.ParsedIR()
 }
 
 func executeLocalPipelinePreview(ctx context.Context, pipelineID uuid.UUID, nodeID string, nodes []models.PipelineNode, sampleSize int) (pipelineNodePreviewResponse, error) {
@@ -145,13 +143,17 @@ func executeLocalPipelinePreview(ctx context.Context, pipelineID uuid.UUID, node
 }
 
 func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.UUID, nodeID string, nodes []models.PipelineNode, sampleSize int, ports ExecutionPorts) (pipelineNodePreviewResponse, error) {
+	return executeLocalPreviewWithSchemas(ctx, pipelineID, nodeID, nodes, sampleSize, ports, nil)
+}
+
+func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, nodeID string, nodes []models.PipelineNode, sampleSize int, ports ExecutionPorts, schemas map[string]*models.PipelineIRSchema) (pipelineNodePreviewResponse, error) {
 	chain, err := upstreamExecutionChain(nodes, nodeID)
 	if err != nil {
 		return pipelineNodePreviewResponse{}, err
 	}
 	runtime := newLightweightTableRuntime(ports.Functions)
 	runtime.datasets = ports.DatasetRows
-	// Windows and left anti joins can depend on input rows beyond the display
+	// Windows, anti joins and positional unions can depend on rows beyond the display
 	// sample. Use the bounded build inputs before limiting the final result.
 	sampleInputs := !previewChainRequiresBuildInputs(chain)
 	runtime.datasetRowsPreview = sampleInputs
@@ -173,6 +175,9 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 			"transform_type": transform,
 			"logic_payload":  node.Config,
 			"label":          node.Label,
+		}
+		if schema := schemas[node.ID]; schema != nil {
+			metadata[runtimeDeclaredSchema] = schema
 		}
 		if sampleInputs {
 			metadata["logic_payload"] = previewConfigWithSampleSize(node.Config, sampleSize)
@@ -216,6 +221,9 @@ func executeLocalPipelinePreviewWithPorts(ctx context.Context, pipelineID uuid.U
 		SourceChain: chainIDs(chain),
 		Fresh:       true,
 	}
+	if columns := runtime.positionalColumns(nodeID); columns != nil {
+		response.Columns = columns
+	}
 	if schema, ok := targetMetadata["dataset_schema"].(*datasetRowsSchema); ok && schema != nil {
 		response.Columns = schema.columns()
 		response.DatasetFileFormat = metadataString(targetMetadata, "dataset_file_format")
@@ -236,6 +244,9 @@ func previewChainRequiresBuildInputs(chain []models.PipelineNode) bool {
 		}
 		if cfg.Stack == nil {
 			if cfg.Join != nil && strings.EqualFold(strings.TrimSpace(cfg.Join.JoinType), runtimeJoinLeftAnti) {
+				return true
+			}
+			if cfg.Join == nil && cfg.GeoJoin == nil && cfg.Union.byPosition() {
 				return true
 			}
 			continue

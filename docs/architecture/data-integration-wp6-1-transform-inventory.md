@@ -19,7 +19,7 @@
 | `normalize_units` | 数值单位换算 | available | 轻量变换栈支持长度、质量、温度的同维度换算。见 `58c3fd8b`。 |
 | `sort` | 排序行 | available | 轻量变换栈按多键稳定排序，NULL 置尾。见 `fb768f75`。 |
 | `join` | 连接 | available | 轻量结构化连接；节点别名 `table_join`；通用连接与地理连接各模式分别核对 |
-| `union` | 合并行 | available | 轻量结构化合并，节点别名 `union_all`。按位置模式的校验使用首个输入的列顺序，轻量执行仍直接追加记录，异名列保留各自列名。 |
+| `union` | 合并行 | available | 轻量结构化合并，节点别名 `union_all`。按位置模式按各输入的列顺序映射到首个输入的列名。没有声明或类型 schema 的行数据按列名排序。 |
 | `haversine_distance` | 球面距离列 | available | 轻量变换栈也接受 `haversine`、`geo_distance`；与地理距离连接输出和配对行为不同 |
 | `geo_intersection_join` | 几何相交连接 | available | `geo_join` 的 `intersection` 模式；节点别名 `geometry_intersection_join` |
 | `geo_distance_join` | 几何距离阈值连接 | available | `geo_join` 的 `distance` 模式；节点别名 `geometry_distance_join` |
@@ -57,7 +57,7 @@
 | --- | --- | --- |
 | 公式与派生列各计一项，还是同一能力的两种写入方式 | 两个目录 ID，共用表达式求值。公式允许覆盖，派生列拒绝重名。 | 计数可合并，写入边界仍需分别验证。 |
 | 连接和地理连接按目录、模式还是结果语义计数 | 通用连接以 `join_type` 区分模式。相交、距离阈值和最近邻是独立目录项，Haversine 计算行内距离。 | 多个产品名称可能映射到同一目录项的不同参数。 |
-| Union 是否要求异名列按位置对齐 | 编辑配置声明按位置，严格校验以首个输入为输出 schema，执行仍保留后续输入的原列名。 | 若纳入按位置语义，用异名同类型列预览与发布逐值比对。 |
+| Union 是否要求异名列按位置对齐 | 轻量路径按首个输入输出 schema 对齐异名列，缺值写 NULL，列数不一致时报错。 | 产品确认该模式是否属于既有 25 项及对应验收范围。 |
 | 是否将输出映射计为变换，以及覆盖哪些目标 | 一个目录项提供多个输出目标。 | 每个保留目标需要对应的发布证据。 |
 | UDF 是否作为单独能力计数 | 同一 UDF 可有多个版本。表达式 UDF 依赖注册表，Python UDF 目前仅声明。静态 Python 变换走独立 sidecar 分发。 | 需明确产品计数单位和运行态要求，再估注册表接线或其他执行工作。 |
 
