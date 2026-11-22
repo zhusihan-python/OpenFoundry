@@ -129,6 +129,7 @@ func transformCatalogV1() pipelineTransformCatalogResponse {
 			transformCatalogGeoNearestJoin(docs),
 			transformCatalogAggregate(docs),
 			transformCatalogConditionalAggregate(docs),
+			transformCatalogWindowAggregate(docs),
 			transformCatalogExplode(docs),
 			transformCatalogJSONExtract(docs),
 			transformCatalogCSVParse(docs),
@@ -555,6 +556,24 @@ func transformCatalogConditionalAggregate(docs []string) pipelineTransformCatalo
 	entry.DefaultConfig["kind"] = entry.ID
 	entry.DefaultConfig["aggregations"] = []map[string]string{{"function": "count", "source_column": "", "target_column": "matched_rows", "condition_column": ""}}
 	entry.Form.Fields[1].HelpText = "Each measure requires a condition_column. Only true rows contribute."
+	return entry
+}
+
+func transformCatalogWindowAggregate(docs []string) pipelineTransformCatalogEntry {
+	entry := transformCatalogAggregate(docs)
+	entry.ID = "window_aggregate"
+	entry.Label = "Window aggregate"
+	entry.Description = "Add aggregate columns over bounded rows in each ordered partition."
+	entry.DefaultConfig["kind"] = entry.ID
+	entry.DefaultConfig["sort_keys"] = []runtimeSortKey{{Direction: "asc"}}
+	entry.DefaultConfig["frame"] = runtimeWindowFrame{Preceding: 1}
+	entry.Form.Fields = []pipelineTransformCatalogField{
+		columnsField("group_by", "Partition by", false, "Rows with the same keys share a window."),
+		{Name: "sort_keys", Label: "Order by", FieldType: "sort_keys", Required: true, Repeated: true},
+		{Name: "frame", Label: "Rows frame", FieldType: "rows_frame", Required: true},
+		entry.Form.Fields[1],
+	}
+	entry.OutputContract = pipelineTransformOutputContract{Mode: "schema_add_columns", Description: "Preserves each input row and appends the window measures."}
 	return entry
 }
 

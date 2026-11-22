@@ -141,6 +141,12 @@ export interface AggregateBlock {
   aggregations: Aggregation[];
 }
 
+export interface WindowAggregateBlock extends Omit<AggregateBlock, 'kind'> {
+  kind: 'window_aggregate';
+  sort_keys: SortRowsBlock['sort_keys'];
+  frame: { preceding: number; following: number };
+}
+
 export interface FormulaBlock {
   id: string;
   kind: 'formula' | 'derive_column';
@@ -163,6 +169,7 @@ export type TransformBlock =
   | ExplodeBlock
   | CSVParseBlock
   | AggregateBlock
+  | WindowAggregateBlock
   | FormulaBlock;
 
 export interface TransformStack {
@@ -260,7 +267,22 @@ export function newAggregateBlock(kind: AggregateBlock['kind'] = 'aggregate'): A
   };
 }
 
-export function validAggregateConfig(block: AggregateBlock): boolean {
+export function newWindowAggregateBlock(): WindowAggregateBlock {
+  return {
+    ...newAggregateBlock(),
+    id: newBlockId('window_aggregate'),
+    kind: 'window_aggregate',
+    sort_keys: [{ column: '', direction: 'asc' }],
+    frame: { preceding: 1, following: 0 },
+  };
+}
+
+export function validWindowAggregateConfig(block: WindowAggregateBlock): boolean {
+  return Boolean(block.frame) && validAggregateConfig(block) && validSortKeys(block.sort_keys ?? []) &&
+    [block.frame.preceding, block.frame.following].every((n) => Number.isSafeInteger(n) && n >= 0);
+}
+
+export function validAggregateConfig(block: AggregateBlock | WindowAggregateBlock): boolean {
   const columns = [...block.group_by, ...block.aggregations.map((measure) => measure.target_column)];
   return block.aggregations.length > 0 && columns.every((column) => column.trim()) &&
     new Set(columns).size === columns.length &&
@@ -355,6 +377,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Aggregate';
     case 'conditional_aggregate':
       return 'Conditional aggregate';
+    case 'window_aggregate':
+      return 'Window aggregate';
     case 'csv_parse':
       return 'CSV parse';
     case 'explode':
@@ -392,6 +416,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Aggregate';
     case 'conditional_aggregate':
       return 'Conditional aggregate';
+    case 'window_aggregate':
+      return 'Window aggregate';
     case 'csv_parse':
       return 'CSV parse';
     case 'explode':
@@ -541,8 +567,9 @@ export function composeTransformStackSql(stack: TransformStack): string {
         return;
       }
       case 'aggregate':
-      case 'conditional_aggregate': {
-        if (!validAggregateConfig(block)) break;
+      case 'conditional_aggregate':
+      case 'window_aggregate': {
+        if (!(block.kind === 'window_aggregate' ? validWindowAggregateConfig(block) : validAggregateConfig(block))) break;
         ctes.push(`${cte} AS (SELECT * FROM ${previous} /* ${block.kind}: see structured stack config */)`);
         previous = cte;
         return;
