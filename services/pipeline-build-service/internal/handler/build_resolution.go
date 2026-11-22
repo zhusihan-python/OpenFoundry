@@ -37,6 +37,48 @@ type BuildLifecyclePorts struct {
 
 type buildLifecycleSlot struct{ ports BuildLifecyclePorts }
 
+// buildPipelineLoader is implemented by stores that can load a pipeline's
+// graph. The production postgres repository always can; narrower fakes keep
+// the legacy behavior and rely on the runManualBuild gate.
+type buildPipelineLoader interface {
+	LoadPipeline(ctx context.Context, id uuid.UUID) (*models.Pipeline, error)
+}
+
+// ontologyOutputNodesOfBuildPipeline reports the object/link output nodes a
+// build's parent pipeline graph declares. A nil/empty answer means "no
+// ontology targets visible from the build path".
+func ontologyOutputNodesOfBuildPipeline(ctx context.Context, store any, pipelineRID string) []string {
+	loader, ok := store.(buildPipelineLoader)
+	if !ok || loader == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(pipelineRID)
+	raw = strings.TrimPrefix(raw, "ri.foundry.main.pipeline.")
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return nil
+	}
+	pipeline, err := loader.LoadPipeline(ctx, id)
+	if err != nil || pipeline == nil {
+		return nil
+	}
+	ir, err := pipeline.RuntimeIR()
+	if err != nil {
+		return nil
+	}
+	return ontologyOutputIRNodes(ir)
+}
+
+func ontologyOutputIRNodes(ir models.PipelineIR) []string {
+	var out []string
+	for _, node := range ir.Nodes {
+		if kind := outputKindForIRNode(node, parseOutputDatasetConfig(node.Config)); kind == "object_type" || kind == "link_type" {
+			out = append(out, node.ID)
+		}
+	}
+	return out
+}
+
 var buildLifecyclePorts atomic.Value // stores *buildLifecycleSlot
 
 // SetBuildLifecyclePorts injects resolver and persistence ports for CreateBuild
@@ -297,6 +339,22 @@ func CreateBuild(w http.ResponseWriter, r *http.Request) {
 	// missing-spec 400.
 	if err := preflightRequestedDatasetVisibility(ctx, ports, body.OutputDatasetRIDs...); err != nil {
 		writeResolutionHTTPError(w, err)
+		return
+	}
+	// The build path publishes DATASETS only. A pipeline whose graph
+	// declares object/link outputs must not resolve into a build that
+	// would later report COMPLETED with the ontology side silently
+	// missing — reject before the build row, any reservation or any
+	// remote transaction exists. Graph-declared ontology delivery runs
+	// through POST /pipelines/{id}/runs, which wires the ontology
+	// committer. Stores that cannot load the pipeline graph keep the
+	// legacy behavior (the spec grammar itself is dataset-only); the
+	// execute-time gate in runManualBuild still catches those builds.
+	if nodes := ontologyOutputNodesOfBuildPipeline(ctx, ports.Builds, body.PipelineRID); len(nodes) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":  "manual_build_ontology_output_unsupported",
+			"detail": fmt.Sprintf("pipeline declares object/link output nodes (%s); the build path publishes datasets only — trigger the graph run path (POST /api/v1/pipelines/{id}/runs) for ontology outputs", strings.Join(nodes, ", ")),
+		})
 		return
 	}
 	// Read-only preflight (specs, cycles, inputs, output visibility)
