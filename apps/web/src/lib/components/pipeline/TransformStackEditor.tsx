@@ -15,6 +15,7 @@ import {
   newJSONExtractBlock,
   newHaversineDistanceBlock,
   newNormalizeColumnsBlock,
+  newNormalizeUnitsBlock,
   newRenameColumnsBlock,
   newSelectColumnsBlock,
   newSortRowsBlock,
@@ -26,12 +27,14 @@ import {
   type HaversineDistanceBlock,
   type JSONExtractBlock,
   type NormalizeColumnsBlock,
+  type NormalizeUnitsBlock,
   type RenameColumnsBlock,
   type SelectColumnsBlock,
   type SortRowsBlock,
   type TransformBlock,
   type TransformStack,
   validJSONExtractConfig,
+  validNormalizeUnitsConfig,
 } from './transformStack';
 
 interface TransformStackEditorProps {
@@ -58,6 +61,7 @@ const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   drop: () => newDropColumnsBlock(),
   rename: () => newRenameColumnsBlock(),
   normalize_columns: () => newNormalizeColumnsBlock(),
+  normalize_units: () => newNormalizeUnitsBlock(),
   haversine_distance: () => newHaversineDistanceBlock(),
   json_extract: () => newJSONExtractBlock(),
 };
@@ -473,6 +477,10 @@ function BlockCard({
         ) : null}
         {block.kind === 'normalize' ? (
           <NormalizeBody block={block} onPatch={(patch) => onPatch(patch)} />
+        ) : null}
+        {block.kind === 'normalize_units' ? (
+          <NormalizeUnitsBody block={block} schema={schema} catalogEntry={catalogEntry}
+            onPatch={(patch) => onPatch({ ...patch, applied: false })} />
         ) : null}
         {block.kind === 'json_extract' ? (
           <JSONExtractBody block={block} schema={schema} onPatch={(patch) => onPatch({ ...patch, applied: false })} />
@@ -928,6 +936,44 @@ function SortBody({
   );
 }
 
+function NormalizeUnitsBody({
+  block,
+  schema,
+  catalogEntry,
+  onPatch,
+}: {
+  block: NormalizeUnitsBlock;
+  schema: string[];
+  catalogEntry?: PipelineTransformCatalogEntry;
+  onPatch: (patch: Partial<NormalizeUnitsBlock>) => void;
+}) {
+  const units = catalogEntry?.form.fields.find((field) => field.name === 'source_unit')?.options ?? [];
+  const unitListId = `normalize-unit-options-${block.id}`;
+  const targetId = `normalize-unit-target-${block.id}`;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 8, alignItems: 'center' }}>
+      <span className="of-text-muted" style={{ fontSize: 12 }}>Source column</span>
+      <ColumnInput label="Source column" value={block.source_column} schema={schema}
+        onChange={(source_column) => onPatch({ source_column })} />
+      <label htmlFor={`source-unit-${block.id}`}>Source unit</label>
+      <input id={`source-unit-${block.id}`} list={unitListId} value={block.source_unit} placeholder="m"
+        onChange={(event) => onPatch({ source_unit: event.target.value })} style={inputStyle()} />
+      <label htmlFor={`target-unit-${block.id}`}>Target unit</label>
+      <input id={`target-unit-${block.id}`} list={unitListId} value={block.target_unit} placeholder="mi"
+        onChange={(event) => onPatch({ target_unit: event.target.value })} style={inputStyle()} />
+      <datalist id={unitListId}>
+        {units.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+      </datalist>
+      <label htmlFor={targetId}>Target column</label>
+      <input id={targetId} value={block.target_column} placeholder="Use source column"
+        onChange={(event) => onPatch({ target_column: event.target.value })} style={inputStyle()} />
+      <p className="of-text-muted" style={{ gridColumn: '1 / -1', fontSize: 12 }}>
+        Use units from the same measurement family. A blank target replaces the source column.
+      </p>
+    </div>
+  );
+}
+
 function ColumnInput({ value, onChange, schema, label }: { value: string; onChange: (value: string) => void; schema: string[]; label?: string }) {
   const datalistId = useMemo(() => `column-list-${Math.random().toString(36).slice(2, 8)}`, []);
   return (
@@ -960,6 +1006,7 @@ function blockAccent(kind: TransformBlock['kind']): string {
     case 'rename':
       return '#9a5b00';
     case 'normalize':
+    case 'normalize_units':
       return '#7c5dd6';
     case 'json_extract':
     case 'sort':
@@ -971,6 +1018,8 @@ function blockAccent(kind: TransformBlock['kind']): string {
 
 function hasInvalidConfig(block: TransformBlock): boolean {
   switch (block.kind) {
+    case 'normalize_units':
+      return !validNormalizeUnitsConfig(block);
     case 'json_extract':
       return !validJSONExtractConfig(block);
     case 'sort':

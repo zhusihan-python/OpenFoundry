@@ -353,16 +353,16 @@ func transformCatalogNormalizeColumns(docs []string) pipelineTransformCatalogEnt
 }
 
 func transformCatalogNormalizeUnits(docs []string) pipelineTransformCatalogEntry {
-	entry := baseTransformCatalogEntry("normalize_units", "Normalize units", "Convert numeric measures between common unit systems.", "column_shaping", "stack_block", "transform_stack", "planned", "catalog_only", "units", docs)
+	entry := baseTransformCatalogEntry("normalize_units", "Normalize units", "Convert numeric length, mass, or temperature measures between compatible units.", "column_shaping", "stack_block", "transform_stack", "available", "lightweight_table", "units", docs)
 	entry.Tags = []string{"units", "numeric"}
 	entry.DefaultConfig = map[string]any{"kind": "normalize_units", "applied": false, "source_column": "", "source_unit": "", "target_unit": "", "target_column": ""}
 	entry.Form.Fields = []pipelineTransformCatalogField{
 		columnField("source_column", "Source column", true, "Numeric column to convert."),
-		{Name: "source_unit", Label: "Source unit", FieldType: "text", Required: true, Placeholder: "meters"},
-		{Name: "target_unit", Label: "Target unit", FieldType: "text", Required: true, Placeholder: "miles"},
-		{Name: "target_column", Label: "Target column", FieldType: "text", Required: false, Placeholder: "distance_miles"},
+		{Name: "source_unit", Label: "Source unit", FieldType: "text", Required: true, Placeholder: "m", Options: normalizeUnitOptions()},
+		{Name: "target_unit", Label: "Target unit", FieldType: "text", Required: true, Placeholder: "mi", Options: normalizeUnitOptions()},
+		{Name: "target_column", Label: "Target column", FieldType: "text", Required: false, Placeholder: "distance_miles", HelpText: "Leave blank to replace the source column."},
 	}
-	entry.OutputContract = pipelineTransformOutputContract{Mode: "schema_add_or_replace_column", Description: "Output schema adds or replaces the target measure column."}
+	entry.OutputContract = pipelineTransformOutputContract{Mode: "schema_add_or_replace_column", Description: "Output schema adds or replaces a DOUBLE column and preserves source nullability."}
 	return entry
 }
 
