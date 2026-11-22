@@ -924,3 +924,31 @@ func TestBuildFlowEmitJobLogTenantGating(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, emit(&authmw.Claims{Sub: f.sub, OrgID: f.org}, "ri.foundry.main.job."+uuid.NewString()).Code, "unknown rid is 404")
 	require.Equal(t, 1, logCount())
 }
+
+func TestBuildFlowManualTargetsUseCanonicalJobSpecBeforeReservation(t *testing.T) {
+	ctx := context.Background()
+	f := newBuildFlowFixture(ctx, t)
+	scoped := handler.ContextWithTenantScope(ctx, &handler.TenantScope{TenantID: f.org, Subject: f.sub})
+	out := "ri.foundry.main.dataset." + uuid.NewString()
+	hash := "same-supplied-hash"
+	req := handler.CreateJobSpecRequest{
+		PipelineRID: f.pipelineRID, BranchName: "main", OutputDatasetRIDs: []string{out},
+		ContentHash: &hash, LogicPayload: json.RawMessage(`{"_output":{"kind":"ontology"}}`),
+	}
+	published, err := f.repo.PublishJobSpec(scoped, "TRANSFORM", req, f.sub.String())
+	require.NoError(t, err)
+	req.LogicPayload = json.RawMessage(`{"transform_type":"passthrough"}`)
+	reused, err := f.repo.PublishJobSpec(scoped, "TRANSFORM", req, f.sub.String())
+	require.NoError(t, err)
+	require.Equal(t, published.RID, reused.RID)
+	rr, _ := f.createBuild(t, out)
+	require.Equal(t, http.StatusConflict, rr.Code, rr.Body.String())
+	require.Contains(t, rr.Body.String(), "manual_build_ontology_output_unsupported")
+	require.Empty(t, f.dsState.opens)
+	req.ContentHash = nil
+	_, err = f.repo.PublishJobSpec(scoped, "TRANSFORM", req, f.sub.String())
+	require.NoError(t, err)
+	rr, _ = f.createBuild(t, out)
+	require.Equal(t, http.StatusAccepted, rr.Code, rr.Body.String())
+	require.Len(t, f.dsState.opens, 1)
+}

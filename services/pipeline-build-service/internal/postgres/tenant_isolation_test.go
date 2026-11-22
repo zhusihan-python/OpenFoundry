@@ -252,7 +252,7 @@ func TestGlobalEndpointQueriesCarryTenantBoundary(t *testing.T) {
 		mock, repo := newMockRepo(t)
 		mock.ExpectQuery("FROM pipeline_job_specs").
 			WithArgs("ri.pipeline.dup", "ri.dataset.out", "main", orgAID).
-			WillReturnRows(pgxmock.NewRows([]string{"rid", "pipeline_rid", "branch_name", "inputs", "output_dataset_rid", "job_spec_json", "content_hash"}))
+			WillReturnRows(pgxmock.NewRows([]string{"rid", "pipeline_rid", "branch_name", "inputs", "output_dataset_rid", "job_spec_json", "content_hash", "logic_payload"}))
 		spec, err := repo.Lookup(ctx, "ri.pipeline.dup", "ri.dataset.out", "main", nil)
 		require.NoError(t, err)
 		require.Nil(t, spec)
