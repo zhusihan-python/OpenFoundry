@@ -137,8 +137,8 @@ func (rt *lightweightTableRuntime) resolveTableSchema(nodeID string) pipelineStr
 			schema = derived
 		} else {
 			for i, field := range schema.Fields {
-				if computed, exists := derived.field(field.Name); exists && computed.castTarget {
-					schema.Fields[i] = computed
+				if computed, exists := derived.field(field.Name); exists && computed.castTarget && compatibleAssignment(fieldType(computed), fieldType(field)) {
+					schema.Fields[i].castTarget = true
 				}
 			}
 		}

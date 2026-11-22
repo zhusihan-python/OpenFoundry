@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - _(add entries here)_
 
 ### Fixed
+
+- Published lightweight NDJSON datasets retain the logical type of whole-column casts after filtering or renaming, including empty results.
 - Manual canonical dataset builds now publish through their own output reservation.
   After publication, retrying a build can reconcile its recorded output without
   creating another dataset version.

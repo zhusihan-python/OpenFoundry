@@ -11,7 +11,7 @@
 | `select` | 选择列 | available | 轻量节点和变换栈；节点别名 `project`、`projection` |
 | `drop` | 删除列 | available | 轻量节点和变换栈；节点别名 `drop_columns` |
 | `rename` | 重命名列 | available | 轻量节点和变换栈；节点别名 `rename_columns` |
-| `cast` | 转换列类型 | available | 轻量变换栈；与 WP5.5 的标量 `cast()` 分别验收 |
+| `cast` | 转换列类型 | available | 轻量变换栈。NDJSON 数据集记录整列 cast 的目标类型，保留 Integer、Long、Double 以及日期和时间戳的区别。列更名或筛选为空后仍保留类型。WP5.5 的标量 `cast()` 单独验收 |
 | `filter` | 过滤行 | available | 轻量节点和变换栈；节点别名 `row_filter` |
 | `formula` | 公式列 | available | 轻量变换栈写入或覆盖目标列。与派生列共享表达式求值，覆盖语义不同。见 `838a6aa9`。 |
 | `derive_column` | 派生列 | available | 轻量变换栈追加列，目标列重名时报错。见 `2e793275`。 |

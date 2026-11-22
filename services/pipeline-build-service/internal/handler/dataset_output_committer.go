@@ -233,10 +233,11 @@ func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputT
 			schema = workbookSchema
 		} else {
 			schema = inferOutputSchema(columns, rows, format)
-			if castTypes, ok := result.Metadata["cast_column_types"].(map[string]string); ok && hasFullRows {
+			if castFields, ok := result.Metadata["cast_output_fields"].(map[string]datasetOutputField); ok && hasFullRows {
 				for i, field := range schema.Fields {
-					if typ, exists := castTypes[field.Name]; exists {
-						schema.Fields[i].Type = typ
+					if cast, exists := castFields[field.Name]; exists {
+						schema.Fields[i].Type = cast.Type
+						schema.Fields[i].Nullable = cast.Nullable || field.Nullable
 					}
 				}
 			}

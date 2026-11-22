@@ -301,19 +301,22 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		columns = table.schema.columnNames()
 	}
 
-	var castTypes map[string]string
+	var castFields map[string]datasetOutputField
 	if table.castLineage && (kind == "output" || len(node.Node.Outputs) > 0) {
 		resolved := rt.tableSchema(node.Node.ID)
 		for _, field := range resolved.Fields {
 			if field.castTarget {
-				if castTypes == nil {
-					castTypes = make(map[string]string)
+				if castFields == nil {
+					castFields = make(map[string]datasetOutputField)
 				}
-				castTypes[field.Name] = field.FieldType
+				castFields[field.Name] = datasetOutputField{Name: field.Name, Type: strictTypeName(fieldType(field)), Nullable: field.Nullable}
 			}
 		}
-		if len(rows) == 0 && len(castTypes) > 0 {
+		if resolved.Known && !table.positional {
+			// Keep declared columns even when every row is filtered out or a
+			// nullable field is absent. Ordinary results use alphabetical order.
 			columns = resolved.columnNames()
+			sort.Strings(columns)
 		}
 	}
 
@@ -330,8 +333,8 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		"sample_rows":    rowsToMaps(metaRows),
 		"data_rows":      rowsToMaps(rows),
 	}
-	if len(castTypes) > 0 {
-		meta["cast_column_types"] = castTypes
+	if len(castFields) > 0 {
+		meta["cast_output_fields"] = castFields
 	}
 	for key, value := range datasetMeta {
 		meta[key] = value

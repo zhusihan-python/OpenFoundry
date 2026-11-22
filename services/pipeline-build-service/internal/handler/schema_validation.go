@@ -825,7 +825,7 @@ func unionCastSchema(deps []pipelineStrictSchema, positional bool) pipelineStric
 					field = dep.Fields[i]
 				}
 			}
-			if !ok || field.FieldType != base.FieldType {
+			if !ok || !fieldType(field).Equal(fieldType(base)) {
 				hasCast = false
 				break
 			}
