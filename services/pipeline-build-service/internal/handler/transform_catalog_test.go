@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const expectedTransformCatalogSnapshotSHA256 = "f5322765f44f4a2c17750fe471abe0078cf15e0bfe2337f2ffde7438b79fcf9f"
+const expectedTransformCatalogSnapshotSHA256 = "f3b15d8944cf2c77e88bdcde48e46acc2ae3d1a7573b28f06d2109ef8f2f9833"
 
 func TestListPipelineTransformCatalogSnapshot(t *testing.T) {
 	rr := httptest.NewRecorder()
@@ -82,7 +82,8 @@ func TestTransformCatalogContainsRequiredPB5Entries(t *testing.T) {
 
 	require.Equal(t, "available", seen["formula"].ExecutionStatus)
 	require.Equal(t, "lightweight_table", seen["formula"].Runtime)
-	require.Equal(t, "planned", seen["derive_column"].ExecutionStatus)
+	require.Equal(t, "available", seen["derive_column"].ExecutionStatus)
+	require.Equal(t, "lightweight_table", seen["derive_column"].Runtime)
 	require.Equal(t, "available", seen["join"].ExecutionStatus)
 	require.Equal(t, "join_editor", seen["join"].BuilderSurface)
 	require.Equal(t, "available", seen["haversine_distance"].ExecutionStatus)

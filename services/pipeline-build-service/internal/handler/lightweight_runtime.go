@@ -637,7 +637,7 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 			out, err = applyRuntimeNormalizeUnitsBlock(out, block)
 		case "normalize":
 			out = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters)
-		case "formula":
+		case "formula", "derive_column":
 			out, err = applyRuntimeFormulaBlock(out, block)
 		case "aggregate":
 			out, err = applyRuntimeAggregateBlock(out, block)

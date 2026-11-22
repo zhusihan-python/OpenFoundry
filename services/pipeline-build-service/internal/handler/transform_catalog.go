@@ -330,7 +330,7 @@ func transformCatalogFormula(docs []string) pipelineTransformCatalogEntry {
 }
 
 func transformCatalogDeriveColumn(docs []string) pipelineTransformCatalogEntry {
-	entry := baseTransformCatalogEntry("derive_column", "Derive column", "Create a new column from an expression without editing the source columns.", "column_shaping", "stack_block", "transform_stack", "planned", "catalog_only", "derive", docs)
+	entry := baseTransformCatalogEntry("derive_column", "Derive column", "Create a new column from an expression without editing the source columns.", "column_shaping", "stack_block", "transform_stack", "available", "lightweight_table", "derive", docs)
 	entry.Tags = []string{"expression", "schema"}
 	entry.DefaultConfig = map[string]any{"kind": "derive_column", "applied": false, "expression": "", "target_column": ""}
 	entry.Form.Fields = []pipelineTransformCatalogField{

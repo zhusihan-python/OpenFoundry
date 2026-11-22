@@ -142,7 +142,7 @@ export interface AggregateBlock {
 
 export interface FormulaBlock {
   id: string;
-  kind: 'formula';
+  kind: 'formula' | 'derive_column';
   applied: boolean;
   expression: string;
   target_column: string;
@@ -237,8 +237,8 @@ export function newNormalizeColumnsBlock(): NormalizeColumnsBlock {
   };
 }
 
-export function newFormulaBlock(): FormulaBlock {
-  return { id: newBlockId('formula'), kind: 'formula', applied: false, expression: '', target_column: '' };
+export function newFormulaBlock(kind: FormulaBlock['kind'] = 'formula'): FormulaBlock {
+  return { id: newBlockId(kind), kind, applied: false, expression: '', target_column: '' };
 }
 
 export function validFormulaConfig(block: FormulaBlock): boolean {
@@ -341,6 +341,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Normalize units';
     case 'formula':
       return 'Formula';
+    case 'derive_column':
+      return 'Derive column';
     case 'aggregate':
       return 'Aggregate';
     case 'csv_parse':
@@ -374,6 +376,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Normalize units';
     case 'formula':
       return 'Formula';
+    case 'derive_column':
+      return 'Derive column';
     case 'aggregate':
       return 'Aggregate';
     case 'csv_parse':
@@ -517,9 +521,10 @@ export function composeTransformStackSql(stack: TransformStack): string {
         previous = cte;
         return;
       }
-      case 'formula': {
+      case 'formula':
+      case 'derive_column': {
         if (!validFormulaConfig(block)) break;
-        ctes.push(`${cte} AS (SELECT * FROM ${previous} /* formula: see structured stack config */)`);
+        ctes.push(`${cte} AS (SELECT * FROM ${previous} /* ${block.kind}: see structured stack config */)`);
         previous = cte;
         return;
       }
