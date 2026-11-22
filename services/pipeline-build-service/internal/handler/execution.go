@@ -512,6 +512,7 @@ type outputDatasetConfig struct {
 	PluralDisplay       string                 `json:"plural_display_name,omitempty"`
 	PrimaryKey          string                 `json:"primary_key,omitempty"`
 	PrimaryKeys         []string               `json:"primary_keys,omitempty"`
+	Columns             []string               `json:"columns,omitempty"`
 	Icon                string                 `json:"icon,omitempty"`
 	Color               string                 `json:"color,omitempty"`
 	AllowEdits          bool                   `json:"allow_edits,omitempty"`
@@ -570,6 +571,7 @@ func outputTransactionsForPipelineNode(pipelineID uuid.UUID, runID uuid.UUID, no
 		WriteMode:              firstNonEmpty(cfg.WriteMode, "SNAPSHOT"),
 		FileFormat:             firstNonEmpty(cfg.FileFormat, "PARQUET"),
 		LogicalPath:            cfg.LogicalPath,
+		OutputColumns:          outputColumnsFromConfig(cfg),
 		OutputKind:             outputKindForNode(node, cfg),
 		OutputNodeID:           node.ID,
 		SourceNodeID:           sourceNodeID,
@@ -632,7 +634,7 @@ func parseOutputDatasetConfig(raw json.RawMessage) outputDatasetConfig {
 }
 
 func (c outputDatasetConfig) empty() bool {
-	return strings.TrimSpace(c.Kind+c.Name+c.DatasetName+c.DisplayName+c.DatasetID+c.DatasetRID+c.OutputDatasetRID+c.Branch+c.WriteMode+c.FileFormat+c.LogicalPath+c.ObjectTypeID+c.ObjectTypeRID+c.ObjectTypeName+c.PrimaryKey+c.Icon+c.Color+c.LinkTypeID+c.LinkTypeRID+c.LinkTypeName+c.LinkDisplayName+c.Cardinality+c.SourceObjectTypeID+c.SourceObjectTypeRID+c.SourceObjectNodeID+c.TargetObjectTypeID+c.TargetObjectTypeRID+c.TargetObjectNodeID+c.SourceKeyColumn+c.TargetKeyColumn+c.ForeignKeyColumn) == "" && len(c.PrimaryKeys) == 0 && len(c.PropertyMapping) == 0 && len(c.Properties) == 0
+	return strings.TrimSpace(c.Kind+c.Name+c.DatasetName+c.DisplayName+c.DatasetID+c.DatasetRID+c.OutputDatasetRID+c.Branch+c.WriteMode+c.FileFormat+c.LogicalPath+c.ObjectTypeID+c.ObjectTypeRID+c.ObjectTypeName+c.PrimaryKey+c.Icon+c.Color+c.LinkTypeID+c.LinkTypeRID+c.LinkTypeName+c.LinkDisplayName+c.Cardinality+c.SourceObjectTypeID+c.SourceObjectTypeRID+c.SourceObjectNodeID+c.TargetObjectTypeID+c.TargetObjectTypeRID+c.TargetObjectNodeID+c.SourceKeyColumn+c.TargetKeyColumn+c.ForeignKeyColumn) == "" && len(c.PrimaryKeys) == 0 && len(c.Columns) == 0 && len(c.PropertyMapping) == 0 && len(c.Properties) == 0
 }
 
 func outputDatasetRIDForPipelineNode(pipelineID uuid.UUID, node models.PipelineNode, cfg outputDatasetConfig) string {
@@ -688,6 +690,21 @@ func outputPrimaryKeyFromConfig(cfg outputDatasetConfig) string {
 		}
 	}
 	return ""
+}
+
+// outputColumnsFromConfig carries the declared dataset projection. Structure
+// (empty names, duplicates) and existence against the realised result are
+// validated when the output commits, so a bad declaration fails the run
+// loudly instead of silently reshaping the publication.
+func outputColumnsFromConfig(cfg outputDatasetConfig) []string {
+	if len(cfg.Columns) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(cfg.Columns))
+	for _, column := range cfg.Columns {
+		out = append(out, strings.TrimSpace(column))
+	}
+	return out
 }
 
 func outputPropertyMappingsFromConfig(cfg outputDatasetConfig) []executor.OutputPropertyMapping {
