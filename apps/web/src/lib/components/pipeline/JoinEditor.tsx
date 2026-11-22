@@ -33,6 +33,7 @@ export function JoinEditor({ open, draft, leftSchema = [], rightSchema = [], gui
 
   if (!open || !working) return null;
 
+  const leftAnti = working.join_type === 'left_anti';
   const leftFields = guidance?.left_schema ?? fieldsFromNames(leftSchema);
   const rightFields = guidance?.right_schema ?? fieldsFromNames(rightSchema);
   const leftColumns = leftFields.map((field) => field.name);
@@ -107,8 +108,13 @@ export function JoinEditor({ open, draft, leftSchema = [], rightSchema = [], gui
     });
   }
 
+  const cannotApply = leftAnti && activeDiagnostics.some(({ code }) =>
+    code === 'join_missing_match_conditions' || code === 'join_incomplete_match_conditions'
+  );
+
   function commit() {
-    if (working) onApply(working);
+    if (!working || cannotApply) return;
+    onApply(leftAnti ? { ...working, auto_select_right: false, right_columns: [], right_prefix: '' } : working);
     onClose();
   }
 
@@ -185,6 +191,7 @@ export function JoinEditor({ open, draft, leftSchema = [], rightSchema = [], gui
           <button
             type="button"
             onClick={commit}
+            disabled={cannotApply}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -196,7 +203,8 @@ export function JoinEditor({ open, draft, leftSchema = [], rightSchema = [], gui
               color: '#fff',
               fontSize: 13,
               fontWeight: 600,
-              cursor: 'pointer',
+              cursor: cannotApply ? 'not-allowed' : 'pointer',
+              opacity: cannotApply ? 0.55 : 1,
             }}
           >
             <Glyph name="check" size={13} tone="#fff" />
@@ -213,6 +221,7 @@ export function JoinEditor({ open, draft, leftSchema = [], rightSchema = [], gui
         <div style={{ maxWidth: 1080, margin: '0 auto', display: 'grid', gap: 18 }}>
           <Row label="Join type">
             <select
+              aria-label="Join type"
               value={working.join_type}
               onChange={(event) => patch('join_type', event.target.value as JoinType)}
               style={inputStyle()}
@@ -297,7 +306,7 @@ export function JoinEditor({ open, draft, leftSchema = [], rightSchema = [], gui
           </Row>
 
           <Row label="Select columns">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, flex: 1 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: leftAnti ? '1fr' : '1fr 1fr', gap: 18, flex: 1 }}>
               <ColumnSelector
                 title={`Left: ${working.left_node_label}`}
                 schema={leftColumns}
@@ -308,18 +317,20 @@ export function JoinEditor({ open, draft, leftSchema = [], rightSchema = [], gui
                 onSelectAll={() => selectAll('left', leftColumns)}
                 onDeselectAll={() => deselectAll('left')}
               />
-              <ColumnSelector
-                title={`Right: ${working.right_node_label}`}
-                schema={rightColumns}
-                selected={working.right_columns}
-                autoSelectAll={working.auto_select_right}
-                onAutoToggle={(checked) => patch('auto_select_right', checked)}
-                onToggle={(column) => toggleColumn('right', column)}
-                onSelectAll={() => selectAll('right', rightColumns)}
-                onDeselectAll={() => deselectAll('right')}
-                prefix={working.right_prefix ?? ''}
-                onPrefixChange={(value) => patch('right_prefix', value)}
-              />
+              {!leftAnti ? (
+                <ColumnSelector
+                  title={`Right: ${working.right_node_label}`}
+                  schema={rightColumns}
+                  selected={working.right_columns}
+                  autoSelectAll={working.auto_select_right}
+                  onAutoToggle={(checked) => patch('auto_select_right', checked)}
+                  onToggle={(column) => toggleColumn('right', column)}
+                  onSelectAll={() => selectAll('right', rightColumns)}
+                  onDeselectAll={() => deselectAll('right')}
+                  prefix={working.right_prefix ?? ''}
+                  onPrefixChange={(value) => patch('right_prefix', value)}
+                />
+              ) : null}
             </div>
           </Row>
         </div>
@@ -502,6 +513,9 @@ function fieldsFromNames(names: string[]): PipelineIRField[] {
 function joinDiagnosticsForWorking(draft: JoinDraft, leftFields: PipelineIRField[], rightFields: PipelineIRField[]): PipelineSchemaGuidanceDiagnostic[] {
   if (draft.join_type !== 'cross' && draft.matches.every((match) => !match.left_column || !match.right_column)) {
     return [{ severity: 'error', code: 'join_missing_match_conditions', message: 'Join requires at least one match condition.' }];
+  }
+  if (draft.join_type === 'left_anti' && draft.matches.some((match) => !match.left_column.trim() || !match.right_column.trim())) {
+    return [{ severity: 'error', code: 'join_incomplete_match_conditions', message: 'Left anti join requires both columns in each match condition.' }];
   }
   const diagnostics: PipelineSchemaGuidanceDiagnostic[] = [];
   for (const match of draft.matches) {

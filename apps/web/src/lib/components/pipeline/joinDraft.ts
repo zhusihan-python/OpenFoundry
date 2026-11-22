@@ -5,7 +5,7 @@
 // from each side. The serialised draft lives in the resulting node's
 // config so the editor can re-open it for further edits.
 
-export type JoinType = 'left' | 'right' | 'inner' | 'outer' | 'cross';
+export type JoinType = 'left' | 'right' | 'inner' | 'outer' | 'left_anti' | 'cross';
 
 export interface JoinMatch {
   left_column: string;
@@ -33,6 +33,7 @@ export const JOIN_TYPES: Array<{ id: JoinType; label: string; description: strin
   { id: 'right', label: 'Right join', description: 'Keeps all rows from the right table and only rows from the left that satisfy the provided condition.' },
   { id: 'inner', label: 'Inner join', description: 'Keeps only the rows that satisfy the provided condition on both sides.' },
   { id: 'outer', label: 'Full outer join', description: 'Keeps all rows from both tables.' },
+  { id: 'left_anti', label: 'Left anti join', description: 'Keeps left rows with no matching right row. Null keys do not match.' },
   { id: 'cross', label: 'Cross join', description: 'Cartesian product. No match condition is applied.' },
 ];
 
@@ -69,6 +70,8 @@ export function composeJoinSql(draft: JoinDraft): string {
         return 'INNER JOIN';
       case 'outer':
         return 'FULL OUTER JOIN';
+      case 'left_anti':
+        return 'LEFT ANTI JOIN';
       case 'cross':
         return 'CROSS JOIN';
     }
@@ -90,6 +93,6 @@ export function composeJoinSql(draft: JoinDraft): string {
         .map((name) => prefix ? `__right__.${quoteIdent(name)} AS ${quoteIdent(`${prefix}${name}`)}` : `__right__.${quoteIdent(name)}`)
         .join(', ') || '';
 
-  const projection = [leftColumns, rightColumns].filter((part) => part && part.trim().length > 0).join(', ');
+  const projection = [leftColumns, draft.join_type === 'left_anti' ? '' : rightColumns].filter((part) => part && part.trim().length > 0).join(', ');
   return `SELECT ${projection} FROM __left__ ${joinKeyword} __right__${onClause}`;
 }

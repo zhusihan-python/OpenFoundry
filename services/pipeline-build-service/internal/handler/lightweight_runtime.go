@@ -814,11 +814,18 @@ func (rt *lightweightTableRuntime) runJoin(node executor.NodeContext, draft runt
 	if joinType == "" {
 		joinType = "left"
 	}
-	if joinType != "cross" && len(validJoinMatches(draft.Matches)) == 0 {
+	matches := validJoinMatches(draft.Matches)
+	if joinType != "cross" && len(matches) == 0 {
 		return nil, errors.New("lightweight_join_missing_match_conditions")
 	}
 
 	leftColumns := selectRuntimeColumns(left, draft.LeftColumns, draft.AutoSelectLeft || len(draft.LeftColumns) == 0)
+	if joinType == runtimeJoinLeftAnti {
+		if len(matches) != len(draft.Matches) {
+			return nil, errors.New("left anti join requires both columns in each match condition")
+		}
+		return joinLeftAnti(left, right, matches, leftColumns)
+	}
 	rightColumns := selectRuntimeColumns(right, draft.RightColumns, draft.AutoSelectRight)
 	out := make([]pipelineexpression.Row, 0)
 	rightMatched := make([]bool, len(right))

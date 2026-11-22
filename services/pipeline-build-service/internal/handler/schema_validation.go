@@ -643,10 +643,14 @@ func validateJoinNode(nodeID string, draft runtimeJoinDraft, deps []pipelineStri
 		return firstSchema(deps)
 	}
 	left, right := deps[0], deps[1]
-	if len(validJoinMatches(draft.Matches)) == 0 && strings.ToLower(strings.TrimSpace(draft.JoinType)) != "cross" {
+	joinType := strings.ToLower(strings.TrimSpace(draft.JoinType))
+	matches := validJoinMatches(draft.Matches)
+	if len(matches) == 0 && joinType != "cross" {
 		report.addError(nodeID, nil, "join_missing_match_conditions", "join requires at least one match condition")
+	} else if joinType == runtimeJoinLeftAnti && len(matches) != len(draft.Matches) {
+		report.addError(nodeID, nil, "join_incomplete_match_conditions", "left anti join requires both columns in each match condition")
 	}
-	for _, match := range validJoinMatches(draft.Matches) {
+	for _, match := range matches {
 		leftField, leftOK := left.field(match.LeftColumn)
 		rightField, rightOK := right.field(match.RightColumn)
 		if left.Known && !leftOK {
@@ -659,12 +663,14 @@ func validateJoinNode(nodeID string, draft runtimeJoinDraft, deps []pipelineStri
 			report.addError(nodeID, strPtr(match.LeftColumn), "incompatible_join_key_types", fmt.Sprintf("join key %q (%s) is not compatible with %q (%s)", match.LeftColumn, leftField.FieldType, match.RightColumn, rightField.FieldType))
 		}
 	}
-	if !left.Known || !right.Known {
+	if !left.Known || (!right.Known && joinType != runtimeJoinLeftAnti) {
 		return pipelineStrictSchema{}
 	}
-	leftFields := selectFieldsForJoin(left, draft.LeftColumns, draft.AutoSelectLeft || len(draft.LeftColumns) == 0, "", nodeID, report)
-	rightFields := selectFieldsForJoin(right, draft.RightColumns, draft.AutoSelectRight, strings.TrimSpace(draft.RightPrefix), nodeID, report)
-	out := pipelineStrictSchema{Known: true, Fields: append(leftFields, rightFields...)}
+	fields := selectFieldsForJoin(left, draft.LeftColumns, draft.AutoSelectLeft || len(draft.LeftColumns) == 0, "", nodeID, report)
+	if joinType != runtimeJoinLeftAnti {
+		fields = append(fields, selectFieldsForJoin(right, draft.RightColumns, draft.AutoSelectRight, strings.TrimSpace(draft.RightPrefix), nodeID, report)...)
+	}
+	out := pipelineStrictSchema{Known: true, Fields: fields}
 	checkSchemaDuplicateFields(nodeID, out, report)
 	return out
 }
