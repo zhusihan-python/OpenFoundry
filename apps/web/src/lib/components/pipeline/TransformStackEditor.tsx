@@ -11,6 +11,7 @@ import {
   blockSectionLabel,
   newCastBlock,
   newDropColumnsBlock,
+  newExplodeBlock,
   newFilterBlock,
   newJSONExtractBlock,
   newHaversineDistanceBlock,
@@ -22,6 +23,7 @@ import {
   validSortKeys,
   type CastBlock,
   type DropColumnsBlock,
+  type ExplodeBlock,
   type FilterBlock,
   type FilterCondition,
   type HaversineDistanceBlock,
@@ -63,6 +65,7 @@ const STACK_BLOCK_CREATORS: Record<string, () => TransformBlock> = {
   normalize_columns: () => newNormalizeColumnsBlock(),
   normalize_units: () => newNormalizeUnitsBlock(),
   haversine_distance: () => newHaversineDistanceBlock(),
+  explode: () => newExplodeBlock(),
   json_extract: () => newJSONExtractBlock(),
 };
 
@@ -481,6 +484,9 @@ function BlockCard({
         {block.kind === 'normalize_units' ? (
           <NormalizeUnitsBody block={block} schema={schema} catalogEntry={catalogEntry}
             onPatch={(patch) => onPatch({ ...patch, applied: false })} />
+        ) : null}
+        {block.kind === 'explode' ? (
+          <ExplodeBody block={block} schema={schema} onPatch={(patch) => onPatch({ ...patch, applied: false })} />
         ) : null}
         {block.kind === 'json_extract' ? (
           <JSONExtractBody block={block} schema={schema} onPatch={(patch) => onPatch({ ...patch, applied: false })} />
@@ -936,6 +942,31 @@ function SortBody({
   );
 }
 
+function ExplodeBody({
+  block,
+  schema,
+  onPatch,
+}: {
+  block: ExplodeBlock;
+  schema: string[];
+  onPatch: (patch: Partial<ExplodeBlock>) => void;
+}) {
+  const targetId = `explode-target-${block.id}`;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 8, alignItems: 'center' }}>
+      <span className="of-text-muted" style={{ fontSize: 12 }}>Array column</span>
+      <ColumnInput label="Array column" value={block.source_column} schema={schema}
+        onChange={(source_column) => onPatch({ source_column })} />
+      <label htmlFor={targetId}>Target column</label>
+      <input id={targetId} value={block.target_column} placeholder="Use source column"
+        onChange={(event) => onPatch({ target_column: event.target.value })} style={inputStyle()} />
+      <p className="of-text-muted" style={{ gridColumn: '1 / -1', fontSize: 12 }}>
+        Creates one row per element. Empty arrays create no rows. A blank target replaces the source.
+      </p>
+    </div>
+  );
+}
+
 function NormalizeUnitsBody({
   block,
   schema,
@@ -1008,6 +1039,7 @@ function blockAccent(kind: TransformBlock['kind']): string {
     case 'normalize':
     case 'normalize_units':
       return '#7c5dd6';
+    case 'explode':
     case 'json_extract':
     case 'sort':
       return '#2563eb';
@@ -1020,6 +1052,8 @@ function hasInvalidConfig(block: TransformBlock): boolean {
   switch (block.kind) {
     case 'normalize_units':
       return !validNormalizeUnitsConfig(block);
+    case 'explode':
+      return !block.source_column.trim();
     case 'json_extract':
       return !validJSONExtractConfig(block);
     case 'sort':

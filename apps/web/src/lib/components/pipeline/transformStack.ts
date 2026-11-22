@@ -109,6 +109,14 @@ export interface NormalizeUnitsBlock {
   target_column: string;
 }
 
+export interface ExplodeBlock {
+  id: string;
+  kind: 'explode';
+  applied: boolean;
+  source_column: string;
+  target_column: string;
+}
+
 export type TransformBlock =
   | CastBlock
   | FilterBlock
@@ -119,7 +127,8 @@ export type TransformBlock =
   | HaversineDistanceBlock
   | JSONExtractBlock
   | SortRowsBlock
-  | NormalizeUnitsBlock;
+  | NormalizeUnitsBlock
+  | ExplodeBlock;
 
 export interface TransformStack {
   source_dataset_id: string;
@@ -194,6 +203,10 @@ export function newNormalizeColumnsBlock(): NormalizeColumnsBlock {
   };
 }
 
+export function newExplodeBlock(): ExplodeBlock {
+  return { id: newBlockId('explode'), kind: 'explode', applied: false, source_column: '', target_column: '' };
+}
+
 export function newJSONExtractBlock(): JSONExtractBlock {
   return { id: newBlockId('json_extract'), kind: 'json_extract', applied: false, source_column: '', json_path: '$', target_column: '' };
 }
@@ -258,6 +271,8 @@ export function blockTitle(block: TransformBlock): string {
       return 'Normalize column names';
     case 'normalize_units':
       return 'Normalize units';
+    case 'explode':
+      return 'Explode';
     case 'json_extract':
       return 'JSON extract';
     case 'sort':
@@ -283,6 +298,8 @@ export function blockSectionLabel(kind: TransformBlock['kind']): string {
       return 'Normalize column names';
     case 'normalize_units':
       return 'Normalize units';
+    case 'explode':
+      return 'Explode';
     case 'json_extract':
       return 'JSON extract';
     case 'sort':
@@ -417,6 +434,12 @@ export function composeTransformStackSql(stack: TransformStack): string {
       case 'normalize_units': {
         if (!validNormalizeUnitsConfig(block)) break;
         ctes.push(`${cte} AS (SELECT * FROM ${previous} /* normalize_units: see structured stack config */)`);
+        previous = cte;
+        return;
+      }
+      case 'explode': {
+        if (!block.source_column.trim()) break;
+        ctes.push(`${cte} AS (SELECT * FROM ${previous} /* explode: see structured stack config */)`);
         previous = cte;
         return;
       }

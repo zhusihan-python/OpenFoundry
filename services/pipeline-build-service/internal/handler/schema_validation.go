@@ -485,6 +485,8 @@ func validateTransformStack(nodeID string, stack runtimeTransformStack, schema p
 			out = applyNormalizeUnitsSchema(nodeID, out, block, report)
 		case "normalize":
 			out = applyNormalizeSchema(nodeID, out, block.RemoveSpecialCharacters, report)
+		case "explode":
+			out = applyExplodeSchema(nodeID, out, block, report)
 		case "json_extract":
 			out = applyJSONExtractSchema(nodeID, out, block, report)
 		case "cast":
