@@ -153,7 +153,7 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 	}
 	runtime := newLightweightTableRuntime(ports.Functions)
 	runtime.datasets = ports.DatasetRows
-	// Windows, joins and positional unions can depend on rows beyond the display
+	// Windows, joins and unions can depend on rows beyond the display
 	// sample. Use the bounded build inputs before limiting the final result.
 	sampleInputs := !previewChainRequiresBuildInputs(chain)
 	runtime.datasetRowsPreview = sampleInputs
@@ -258,7 +258,8 @@ func previewChainRequiresBuildInputs(chain []models.PipelineNode) bool {
 			if cfg.Join != nil {
 				return true
 			}
-			if cfg.GeoJoin == nil && cfg.Union.byPosition() {
+			// A by-name union can gain columns from any later input row.
+			if cfg.GeoJoin == nil && cfg.Union != nil {
 				return true
 			}
 			continue

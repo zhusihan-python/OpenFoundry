@@ -275,3 +275,14 @@ func TestNormalizeRejectsDeclaredCollisionInEmptyTable(t *testing.T) {
 	_, err := applyRuntimeNormalizeBlock(nil, false, []string{"OrderID", "Order ID"})
 	require.ErrorContains(t, err, `duplicate column name "order_id"`)
 }
+
+func TestNamedUnionUsesCompleteInputsAndIncludesSparseColumns(t *testing.T) {
+	config := json.RawMessage(`{"_union":{"mode":"by_name"}}`)
+	require.True(t, previewChainRequiresBuildInputs([]models.PipelineNode{{ID: "merge", TransformType: "sql", Config: config}}))
+	rt := newLightweightTableRuntime()
+	rt.storeTable("left", lightweightTable{rows: rowsFromMaps(t, map[string]any{"id": "A"})})
+	rt.storeTable("right", lightweightTable{schema: pipelineStrictSchema{Known: true, Fields: []pipelineStrictValidationField{{Name: "other", FieldType: "STRING"}}}})
+	rows, err := rt.runUnion(executor.NodeContext{Node: executor.Node{ID: "merge", DependsOn: []string{"left", "right"}}}, runtimeUnionDraft{})
+	require.NoError(t, err)
+	require.Equal(t, []map[string]any{{"id": "A", "other": nil}}, rowsToMapsForTest(t, rows))
+}

@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 ## [Unreleased]
 
 ### Added
+- Pipeline LLM nodes can use the agent-runtime chat endpoint with a configured
+  OpenAI-compatible model. Set `PIPELINE_LLM_PROTOCOL=agent-runtime`.
 - DVS can publish a group of reserved manual build outputs in one transaction
   and replay the original receipts.
 - Manual batched dataset builds can explicitly publish an `orders.v1` Parquet
@@ -42,6 +44,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - _(add entries here)_
 
 ### Fixed
+- By-name Union keeps declared columns from empty inputs and reads bounded inputs
+  before serving a short preview.
 
 - Published lightweight NDJSON datasets retain the logical type of whole-column casts after filtering or renaming, including empty results.
 - Manual canonical dataset builds now publish through their own output reservation.
