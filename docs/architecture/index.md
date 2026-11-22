@@ -37,3 +37,4 @@ generated outputs.
 - [Contracts and SDKs](/architecture/contracts-and-sdks) for generation pipelines.
 - [Capability Map](/architecture/capability-map) for the domain areas validated by the smoke suites.
 - [WP7.1 Data Lineage Contract Draft](data-integration-wp7-1-lineage-contract.md) for cross-team review of dataset, pipeline, ontology and application lineage.
+- [WP10.3 Pipeline Builder Read-Only Audit](data-integration-wp10-3-pipeline-readonly-audit.md) for the four capabilities to preserve and their verification.
