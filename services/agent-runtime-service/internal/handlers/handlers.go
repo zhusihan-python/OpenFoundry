@@ -32,7 +32,11 @@ func (h *Handlers) completionRuntime() llm.Runtime {
 	if h.Runtime != nil {
 		return h.Runtime
 	}
-	return llm.HTTPRuntime{}
+	// Each approval covers the configured inference endpoint. A redirected
+	// request would use a destination that the checkpoint did not assess.
+	return llm.HTTPRuntime{Client: &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 }
 
 var errFakeLLMProviderDisabled = errors.New("configuration error: no LLM provider configured and ALLOW_FAKE_LLM_PROVIDER is not true")

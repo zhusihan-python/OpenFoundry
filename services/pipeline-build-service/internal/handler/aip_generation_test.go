@@ -126,6 +126,8 @@ func TestAIPProviderProposalValidation(t *testing.T) {
 		{"invented id", `[{"id":"flt","transform_type":"filter","depends_on":["orders"],"config":{"predicate":"quantity > 1"}}]`, "missing_dependency"},
 		{"colliding id", `[{"id":"sales","transform_type":"select","config":{"columns":["quantity"]}}]`, "duplicate_node_id"},
 		{"cycle", `[{"id":"flt","depends_on":["flt"],"transform_type":"filter","config":{"predicate":"quantity > 1"}}]`, "cycle_detected"},
+		{"repeated generated id", `[{"id":"flt","transform_type":"passthrough"},{"id":"flt","transform_type":"passthrough"}]`, "duplicate_node_id"},
+		{"unsupported non-target", `[{"id":"bad","transform_type":"unknown_transform"},{"id":"good","transform_type":"passthrough","depends_on":["sales"]}]`, "unsupported_transform"},
 		{"missing type", `[{"id":"flt"}]`, "transform_type is required"},
 		{"missing predicate", `[{"transform_type":"filter","config":{"condition":"quantity > 1"}}]`, "filter_missing_predicate"},
 		{"unknown column", `[{"transform_type":"filter","config":{"predicate":"absent > 1"}}]`, "absent"},
@@ -227,4 +229,145 @@ type aipPreviewRowSource struct {
 func (s *aipPreviewRowSource) ReadDatasetRows(ctx context.Context, req DatasetRowsRequest) (DatasetRowsResult, error) {
 	s.bearer = callerBearerFromContext(ctx)
 	return s.fakeDatasetRowSource.ReadDatasetRows(ctx, req)
+}
+
+func TestAIPValidatesRuntimeReadAndWriteIndependently(t *testing.T) {
+	read, write, masked := uuid.New(), uuid.New(), uuid.New()
+	mixed := models.PipelineNode{
+		ID: "mixed", TransformType: "dataset_input", InputDatasetIDs: []uuid.UUID{masked}, OutputDatasetID: &masked,
+		Config: mustRuntimeJSON(map[string]any{
+			"dataset_rid": datasetRIDPrefix + read.String(), "dataset_id": masked.String(), "input_dataset_ids": []uuid.UUID{masked},
+			"_output": map[string]string{"dataset_rid": write.String(), "dataset_id": masked.String()},
+		}),
+	}
+	req := PipelineAIPGenerateRequest{Nodes: []models.PipelineNode{mixed}, SelectedNodeIDs: []string{"mixed"}}
+	proposal := func(id string, input, output uuid.UUID) models.PipelineNode {
+		return models.PipelineNode{ID: id, TransformType: "dataset_input", OutputDatasetID: &output, Config: mustRuntimeJSON(map[string]any{
+			"dataset_id": input.String(), "_output": map[string]string{"output_dataset_rid": datasetRIDPrefix + output.String()},
+		})}
+	}
+	for _, tc := range []struct {
+		name          string
+		input, output uuid.UUID
+		reason        string
+	}{
+		{"read and write", read, write, ""},
+		{"output used for reading", write, write, "unknown input dataset"},
+		{"input used for writing", read, read, "unknown output dataset"},
+		{"shadowed input", masked, write, "unknown input dataset"},
+		{"shadowed output", read, masked, "unknown output dataset"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal([]models.PipelineNode{proposal("suggestion", tc.input, tc.output)})
+			require.NoError(t, err)
+			_, err = parseAIPGenerateCompletion(string(b), req)
+			if tc.reason != "" {
+				require.ErrorContains(t, err, tc.reason)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+	// Validate every proposed output, including a sibling of the preview target.
+	extra := uuid.New()
+	req.Nodes = append(req.Nodes, models.PipelineNode{ID: "other", TransformType: "output_dataset", DependsOn: []string{"mixed"}, OutputDatasetID: &extra})
+	nodes := []models.PipelineNode{proposal("left", read, write), proposal("right", read, extra)}
+	result := PipelineAIPGenerateResult{Nodes: nodes, GeneratedNodeID: "left"}
+	b, err := json.Marshal(result)
+	require.NoError(t, err)
+	_, err = parseAIPGenerateCompletion(string(b), req)
+	require.NoError(t, err)
+	result.Nodes[1] = proposal("right", read, masked)
+	b, err = json.Marshal(result)
+	require.NoError(t, err)
+	_, err = parseAIPGenerateCompletion(string(b), req)
+	require.ErrorContains(t, err, "unknown output dataset")
+}
+
+func TestAIPExistingInputsFollowRuntimeSourceAndPinPrecedence(t *testing.T) {
+	read, hidden := uuid.New(), uuid.New()
+	for _, tc := range []struct {
+		name, kind string
+		config     map[string]any
+		deps       []string
+		readable   bool
+	}{
+		{"metadata-only source", "dataset_input", nil, nil, true},
+		{"dependency-free passthrough", "passthrough", nil, nil, true},
+		{"passthrough reads upstream", "passthrough", nil, []string{"parent"}, false},
+		{"inline rows take precedence", "dataset_input", map[string]any{"rows": []map[string]int{{"n": 4}}}, nil, false},
+		{"unpinned first configured input", "dataset_input", map[string]any{"input_dataset_ids": []uuid.UUID{hidden, read}}, nil, false},
+		{"ambiguous pinned input", "dataset_input", map[string]any{"dataset_id": hidden.String(), "dataset_snapshot": map[string]any{"branch": "main", "version": 1, "transaction_id": uuid.NewString()}}, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := models.PipelineNode{ID: "source", TransformType: tc.kind, DependsOn: tc.deps, InputDatasetIDs: []uuid.UUID{read}}
+			if tc.config != nil {
+				source.Config = mustRuntimeJSON(tc.config)
+			}
+			req := PipelineAIPGenerateRequest{Nodes: []models.PipelineNode{{ID: "parent", TransformType: "external"}, source}}
+			b, err := json.Marshal([]models.PipelineNode{{ID: "suggestion", TransformType: "dataset_input", Config: mustRuntimeJSON(map[string]string{"dataset_id": read.String()})}})
+			require.NoError(t, err)
+			_, err = parseAIPGenerateCompletion(string(b), req)
+			if tc.readable {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, "unknown input dataset")
+		})
+	}
+}
+
+func TestAIPHandlerValidatesPinnedIRAgainstDeclaredSchema(t *testing.T) {
+	source := models.PipelineIRNode{ID: "orders", TransformType: "dataset_input", Config: mustRuntimeJSON(map[string]any{
+		"dataset_id": uuid.NewString(), "dataset_snapshot": map[string]any{"branch": "main", "version": 5, "transaction_id": uuid.NewString()},
+	})}
+	schema := &models.PipelineIRSchema{Fields: []models.PipelineIRField{{Name: "quantity", FieldType: "integer"}}}
+	for _, tc := range []struct{ graph, schemaKey, transform, want string }{
+		{"ir", "output_schema", "filter", "missing_quantity"},
+		{"dag", "preview_schema", "filter", "missing_quantity"},
+		{"saved", "output_schema", "unknown_type", "unsupported_transform"},
+		{"saved", "preview_schema", "filter", "missing_quantity"},
+	} {
+		t.Run(tc.graph+"_"+tc.schemaKey, func(t *testing.T) {
+			node := source
+			if tc.schemaKey == "output_schema" {
+				node.OutputSchema = schema
+			} else {
+				node.PreviewSchema = schema
+			}
+			ir := models.PipelineIR{Nodes: []models.PipelineIRNode{node}}
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var got aiChatCompletionRequest
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+				require.Contains(t, got.UserMessage, `"`+tc.schemaKey+`":{"fields":[{"name":"quantity"`)
+				writeJSON(w, http.StatusOK, map[string]string{"reply": string(mustRuntimeJSON([]models.PipelineNode{{ID: "suggestion", TransformType: tc.transform, DependsOn: []string{"orders"}, Config: json.RawMessage(`{"predicate":"missing_quantity > 3"}`)}}))})
+			}))
+			defer provider.Close()
+			rows := &fakeDatasetRowSource{}
+			restore := SetExecutionPorts(ExecutionPorts{DatasetRows: rows, AIP: NewAIServicePipelineAIPGenerator(PipelineAIPGeneratorConfig{BaseURL: provider.URL, Client: provider.Client()})})
+			defer restore()
+			body := map[string]any{"prompt": "Filter large orders"}
+			path := "/api/v1/pipelines/aip/generate"
+			handler := PipelineAIPGenerate
+			if tc.graph == "saved" {
+				restoreRepo := SetPipelineAuthoringRepository(newFakePipelineAuthoringRepo())
+				defer restoreRepo()
+				w := httptest.NewRecorder()
+				CreatePipeline(w, httptest.NewRequest(http.MethodPost, "/api/v1/pipelines", bytes.NewReader(mustRuntimeJSON(map[string]any{"name": "Orders", "dag": ir}))))
+				require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+				var saved models.Pipeline
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &saved))
+				path = "/api/v1/pipelines/" + saved.ID.String() + "/aip/generate"
+				handler = PipelineAIPGenerateByID
+			} else {
+				body[tc.graph] = ir
+			}
+			w := httptest.NewRecorder()
+			handler(w, httptest.NewRequest(http.MethodPost, path, bytes.NewReader(mustRuntimeJSON(body))))
+			require.Equal(t, http.StatusBadGateway, w.Code, w.Body.String())
+			require.Contains(t, w.Body.String(), "pipeline_aip_generation_failed")
+			require.Contains(t, w.Body.String(), tc.want)
+			require.Empty(t, rows.calls)
+		})
+	}
 }

@@ -390,3 +390,11 @@ func TestConfiguredProviderRequiresPurposeForChatAndCopilot(t *testing.T) {
 		})
 	}
 }
+
+func TestConfiguredRuntimePinsApprovedEndpoint(t *testing.T) {
+	runtime := (&Handlers{}).completionRuntime().(llm.HTTPRuntime)
+	require.NotNil(t, runtime.Client)
+	require.NotNil(t, runtime.Client.CheckRedirect)
+	req := httptest.NewRequest(http.MethodPost, "/chat/completions", nil)
+	require.ErrorIs(t, runtime.Client.CheckRedirect(req, nil), http.ErrUseLastResponse)
+}

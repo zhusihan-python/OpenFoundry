@@ -180,3 +180,13 @@ PostgreSQL transaction. The ledger retains the independent justification.
 The event retains the route, reason, length and digest. Chat messages, model
 replies and credentials are excluded. Shipping outbox events beyond
 PostgreSQL requires a configured CDC consumer.
+
+On an existing Helm `pg-policy` cluster, the outbox owner applies
+`infra/helm/infra/postgres-clusters/files/pg-policy-checkpoint-outbox-grant.sql`
+to the application database before rollout. New clusters apply the same
+grant during initdb. It adds column-level `SELECT (event_id)` to
+`svc_checkpoints_purpose`, whose existing schema `USAGE` and table
+`INSERT, DELETE` grants support enqueue. The service writer DSN must use
+this role or an equivalently scoped producer on the same database.
+Migration 0008 uses the platform-owned ADR-0022 table with replica identity
+`FULL`. On a fresh standalone database, it creates the outbox.

@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/domain/executor"
 	"github.com/openfoundry/openfoundry-go/services/pipeline-build-service/internal/models"
 )
 
@@ -127,13 +129,14 @@ func pipelineAIPGenerate(w http.ResponseWriter, r *http.Request, pipelineID uuid
 	if pipelineID != uuid.Nil {
 		req.PipelineID = pipelineID.String()
 	}
-	nodes, err := aipGenerationNodesForRequest(r.Context(), pipelineID, req)
+	ir, err := aipGenerationIRForRequest(r.Context(), pipelineID, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_pipeline_graph", "detail": err.Error()})
 		return
 	}
-	req.Nodes = nodes
-	req.SelectedNodeIDs = normalizeAIPSelectedNodes(req.SelectedNodeIDs, nodes)
+	req.IR = &ir
+	req.Nodes = ir.LegacyNodes()
+	req.SelectedNodeIDs = normalizeAIPSelectedNodes(req.SelectedNodeIDs, req.Nodes)
 
 	ports, ok := currentExecutionPorts()
 	if !ok || ports.AIP == nil {
@@ -157,7 +160,7 @@ func pipelineAIPGenerate(w http.ResponseWriter, r *http.Request, pipelineID uuid
 	previewID := firstNonEmpty(result.GeneratedNodeID, lastGeneratedNodeID(generated))
 	if previewID != "" {
 		previewCtx := contextWithCallerBearer(r.Context(), callerBearerFromRequest(r))
-		preview, previewErr := executeLocalPipelinePreviewWithPorts(previewCtx, firstNonNilUUID(pipelineID), previewID, append(append([]models.PipelineNode(nil), nodes...), generated...), clampPipelinePreviewSampleSize(firstPositiveInt(req.SampleSize, defaultPipelinePreviewSampleSize)), ports)
+		preview, previewErr := executeLocalPreviewWithSchemas(previewCtx, firstNonNilUUID(pipelineID), previewID, slices.Concat(req.Nodes, generated), clampPipelinePreviewSampleSize(firstPositiveInt(req.SampleSize, defaultPipelinePreviewSampleSize)), ports, declaredTableSchemas(ir))
 		if previewErr == nil {
 			response.Preview = &preview
 		} else {
@@ -172,44 +175,36 @@ func pipelineAIPGenerate(w http.ResponseWriter, r *http.Request, pipelineID uuid
 	writeJSON(w, http.StatusOK, response)
 }
 
-func aipGenerationNodesForRequest(ctx context.Context, pipelineID uuid.UUID, req PipelineAIPGenerateRequest) ([]models.PipelineNode, error) {
+func aipGenerationIRForRequest(ctx context.Context, pipelineID uuid.UUID, req PipelineAIPGenerateRequest) (models.PipelineIR, error) {
+	if pipelineID == uuid.Nil && req.IR == nil && len(req.Nodes) == 0 && len(bytes.TrimSpace(req.DAG)) == 0 {
+		return models.PipelineIR{}, errors.New("dag, ir, nodes, or pipeline id is required")
+	}
+	return previewIRForRequest(ctx, pipelineID, previewPipelineNodeRequest{IR: req.IR, Nodes: req.Nodes, DAG: req.DAG})
+}
+
+func (req PipelineAIPGenerateRequest) inputIR() models.PipelineIR {
 	if req.IR != nil {
-		return req.IR.Normalize().LegacyNodes(), nil
+		return *req.IR
 	}
-	if len(req.Nodes) > 0 {
-		return append([]models.PipelineNode(nil), req.Nodes...), nil
-	}
-	if len(bytes.TrimSpace(req.DAG)) > 0 {
-		ir, err := models.ParsePipelineIR(req.DAG)
-		if err != nil {
-			return nil, err
-		}
-		return ir.LegacyNodes(), nil
-	}
-	if pipelineID == uuid.Nil {
-		return nil, errors.New("dag, ir, nodes, or pipeline id is required")
-	}
-	repo, ok := currentPipelineAuthoringRepository()
-	if !ok {
-		return nil, errors.New("pipeline authoring repository is not configured")
-	}
-	pipeline, err := repo.GetPipeline(ctx, pipelineID)
-	if err != nil {
-		return nil, err
-	}
-	if pipeline == nil {
-		return nil, errors.New("pipeline not found")
-	}
-	return pipeline.ParsedNodes()
+	return models.NewPipelineIRFromNodes(req.Nodes)
 }
 
 func buildAIPGeneratePrompt(req PipelineAIPGenerateRequest) (string, error) {
-	selected := selectedAIPNodes(req.Nodes, req.SelectedNodeIDs)
+	nodes := req.inputIR().Nodes
+	all := make([]map[string]any, 0, len(nodes))
+	selected := make([]map[string]any, 0, len(req.SelectedNodeIDs))
+	for _, node := range nodes {
+		summary := summarizeAIPNode(node)
+		all = append(all, summary)
+		if slices.Contains(req.SelectedNodeIDs, node.ID) {
+			selected = append(selected, summary)
+		}
+	}
 	contextJSON, err := json.Marshal(map[string]any{
 		"pipeline_id":       req.PipelineID,
 		"selected_node_ids": req.SelectedNodeIDs,
 		"selected_nodes":    selected,
-		"all_nodes":         summarizeAIPNodes(req.Nodes),
+		"all_nodes":         all,
 	})
 	if err != nil {
 		return "", err
@@ -232,18 +227,23 @@ func parseAIPGenerateCompletion(text string, req PipelineAIPGenerateRequest) (Pi
 	if len(result.Nodes) == 0 {
 		return result, errors.New("aip_generation_empty_nodes")
 	}
+	ir := req.inputIR()
 	known := make(map[aipDatasetBinding]bool)
-	for _, node := range req.Nodes {
-		bindings, _ := aipDatasetBindings(node)
+	for _, node := range ir.Nodes {
+		bindings, _ := aipDatasetBindings(node.LegacyNode(), false)
 		for _, binding := range bindings {
 			known[binding] = true
 		}
 	}
+	table := newLightweightTableRuntime()
 	for _, node := range result.Nodes {
 		if strings.TrimSpace(node.TransformType) == "" {
 			return result, errors.New("aip_generation_invalid_node: transform_type is required")
 		}
-		bindings, err := aipDatasetBindings(node)
+		if !table.Supports(node.TransformType) && !isLLMTransform(node.TransformType) {
+			return result, fmt.Errorf("aip_generation_invalid_node: unsupported_transform: local preview does not support transform %q", node.TransformType)
+		}
+		bindings, err := aipDatasetBindings(node, true)
 		if err != nil {
 			return result, fmt.Errorf("aip_generation_invalid_node: %w", err)
 		}
@@ -261,8 +261,10 @@ func parseAIPGenerateCompletion(text string, req PipelineAIPGenerateRequest) (Pi
 	if result.GeneratedNodeID != "" && !generated[result.GeneratedNodeID] {
 		return result, errors.New("aip_generation_invalid_node: preview target must be a generated node")
 	}
-	combined := append(append([]models.PipelineNode(nil), req.Nodes...), result.Nodes...)
-	report := validatePipelineIRStrict(req.PipelineID, models.NewPipelineIRFromNodes(combined))
+	added := models.NewPipelineIRFromNodes(result.Nodes)
+	ir.Nodes = slices.Concat(ir.Nodes, added.Nodes)
+	ir.Edges = slices.Concat(ir.Edges, added.Edges)
+	report := validatePipelineIRStrict(req.PipelineID, ir)
 	for _, failure := range report.Errors {
 		if generated[failure.NodeID] || failure.Code == "cycle_detected" {
 			return result, fmt.Errorf("aip_generation_invalid_node: %s: %s", failure.Code, failure.Message)
@@ -277,7 +279,9 @@ type aipDatasetBinding struct {
 	id   string
 }
 
-func aipDatasetBindings(node models.PipelineNode) ([]aipDatasetBinding, error) {
+// Existing nodes grant only bindings the runtime actually uses. For a proposal
+// also validate explicit metadata, even when runtime precedence would hide it.
+func aipDatasetBindings(node models.PipelineNode, proposal bool) ([]aipDatasetBinding, error) {
 	cfg, err := parseTableRuntimeConfig(node.Config)
 	if err != nil {
 		return nil, err
@@ -285,16 +289,39 @@ func aipDatasetBindings(node models.PipelineNode) ([]aipDatasetBinding, error) {
 	if bytes.Equal(bytes.TrimSpace(node.Config), []byte("null")) {
 		return nil, errors.New("config must be an object")
 	}
-	inputs := append(uuidStrings(node.InputDatasetIDs), cfg.InputDatasetIDs...)
-	outputs := []string{}
-	if node.OutputDatasetID != nil {
-		outputs = append(outputs, node.OutputDatasetID.String())
+	kind := normaliseTableTransform(node.TransformType)
+	reads := kind == "input" || (kind == "passthrough" && len(node.DependsOn) == 0)
+	publishes := node.OutputDatasetID != nil || kind == "output"
+	var inputs, outputs []string
+	if reads && cfg.inlineRows() == nil {
+		ctx := executor.NodeContext{Node: executor.Node{ID: node.ID, Metadata: map[string]any{"input_dataset_ids": uuidStrings(node.InputDatasetIDs)}}}
+		ref, ok, err := datasetInputReferenceFrom(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			inputs = append(inputs, ref.DatasetRID)
+		}
 	}
-	if normaliseTableTransform(node.TransformType) == "output" || node.OutputDatasetID != nil {
+	if proposal {
+		inputs = append(inputs, uuidStrings(node.InputDatasetIDs)...)
+		inputs = append(inputs, cfg.InputDatasetIDs...)
+		if reads || !publishes {
+			inputs = append(inputs, cfg.DatasetRID, cfg.DatasetID)
+		}
+	}
+	if publishes {
 		out := parseOutputDatasetConfig(node.Config)
-		outputs = append(outputs, out.DatasetID, out.DatasetRID, out.OutputDatasetRID)
-	} else {
-		inputs = append(inputs, cfg.DatasetID, cfg.DatasetRID)
+		// An output without an explicit binding receives a server-generated ID.
+		if node.OutputDatasetID != nil || firstNonEmpty(out.DatasetRID, out.OutputDatasetRID, out.DatasetID) != "" {
+			outputs = append(outputs, outputDatasetRIDForPipelineNode(uuid.Nil, node, out))
+		}
+		if proposal {
+			outputs = append(outputs, out.DatasetRID, out.OutputDatasetRID, out.DatasetID)
+			if node.OutputDatasetID != nil {
+				outputs = append(outputs, node.OutputDatasetID.String())
+			}
+		}
 	}
 	var bindings []aipDatasetBinding
 	for _, refs := range []struct {
@@ -385,31 +412,8 @@ func normalizeAIPSelectedNodes(selected []string, nodes []models.PipelineNode) [
 	return []string{nodes[len(nodes)-1].ID}
 }
 
-func selectedAIPNodes(nodes []models.PipelineNode, selected []string) []map[string]any {
-	selection := map[string]struct{}{}
-	for _, id := range selected {
-		selection[id] = struct{}{}
-	}
-	out := []map[string]any{}
-	for _, node := range nodes {
-		if _, ok := selection[node.ID]; !ok {
-			continue
-		}
-		out = append(out, summarizeAIPNode(node))
-	}
-	return out
-}
-
-func summarizeAIPNodes(nodes []models.PipelineNode) []map[string]any {
-	out := make([]map[string]any, 0, len(nodes))
-	for _, node := range nodes {
-		out = append(out, summarizeAIPNode(node))
-	}
-	return out
-}
-
-func summarizeAIPNode(node models.PipelineNode) map[string]any {
-	return map[string]any{
+func summarizeAIPNode(node models.PipelineIRNode) map[string]any {
+	summary := map[string]any{
 		"id":                node.ID,
 		"label":             node.Label,
 		"transform_type":    node.TransformType,
@@ -418,6 +422,13 @@ func summarizeAIPNode(node models.PipelineNode) map[string]any {
 		"input_dataset_ids": node.InputDatasetIDs,
 		"output_dataset_id": node.OutputDatasetID,
 	}
+	if node.OutputSchema != nil {
+		summary["output_schema"] = node.OutputSchema
+	}
+	if node.PreviewSchema != nil {
+		summary["preview_schema"] = node.PreviewSchema
+	}
+	return summary
 }
 
 func lastGeneratedNodeID(nodes []models.PipelineNode) string {
