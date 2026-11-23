@@ -67,7 +67,11 @@ func CreateKafkaTopic(t *testing.T, brokers []string, topic string) {
 func ProduceKafkaMessage(t *testing.T, brokers []string, topic string, value []byte) {
 	t.Helper()
 	w := &kafka.Writer{Addr: kafka.TCP(brokers...), Topic: topic, RequiredAcks: kafka.RequireAll, Balancer: &kafka.LeastBytes{}}
-	defer w.Close()
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close kafka writer: %v", err)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := w.WriteMessages(ctx, kafka.Message{Key: []byte(uuid.NewString()), Value: value}); err != nil {
@@ -101,7 +105,11 @@ func RequireKafkaReplay(t *testing.T, brokers []string, topic, group string, wan
 	t.Helper()
 	RequireKafkaGroupOffset(t, brokers, topic, group, -1)
 	r := kafka.NewReader(kafka.ReaderConfig{Brokers: brokers, GroupID: group, Topic: topic, MinBytes: 1, MaxBytes: 10e6})
-	defer r.Close()
+	defer func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("close kafka replay reader: %v", err)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	msg, err := r.FetchMessage(ctx)
