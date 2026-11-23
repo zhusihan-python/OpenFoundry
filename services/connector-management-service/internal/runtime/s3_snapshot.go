@@ -84,7 +84,7 @@ func FetchS3Snapshot(ctx context.Context, opts S3SnapshotOptions) (*SnapshotResu
 		}
 		return nil, errors.New("S3 GetObject request failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("S3 GetObject returned HTTP %d", resp.StatusCode)
 	}
