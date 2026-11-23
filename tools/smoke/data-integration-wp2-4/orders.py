@@ -36,7 +36,7 @@ def sql(statement, user="root", *, denied=False, sslmode="verify-full"):
         cmd.extend(["-h", "orders-db", "--ssl-mode="+mode, "--ssl-ca=/fixture-tls/server.crt"])
     result = subprocess.run(cmd, input=statement, capture_output=True, text=True, env=env, timeout=40)
     if sslmode == "disable":
-        return result.returncode != 0 and "insecure transport" in result.stderr.lower()
+        return result.returncode != 0 and any(code in result.stderr for code in ("ERROR 3159", "ERROR 1045", "ERROR 2061"))
     if denied:
         return result.returncode != 0 and "denied" in result.stderr.lower()
     if result.returncode:
@@ -45,7 +45,8 @@ def sql(statement, user="root", *, denied=False, sslmode="verify-full"):
 
 
 def verified_tls():
-    return sql("SHOW SESSION STATUS LIKE 'Ssl_cipher'", "orders_reader").startswith("Ssl_cipher\tTLS")
+    return (sql("SELECT @@global.require_secure_transport") == "1" and
+            sql("SHOW SESSION STATUS LIKE 'Ssl_cipher'", "orders_reader").startswith("Ssl_cipher\tTLS"))
 
 
 def replace_orders(records):
