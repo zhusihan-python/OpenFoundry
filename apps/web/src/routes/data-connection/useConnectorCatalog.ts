@@ -21,7 +21,8 @@ export function useSourceCatalogEntry(source: Source | null | undefined) {
     queryFn: () => dataConnection.getSourceCapabilities(source!.id),
     enabled: Boolean(source),
   });
-  const entry = catalog.find((item) => item.type === source?.connector_type);
+  const connectorType = source?.connector_type.trim().toLowerCase().replaceAll('-', '_');
+  const entry = catalog.find((item) => item.type === connectorType);
   if (!entry) return undefined;
   const effective = capabilities.isError ? undefined : capabilities.data?.capabilities;
   return {
