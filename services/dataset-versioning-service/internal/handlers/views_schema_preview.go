@@ -382,18 +382,27 @@ func (h *Handlers) previewData(w http.ResponseWriter, r *http.Request, scopedVie
 }
 
 func (h *Handlers) GetCurrentSchema(w http.ResponseWriter, r *http.Request) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid query encoding")
+		return
+	}
 	datasetID, ok := h.resolveDatasetForCatalog(w, r)
 	if !ok {
 		return
 	}
-	branch := r.URL.Query().Get("branch")
+	if query.Has("version") {
+		h.getHistoricalSchema(w, r, datasetID, query)
+		return
+	}
+	branch := query.Get("branch")
 	if branch == "" {
 		branch = "master"
 	}
 	// Without an explicitly requested branch, Excel-imported datasets derive
 	// their schema from the same real NDJSON bytes as preview and pipelines
 	// (format TEXT). An explicit ?branch= keeps the committed-view semantics.
-	if r.URL.Query().Get("branch") == "" {
+	if query.Get("branch") == "" {
 		if schema, handled, err := h.excelImportedSchema(r.Context(), datasetID); err != nil {
 			writeDatasetRowsError(w, err)
 			return

@@ -146,6 +146,7 @@ func New(cfg *config.Config, jwt *authmw.JWTConfig, h *handlers.Handlers, m *obs
 		api.Post("/datasets/{rid}/transactions:batchGet", h.BatchGetTransactions)
 
 		api.Get("/datasets/{rid}/compare", h.CompareViews)
+		api.Get("/datasets/{rid}/compare/rows", h.CompareDatasetRows)
 
 		api.Get("/datasets/{rid}/views", h.ListViews)
 		api.Post("/datasets/{rid}/views", h.CreateView)

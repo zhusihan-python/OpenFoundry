@@ -94,7 +94,7 @@ enough to catch UX regressions in a 4699-line component.
 `fetch` / `window.fetch` / `globalThis.fetch` (`no-restricted-globals`
 + `no-restricted-properties`) — dataset pages must call `lib/api/datasets`.
 
-Five pre-pilot `exhaustive-deps` findings are pinned in
+Four pre-pilot `exhaustive-deps` findings are pinned in
 `scripts/lint-baseline.json` (debt, not exemptions for new code). Each
 entry is `{ key, count, reason }`; the key is
 `path|ruleId|message|sha256(4-line context around the finding)`, so any

@@ -210,7 +210,7 @@ console.log('PASS part 2: baseline filter stays red on new/changed/duplicate/sta
   assert.doesNotThrow(() => validateBaseline([validEntry]));
   const committed = JSON.parse(readFileSync(new URL('./lint-baseline.json', import.meta.url), 'utf8'));
   assert.doesNotThrow(() => validateBaseline(committed));
-  assert.equal(committed.length, 5);
+  assert.equal(committed.length, 4);
 }
 console.log('PASS part 2b: baseline schema/scope validation rejects 18 malformed shapes');
 
@@ -249,7 +249,7 @@ let fixtureCreated = false;
 try {
   const clean = runCli(join(tmp, 'ignored.json'));
   assert.equal(clean.status, 0, `expected green on clean tree:\n${clean.stdout}\n${clean.stderr}`);
-  assert.match(clean.stdout, /5\/5/);
+  assert.match(clean.stdout, /4\/4/);
   assert.equal(clean.stderr, '');
 
   // A baseline file pointed at by the environment must be ignored entirely:
@@ -259,7 +259,7 @@ try {
   writeFileSync(join(tmp, 'ignored.json'), shrunk);
   const ignoredEnv = runCli(join(tmp, 'ignored.json'));
   assert.equal(ignoredEnv.status, 0, 'the CLI must ignore OPENFOUNDRY_LINT_BASELINE');
-  assert.match(ignoredEnv.stdout, /5\/5/);
+  assert.match(ignoredEnv.stdout, /4\/4/);
 
   writeFileSync(fixtureFile, fixtureCode, { flag: 'wx' });
   fixtureCreated = true;
@@ -278,8 +278,8 @@ const rawResults = structuredClone(await eslint.lintFiles(['.']));
 {
   const { failed, known, total } = await lintOnce({ baseline, results: structuredClone(rawResults) });
   assert.equal(failed, false);
-  assert.equal(known, 5);
-  assert.equal(total, 5);
+  assert.equal(known, 4);
+  assert.equal(total, 4);
 }
 {
   const ghost = JSON.parse(JSON.stringify(baseline));
@@ -297,7 +297,7 @@ const rawResults = structuredClone(await eslint.lintFiles(['.']));
 {
   const removed = await lintOnce({ baseline: baseline.slice(0, -1), results: structuredClone(rawResults) });
   assert.equal(removed.stale, false);
-  assert.equal(removed.known, 4);
+  assert.equal(removed.known, 3);
   assert.equal(removed.failed, true, 'deleting a baseline entry must resurface its finding');
   assert.ok(removed.newErrors.some(e => e.file === `${BASELINE_SCOPE.pathPrefix}DatasetsListPage.tsx`));
 }

@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 ## [Unreleased]
 
 ### Added
+- Dataset branches compare two pinned committed order versions on one page:
+  field-level schema differences and `order_id` row differences with paged
+  change details, exact long-integer keys, and pinned results that survive a
+  newer head.
 - Dataset output nodes support ordered column selection for NDJSON previews
   and publications. Empty results retain their declared columns.
 - Pipeline LLM nodes can use the agent-runtime chat endpoint with a configured

@@ -14,7 +14,7 @@ import {
   getDatasetQuality,
   getDatasetSchema,
   getDatasetTransaction,
-  getVersions,
+  committedDatasetSnapshots, getVersions,
   listDatasetFilesystem,
   listDatasetTransactions,
   previewDataset,
@@ -613,7 +613,7 @@ function useDatasetPreview(id: string, tab: Tab, selectedTransactionId: string |
     enabled: Boolean(id && missingTransactionId) && tab === 'preview' && transactionsQuery.isSuccess,
   });
   const olderTransaction = selectedTransactionQuery.data;
-  const history = previewHistory(olderTransaction ? [...transactions, olderTransaction] : transactions, versions);
+  const history = committedDatasetSnapshots(olderTransaction ? [...transactions, olderTransaction] : transactions, versions);
   const selectedSnapshot = history.find((snapshot) => snapshot.id === selectedTransactionId);
   const historyLoading = transactionsQuery.isLoading || versionsQuery.isLoading || selectedTransactionQuery.isLoading;
   const historyError = transactionsQuery.error ?? versionsQuery.error ?? selectedTransactionQuery.error;
@@ -645,23 +645,6 @@ function useDatasetPreview(id: string, tab: Tab, selectedTransactionId: string |
     preview, previewQuery, history, selectedSnapshot, historyLoading, historyError,
     transactions, transactionsQuery, versions, versionsQuery, previewCursor,
   };
-}
-
-function previewHistory(transactions: DatasetTransaction[], versions: DatasetVersion[]) {
-  const versionsByTransaction = new Map<string, number>();
-  for (const version of versions) {
-    if (version.transaction_id && !versionsByTransaction.has(version.transaction_id)) {
-      versionsByTransaction.set(version.transaction_id, version.version);
-    }
-  }
-  const history = new Map<string, { id: string; branch: string; version: number }>();
-  for (const transaction of transactions) {
-    const version = versionsByTransaction.get(transaction.id);
-    if (transaction.status === 'COMMITTED' && transaction.operation === 'SNAPSHOT' && transaction.branch_name && version !== undefined) {
-      history.set(transaction.id, { id: transaction.id, branch: transaction.branch_name, version });
-    }
-  }
-  return Array.from(history.values());
 }
 
 function PreviewMessages({ preview }: { preview: DatasetPreviewResponse }) {
