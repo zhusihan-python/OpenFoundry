@@ -194,7 +194,7 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 		}
 		// Pinned snapshots are indivisible. Bound the model calls independently
 		// of the dataset read, even for a one-row preview.
-		sampleNode := sampleInputs && !completeRows[node.ID] && !(completeRows != nil && PayloadDeclaresDatasetSnapshot(node.Config))
+		sampleNode := sampleInputs && !completeRows[node.ID] && (completeRows == nil || !PayloadDeclaresDatasetSnapshot(node.Config))
 		runtime.datasetRowsPreview = sampleNode
 		if sampleNode {
 			metadata["logic_payload"] = previewConfigWithSampleSize(node.Config, sampleSize)
