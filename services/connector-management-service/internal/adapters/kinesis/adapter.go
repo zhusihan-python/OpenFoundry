@@ -30,11 +30,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/adapters/sigv4"
 	"io"
 	"net/http"
 	"strings"
@@ -46,6 +44,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/adapters"
+	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/adapters/sigv4"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/models"
 )
 

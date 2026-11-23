@@ -17,6 +17,12 @@ func TestS3SnapshotSource(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, cfg)
 
+	for _, shape := range []string{`[]`, `{"sync":"legacy"}`, `{"sync":{"legacy_extension":"v1"}}`} {
+		cfg, err = ParseS3SnapshotSource(json.RawMessage(shape))
+		require.NoError(t, err)
+		require.Nil(t, cfg)
+	}
+
 	for _, raw := range []string{
 		`{"bucket":"orders","sync":{"object_key":""}}`,
 		`{"bucket":"orders","sync":{"object_key":"../private.ndjson"}}`,

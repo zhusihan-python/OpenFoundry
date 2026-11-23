@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useConnectorCatalog } from './useConnectorCatalog';
+import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import { CredentialsPanel, type CredentialPanelField } from '@/lib/components/data-connection/CredentialsPanel';
 import { TestConnectionPanel } from '@/lib/components/data-connection/TestConnectionPanel';
 import {
   CONNECTOR_FAMILY_ORDER,
-  FALLBACK_CONNECTOR_CATALOG,
   capabilityLabel,
   dataConnection,
   filterCatalog,
@@ -429,7 +429,7 @@ function requiredConfigMissing(template: ConnectorWizardTemplate, values: Record
 }
 
 export function NewSourcePage() {
-  const [catalog, setCatalog] = useState<ConnectorCatalogEntry[]>(FALLBACK_CONNECTOR_CATALOG);
+  const catalog = useConnectorCatalog();
   const [query, setQuery] = useState('');
   const [familyFilter, setFamilyFilter] = useState<ConnectorFamily | 'All'>('All');
   const [step, setStep] = useState<Step>('connector');
@@ -446,13 +446,6 @@ export function NewSourcePage() {
   const [discovered, setDiscovered] = useState<DiscoveredSource[]>([]);
   const [selectedSelectors, setSelectedSelectors] = useState<Record<string, boolean>>({});
   const navigate = useNavigate();
-
-  useEffect(() => {
-    dataConnection
-      .getCatalog()
-      .then((res) => setCatalog(res.connectors.length > 0 ? res.connectors : FALLBACK_CONNECTOR_CATALOG))
-      .catch(() => setCatalog(FALLBACK_CONNECTOR_CATALOG));
-  }, []);
 
   const filtered = useMemo(
     () => filterCatalog(catalog, query).filter((entry) => familyFilter === 'All' || catalogFamily(entry) === familyFilter),

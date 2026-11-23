@@ -357,6 +357,8 @@ func TestFromEnvCredentialKeyGate(t *testing.T) {
 
 func TestS3SyncEndpoint(t *testing.T) {
 	setBaseEnv(t)
+	t.Setenv("ALLOWED_EGRESS_HOSTS", "store")
+	t.Setenv("ALLOW_PRIVATE_NETWORK_EGRESS", "true")
 	t.Setenv("S3_SYNC_ENDPOINT", "http://store:9000")
 	t.Setenv("S3_SYNC_REGION", "eu-west-1")
 	cfg, err := config.FromEnv()

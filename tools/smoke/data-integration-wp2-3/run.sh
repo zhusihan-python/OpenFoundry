@@ -4,6 +4,11 @@ set -euo pipefail
 umask 077
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(git -C "$here" rev-parse --show-toplevel)
+revision=$(git -C "$root" rev-parse HEAD)
+if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
+  echo "Run acceptance from a clean checkout of the candidate commit." >&2
+  exit 1
+fi
 state=$(mktemp -d "${TMPDIR:-/tmp}/wp23-orders.XXXXXXXX")
 export WP23_DVS_PORT
 WP23_DVS_PORT=${WP23_DVS_PORT:-$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}
@@ -47,3 +52,5 @@ for url in "$WP23_DVS/healthz" "$WP23_PBS/healthz" "$WP23_CONNECTOR/healthz" "$W
   curl -fsS --retry 30 --retry-all-errors --retry-delay 1 --max-time 3 "$url" >/dev/null
 done
 python3 -I "$here/orders.py" "$state"
+test "$(git -C "$root" rev-parse HEAD)" = "$revision"
+test -z "$(git -C "$root" status --porcelain)"

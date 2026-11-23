@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -36,23 +35,33 @@ const (
 	maxS3ObjectRows  = 10000
 )
 
-// FetchS3Snapshot obtains exactly one signed object. No platform bearer, S3
-// credential provider chain or upstream error body crosses this boundary.
-func FetchS3Snapshot(ctx context.Context, opts S3SnapshotOptions) (*SnapshotResult, error) {
-	target, err := url.Parse(opts.Endpoint)
-	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Hostname() == "" || target.User != nil || target.RawQuery != "" || target.ForceQuery || target.Fragment != "" || strings.Trim(target.Path, "/") != "" {
+// S3Endpoint validates the operator-configured origin and egress policy before
+// the gallery advertises native reads and before each request is signed.
+func S3Endpoint(endpoint string, allowedHosts []string, allowPrivate bool) (*url.URL, error) {
+	target, err := url.Parse(endpoint)
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Hostname() == "" || target.User != nil || target.RawQuery != "" || target.ForceQuery || target.Fragment != "" || (target.Path != "" && target.Path != "/") {
 		return nil, errors.New("invalid S3 endpoint origin")
 	}
-	if opts.Bucket == "" || opts.ObjectKey == "" || opts.Region == "" || opts.AccessKeyID == "" || opts.SecretAccessKey == "" {
-		return nil, errors.New("missing S3 object location or signing credentials")
-	}
-	policy := http_runtime.EgressPolicy{AllowedHosts: opts.AllowedEgressHosts, AllowPrivateNetworks: opts.AllowPrivateNetworks,
-		AllowInsecureHTTP: opts.AllowPrivateNetworks && len(opts.AllowedEgressHosts) > 0}
+	policy := http_runtime.EgressPolicy{AllowedHosts: allowedHosts, AllowPrivateNetworks: allowPrivate,
+		AllowInsecureHTTP: allowPrivate && len(allowedHosts) > 0}
 	if target.Scheme == "http" && !policy.AllowInsecureHTTP {
 		return nil, errors.New("plain HTTP for S3 requires explicit private egress and an allowed host")
 	}
 	if err := http_runtime.ValidateURL(target, &policy); err != nil {
 		return nil, err
+	}
+	return target, nil
+}
+
+// FetchS3Snapshot obtains exactly one signed object. No platform bearer, S3
+// credential provider chain or upstream error body crosses this boundary.
+func FetchS3Snapshot(ctx context.Context, opts S3SnapshotOptions) (*SnapshotResult, error) {
+	target, err := S3Endpoint(opts.Endpoint, opts.AllowedEgressHosts, opts.AllowPrivateNetworks)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Bucket == "" || opts.ObjectKey == "" || opts.Region == "" || opts.AccessKeyID == "" || opts.SecretAccessKey == "" {
+		return nil, errors.New("missing S3 object location or signing credentials")
 	}
 	target.Path = "/" + opts.Bucket + "/" + opts.ObjectKey
 	target.RawPath = ""

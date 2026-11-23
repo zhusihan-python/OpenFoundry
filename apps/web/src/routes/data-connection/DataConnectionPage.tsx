@@ -1,8 +1,8 @@
+import { useSourceCatalogEntry } from './useConnectorCatalog';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 
 import {
-  FALLBACK_CONNECTOR_CATALOG,
   capabilityLabel,
   dataConnection,
   type Source,
@@ -139,9 +139,7 @@ export function DataConnectionPage() {
     () => sources.find((source) => source.id === selectedSourceId) ?? null,
     [selectedSourceId, sources],
   );
-  const selectedCatalogEntry = selectedSource
-    ? FALLBACK_CONNECTOR_CATALOG.find((entry) => entry.type === selectedSource.connector_type)
-    : undefined;
+  const selectedCatalogEntry = useSourceCatalogEntry(selectedSource);
   const selectedProvider = selectedSource ? providerForConnector(selectedSource.connector_type) : null;
   const selectedVirtualLink = selectedSource && selectedProvider
     ? autoRegistrationLinks[selectedSource.id] ?? emptyVirtualLink(selectedSource.id, selectedProvider)

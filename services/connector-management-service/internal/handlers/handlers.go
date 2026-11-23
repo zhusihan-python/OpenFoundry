@@ -349,17 +349,7 @@ func (h *Handlers) connectionEffectiveCapabilities(connection models.Connection,
 	if requiresAgent {
 		warnings = append(warnings, "private network egress is disabled; route through a connector agent or allow egress for this source")
 	}
-	nativeSnapshot := false
-	switch strings.ToLower(strings.ReplaceAll(connection.ConnectorType, "-", "_")) {
-	case "rest_api":
-		source, err := models.ParseRESTAPISourceConfig(connection.Config)
-		nativeSnapshot = err == nil && source.Sync != nil
-	case "s3":
-		source, err := models.ParseS3SnapshotSource(connection.Config)
-		nativeSnapshot = err == nil && source != nil && h.Config.S3SyncEndpoint != ""
-	}
-	return models.ConnectionEffectiveCapabilities{
-		NativeSnapshotSync:          nativeSnapshot,
+	effective := models.ConnectionEffectiveCapabilities{
 		ConnectionID:                connection.ID,
 		ConnectorType:               connection.ConnectorType,
 		Status:                      connection.Status,
@@ -380,6 +370,27 @@ func (h *Handlers) connectionEffectiveCapabilities(connection models.Connection,
 		PolicyWarnings:              warnings,
 		FoundryCompute:              models.FoundryCompute{PythonSingleNode: true, PythonSpark: true, PipelineBuilderSingleNode: true, PipelineBuilderSpark: true},
 	}
+	switch strings.ToLower(strings.ReplaceAll(connection.ConnectorType, "-", "_")) {
+	case "rest_api":
+		source, err := models.ParseRESTAPISourceConfig(connection.Config)
+		effective.NativeSnapshotSync = err == nil && source.Sync != nil
+	case "s3":
+		source, err := models.ParseS3SnapshotSource(connection.Config)
+		if err == nil && source != nil {
+			effective.NativeSnapshotSync = h.Config.S3SyncEndpoint != ""
+			effective.Modes = []string{}
+			if effective.NativeSnapshotSync {
+				effective.Modes = []string{"batch"}
+			}
+			effective.SupportsIncremental = false
+			effective.SupportsCDC = false
+			effective.SupportsZeroCopy = false
+			effective.SupportsConnectionTesting = effective.NativeSnapshotSync
+			effective.SupportsDiscovery = false
+			effective.SupportsSchemaIntrospection = false
+		}
+	}
+	return effective
 }
 
 var validCredentialKinds = map[string]bool{

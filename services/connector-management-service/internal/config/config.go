@@ -7,13 +7,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/handlers"
+	cmruntime "github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/runtime"
 )
 
 const (
@@ -114,14 +114,14 @@ func FromEnv() (*Config, error) {
 		return nil, err
 	}
 	cfg.S3SyncEndpoint = strings.TrimSpace(os.Getenv("S3_SYNC_ENDPOINT"))
-	if cfg.S3SyncEndpoint != "" {
-		endpoint, err := url.Parse(cfg.S3SyncEndpoint)
-		if err != nil || (endpoint.Scheme != "https" && endpoint.Scheme != "http") || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/") {
-			return nil, errors.New("S3_SYNC_ENDPOINT must be an HTTP(S) origin without credentials, path, query or fragment")
-		}
-	}
 	cfg.S3SyncRegion = defaultStr(os.Getenv("S3_SYNC_REGION"), "us-east-1")
 	cfg.AllowedEgressHosts = parseList(os.Getenv("ALLOWED_EGRESS_HOSTS"))
+	if cfg.S3SyncEndpoint != "" {
+		if _, err := cmruntime.S3Endpoint(cfg.S3SyncEndpoint, cfg.AllowedEgressHosts, cfg.AllowPrivateNetworkEgress); err != nil {
+			return nil, fmt.Errorf("S3_SYNC_ENDPOINT: %w", err)
+		}
+	}
+
 	cfg.AgentStaleAfterSecs, err = parseUint64("AGENT_STALE_AFTER_SECS", os.Getenv("AGENT_STALE_AFTER_SECS"), DefaultAgentStaleAfterSecs)
 	if err != nil {
 		return nil, err

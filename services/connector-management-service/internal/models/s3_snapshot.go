@@ -26,7 +26,7 @@ func ParseS3SnapshotSource(raw json.RawMessage) (*S3SnapshotSource, error) {
 	}
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &root); err != nil {
-		return nil, errors.New("invalid S3 source configuration")
+		return nil, nil // legacy catalog passthrough
 	}
 	if _, err := ParseSyncAdmissionPolicy(raw); err != nil {
 		return nil, err
@@ -34,10 +34,10 @@ func ParseS3SnapshotSource(raw json.RawMessage) (*S3SnapshotSource, error) {
 	var sync map[string]json.RawMessage
 	if block, ok := root["sync"]; ok {
 		if err := json.Unmarshal(block, &sync); err != nil {
-			return nil, errors.New("S3 sync must be an object")
+			return nil, nil // older adapters may own this field
 		}
 	}
-	if len(sync) == 0 || (len(sync) == 1 && sync["admission"] != nil) {
+	if _, selected := sync["object_key"]; !selected {
 		return nil, nil
 	}
 	for field := range sync {

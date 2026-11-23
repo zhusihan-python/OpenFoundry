@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 ## [Unreleased]
 
 ### Added
+
+- Data Connection can sync a bounded NDJSON object from S3 into a versioned dataset, with source-scoped AWS credentials and fixed-version pipeline readback.
 - Dataset branches compare two pinned committed order versions on one page:
   field-level schema differences and `order_id` row differences with paged
   change details, exact long-integer keys, and pinned results that survive a
