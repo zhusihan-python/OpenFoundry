@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 
-import type { DatasetBranch, DatasetTransaction } from '@/lib/api/datasets';
+import type { DatasetBranch, DatasetSnapshot } from '@/lib/api/datasets';
 
 export interface SchemaField {
   name: string;
@@ -9,9 +9,8 @@ export interface SchemaField {
 }
 
 export interface CompareSide {
-  label: string;
   schema: SchemaField[];
-  files: CompareFile[];
+  files?: CompareFile[];
 }
 
 export interface CompareFile {
@@ -22,10 +21,12 @@ export interface CompareFile {
 export type CompareSelector = { kind: 'transaction' | 'branch'; value: string };
 
 interface CompareTabProps {
-  transactions: DatasetTransaction[];
+  snapshots: DatasetSnapshot[];
   branches: DatasetBranch[];
   sideA: CompareSide | null;
   sideB: CompareSide | null;
+  sideAError?: string;
+  sideBError?: string;
   selectorA: CompareSelector;
   selectorB: CompareSelector;
   loading?: boolean;
@@ -46,6 +47,16 @@ function diffSchemas(a: SchemaField[], b: SchemaField[]) {
   }
   for (const [name, before] of aMap) if (!bMap.has(name)) removed.push(before);
   return { added, removed, modified };
+}
+
+function schemaChange(before: SchemaField, after: SchemaField) {
+  const changes = [];
+  if (before.type !== after.type) changes.push(`${before.type ?? '—'} → ${after.type ?? '—'}`);
+  if (before.nullable !== after.nullable) {
+    const nullability = (field: SchemaField) => field.nullable === undefined ? 'unknown' : field.nullable ? 'nullable' : 'required';
+    changes.push(`${nullability(before)} → ${nullability(after)}`);
+  }
+  return changes.join(' · ');
 }
 
 function diffFiles(a: CompareFile[], b: CompareFile[]) {
@@ -70,16 +81,20 @@ const TONE = {
 } as const;
 
 export function CompareTab({
-  transactions,
+  snapshots,
   branches,
   sideA,
   sideB,
+  sideAError,
+  sideBError,
   selectorA,
   selectorB,
   loading = false,
   error = '',
   onChangeSelector,
 }: CompareTabProps) {
+  const pickerId = useId();
+  const comparable = selectorA.kind === selectorB.kind;
   const schemaDiff = useMemo(() => diffSchemas(sideA?.schema ?? [], sideB?.schema ?? []), [sideA, sideB]);
   const fileDiff = useMemo(() => diffFiles(sideA?.files ?? [], sideB?.files ?? []), [sideA, sideB]);
 
@@ -88,16 +103,15 @@ export function CompareTab({
     for (const b of branches) {
       out.push({ value: `branch:${b.name}`, label: `Branch ${b.name}`, selector: { kind: 'branch', value: b.name } });
     }
-    for (const tx of transactions.slice(0, 50)) {
+    for (const snapshot of snapshots) {
       out.push({
-        value: `transaction:${tx.id}`,
-        label: `${tx.operation} ${tx.id.slice(0, 8)} · ${new Date(tx.created_at).toLocaleDateString()}`,
-        selector: { kind: 'transaction', value: tx.id },
+        value: `transaction:${snapshot.id}`,
+        label: `v${snapshot.version} · ${snapshot.branch} · ${snapshot.id.slice(0, 8)}`,
+        selector: { kind: 'transaction', value: snapshot.id },
       });
     }
     return out;
-  }, [branches, transactions]);
-  const hasTransactions = transactions.length > 0;
+  }, [branches, snapshots]);
 
   function selectorValue(s: CompareSelector) {
     return `${s.kind}:${s.value}`;
@@ -112,20 +126,23 @@ export function CompareTab({
     <section style={{ display: 'grid', gap: 16 }}>
       <header>
         <div className="of-text-muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.22em' }}>Compare</div>
-        <h2 style={{ margin: '4px 0 0', fontSize: 18, fontWeight: 600 }}>Schema and file diff</h2>
+        <h2 style={{ margin: '4px 0 0', fontSize: 18, fontWeight: 600 }}>Compare schemas</h2>
         <p className="of-text-muted" style={{ margin: '4px 0 0', fontSize: 13 }}>
-          Pick two branches{hasTransactions ? ' or transactions' : ''} to compare.
+          Pick two branches or two committed versions to compare.
         </p>
       </header>
 
       <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
         {([
-          { key: 'A' as const, selector: selectorA, side: sideA },
-          { key: 'B' as const, selector: selectorB, side: sideB },
+          { key: 'A' as const, selector: selectorA, side: sideA, error: sideAError },
+          { key: 'B' as const, selector: selectorB, side: sideB, error: sideBError },
         ]).map((picker) => (
           <div key={picker.key} className="of-panel" style={{ padding: 12 }}>
-            <label style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Side {picker.key}</label>
+            <label htmlFor={`${pickerId}-${picker.key}`} style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              Side {picker.key}
+            </label>
             <select
+              id={`${pickerId}-${picker.key}`}
               value={selectorValue(picker.selector)}
               onChange={(e) => onPickerChange(picker.key, e.target.value)}
               className="of-input"
@@ -133,9 +150,16 @@ export function CompareTab({
             >
               {options.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
             </select>
-            {picker.side && (
+            {picker.error && (
+              <div role="alert" className="of-status-danger" style={{ marginTop: 8, padding: 8, fontSize: 12 }}>
+                <strong>Side {picker.key} unavailable</strong>
+                <div>{picker.error}</div>
+              </div>
+            )}
+            {!picker.error && picker.side && (
               <div className="of-text-muted" style={{ marginTop: 4, fontSize: 11 }}>
-                {picker.side.schema.length} field{picker.side.schema.length === 1 ? '' : 's'} · {picker.side.files.length} file{picker.side.files.length === 1 ? '' : 's'}
+                {picker.side.schema.length} field{picker.side.schema.length === 1 ? '' : 's'}
+                {picker.side.files && ` · ${picker.side.files.length} file${picker.side.files.length === 1 ? '' : 's'}`}
               </div>
             )}
           </div>
@@ -145,32 +169,36 @@ export function CompareTab({
       {error && <div className="of-status-danger" style={{ padding: '10px 14px', borderRadius: 12, fontSize: 13 }}>{error}</div>}
       {loading && <div className="of-panel" style={{ padding: 24, textAlign: 'center', fontSize: 13 }}>Loading comparison…</div>}
 
-      {!loading && sideA && sideB && (
+      {comparable && !loading && !sideAError && !sideBError && sideA && sideB && (
         <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
           <DiffPanel title="Schema diff">
             {schemaDiff.added.map((f) => (<DiffRow key={`a-${f.name}`} tone="add" sign="+" label={f.name} hint={f.type} />))}
             {schemaDiff.removed.map((f) => (<DiffRow key={`r-${f.name}`} tone="remove" sign="−" label={f.name} hint={f.type} />))}
-            {schemaDiff.modified.map((m) => (<DiffRow key={`m-${m.name}`} tone="mod" sign="~" label={m.name} hint={`${m.before.type ?? '—'} → ${m.after.type ?? '—'}`} />))}
+            {schemaDiff.modified.map(({ name, before, after }) => (
+              <DiffRow key={`m-${name}`} tone="mod" sign="~" label={name} hint={schemaChange(before, after)} />
+            ))}
             {schemaDiff.added.length + schemaDiff.removed.length + schemaDiff.modified.length === 0 && (
               <li className="of-text-muted" style={{ fontSize: 11 }}>No schema changes.</li>
             )}
           </DiffPanel>
-          <DiffPanel title="Files diff">
-            {fileDiff.added.map((f) => (<DiffRow key={`a-${f.path}`} tone="add" sign="+" label={f.path} />))}
-            {fileDiff.removed.map((f) => (<DiffRow key={`r-${f.path}`} tone="remove" sign="−" label={f.path} />))}
-            {fileDiff.modified.map((m) => (
-              <DiffRow
-                key={`m-${m.path}`}
-                tone="mod"
-                sign="~"
-                label={m.path}
-                hint={`${(m.before.size_bytes ?? 0).toLocaleString()} → ${(m.after.size_bytes ?? 0).toLocaleString()} B`}
-              />
-            ))}
-            {fileDiff.added.length + fileDiff.removed.length + fileDiff.modified.length === 0 && (
-              <li className="of-text-muted" style={{ fontSize: 11 }}>No file changes.</li>
-            )}
-          </DiffPanel>
+          {sideA.files && sideB.files && (
+            <DiffPanel title="Files diff">
+              {fileDiff.added.map((f) => (<DiffRow key={`a-${f.path}`} tone="add" sign="+" label={f.path} />))}
+              {fileDiff.removed.map((f) => (<DiffRow key={`r-${f.path}`} tone="remove" sign="−" label={f.path} />))}
+              {fileDiff.modified.map((m) => (
+                <DiffRow
+                  key={`m-${m.path}`}
+                  tone="mod"
+                  sign="~"
+                  label={m.path}
+                  hint={`${(m.before.size_bytes ?? 0).toLocaleString()} → ${(m.after.size_bytes ?? 0).toLocaleString()} B`}
+                />
+              ))}
+              {fileDiff.added.length + fileDiff.removed.length + fileDiff.modified.length === 0 && (
+                <li className="of-text-muted" style={{ fontSize: 11 }}>No file changes.</li>
+              )}
+            </DiffPanel>
+          )}
         </div>
       )}
     </section>

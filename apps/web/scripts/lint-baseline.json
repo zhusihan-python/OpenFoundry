@@ -5,11 +5,6 @@
     "reason": "Existing dataset hook dependency debt at 8d854343; fix with behavior-specific regression coverage."
   },
   {
-    "key": "src/routes/datasets/DatasetBranchDetailPage.tsx|react-hooks/exhaustive-deps|React Hook useEffect has a missing dependency: 'loadCompare'. Either include it or remove the dependency array.|530d92b423a177c3db9cf04e075f34104cba10b532282c1a902a5ae4e0e9ae0a",
-    "count": 1,
-    "reason": "Existing dataset hook dependency debt at 8d854343; fix with behavior-specific regression coverage."
-  },
-  {
     "key": "src/routes/datasets/DatasetBranchesPage.tsx|react-hooks/exhaustive-deps|React Hook useEffect has a missing dependency: 'load'. Either include it or remove the dependency array.|b639c5c84edfc8304490688871171015568739072e2ef4f04a0ec95a801174b2",
     "count": 1,
     "reason": "Existing dataset hook dependency debt at 8d854343; fix with behavior-specific regression coverage."

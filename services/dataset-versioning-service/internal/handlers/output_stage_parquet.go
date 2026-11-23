@@ -93,9 +93,9 @@ func inspectStagedParquet(ctx context.Context, src io.ReaderAt, size, maxRecords
 
 // Arrow's file reader allocates the declared footer size, and its generated
 // metadata decoder allocates each compact-Thrift list before reading the
-// elements. Bound both at the source. The returned metadata describes the
-// verified chunk ranges and the number of bytes read for the header/footer.
-func readStagedParquetMetadata(ctx context.Context, src io.ReaderAt, size, maxRecords int64) (*metadata.FileMetaData, int64, error) {
+// elements. Bound both before exposing any metadata, without invoking the
+// generic Arrow schema converter. The offset marks the start of the footer.
+func readBoundedParquetFooter(ctx context.Context, src io.ReaderAt, size int64) (*metadata.FileMetaData, int64, error) {
 	const headerBytes = int64(len(stagedParquetMagic))
 	if size <= headerBytes+stagedParquetTrailerBytes {
 		return nil, 0, errors.New("missing Parquet header or footer")
@@ -132,7 +132,21 @@ func readStagedParquetMetadata(ctx context.Context, src io.ReaderAt, size, maxRe
 	if err := footer.Read(ctx, decoder); err != nil {
 		return nil, 0, err
 	}
-	if transport.Len() != 0 || footer.Version != 2 || footer.IsSetEncryptionAlgorithm() || footer.IsSetFooterSigningKeyMetadata() {
+	if transport.Len() != 0 || footer.IsSetEncryptionAlgorithm() || footer.IsSetFooterSigningKeyMetadata() {
+		return nil, 0, errors.New("invalid or encrypted Parquet metadata")
+	}
+	return &arrowMeta, footerOffset, nil
+}
+
+// The sealed orders.v1 profile additionally validates every chunk range.
+// The byte count is used to enforce the row scanner's work budget.
+func readStagedParquetMetadata(ctx context.Context, src io.ReaderAt, size, maxRecords int64) (*metadata.FileMetaData, int64, error) {
+	meta, footerOffset, err := readBoundedParquetFooter(ctx, src, size)
+	if err != nil {
+		return nil, 0, err
+	}
+	footer := meta.FileMetaData
+	if footer.Version != 2 {
 		return nil, 0, errors.New("invalid or encrypted Parquet metadata")
 	}
 	if footer.NumRows < 0 {
@@ -141,10 +155,11 @@ func readStagedParquetMetadata(ctx context.Context, src io.ReaderAt, size, maxRe
 	if footer.NumRows > maxRecords {
 		return nil, 0, fmt.Errorf("%w: %d", errStagedRecordCountLimit, maxRecords)
 	}
-	if !validStagedOrdersSchema(&arrowMeta) {
+	if !validStagedOrdersSchema(meta) {
 		return nil, 0, errors.New("expected Parquet schema " + stagedParquetSchemaVersion)
 	}
 
+	const headerBytes = int64(len(stagedParquetMagic))
 	var records int64
 	nextOffset := headerBytes
 	for i, group := range footer.RowGroups {
@@ -192,7 +207,7 @@ func readStagedParquetMetadata(ctx context.Context, src io.ReaderAt, size, maxRe
 	if records != footer.NumRows || nextOffset != footerOffset {
 		return nil, 0, errors.New("inconsistent Parquet row groups and file size")
 	}
-	return &arrowMeta, size - footerOffset + headerBytes, nil
+	return meta, size - footerOffset + headerBytes, nil
 }
 
 // The generated Thrift type is exposed as a field of Arrow FileMetaData.

@@ -153,6 +153,59 @@ transactions do not participate. An unreadable selected version returns an
 error from the pinned reader. Preview supports the same formats and limits
 as other version-pinned reads.
 
+## Compare historical schemas
+
+On the branch's **Compare** tab, select a committed snapshot for each side.
+The comparison lists fields that were added, removed, or changed. A snapshot
+selection stays tied to its transaction when the branch receives a newer commit.
+The page identifies an unavailable snapshot beside its selector.
+
+```http
+GET /v1/datasets/{rid}/schema?branch=staging&version=2
+```
+
+The versioned schema request requires dataset read access and resolves a committed
+snapshot on the named active branch. The response includes `dataset_id`,
+`branch`, `version`, `transaction_id`, and `fields` with name, type, and
+nullability. The service reads bounded file footers for snapshots of up to 16
+locally backed Parquet files with the same supported flat schema. An unreadable
+footer or incompatible file set makes that side unavailable. Comparisons of two
+branch heads also include the existing file comparison.
+
+## Match rows by key
+
+Select two committed snapshots on the **Compare** tab, enter a **Key column**,
+then choose **Compare rows**. The key must have a value in every row and be
+unique within each snapshot. A key that appears on both sides matches even
+when the rows occur in different files or positions. The result counts added,
+removed, modified, and unchanged rows and shows before and after values for
+changes. Historical results stay tied to the selected transactions as the head
+advances.
+
+```http
+GET /v1/datasets/{rid}/compare/rows?base_branch=main&base_version=1&base_transaction={base_uuid}&target_branch=main&target_version=2&target_transaction={target_uuid}&key=order_id
+```
+
+The comparison supports locally backed `orders.v1` Parquet snapshots. It
+checks both branches, versions, and transaction IDs with dataset read access.
+Every response counts all rows after both scans reach the end. Details are
+ordered by key text. Duplicate keys, null keys, unsupported inputs, and scans
+that exceed the configured budget return an error.
+
+Use **Previous page** and **Next page** on the Compare tab to see the full set
+of changes. The API opts into paging with `limit` from 1 to 100. For each next
+request, pass the response's `next_cursor` along with the same dataset, ordered
+snapshot pins, key column, and limit. Each page also carries the full counts.
+Paged requests support up to 8,192 rows, 8 MiB of normalized rows, and 32 scan
+pages per snapshot. The detail budget is 1 MiB per response, so a page may
+have fewer changes than requested. An individual change that exceeds that
+budget returns an error. The service reads both pinned snapshots for each page.
+
+The original seven-parameter request provides a comparison preview for up to
+1,024 rows, 2 MiB of normalized rows, and 16 scan pages per snapshot. It
+returns up to 100 change details within 1 MiB. `changes_truncated` indicates
+that further changes exist in the preview result.
+
 ## Authorization
 
 All four mutating endpoints (`create_branch`, `delete_branch`, `:reparent`, `PUT /fallbacks`) require `dataset.write`. Read endpoints (`GET .../branches`, `GET .../branches/{branch}`) are open to any authenticated caller.

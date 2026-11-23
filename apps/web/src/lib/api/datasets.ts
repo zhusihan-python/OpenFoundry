@@ -67,6 +67,41 @@ export interface DatasetVersion {
   created_at: string;
 }
 
+export interface DatasetSnapshot {
+  id: string;
+  branch: string;
+  version: number;
+}
+
+interface DatasetSnapshotBinding {
+  branch: string;
+  version: number;
+  transaction_id: string;
+}
+
+export interface DatasetSnapshotSchema extends DatasetSnapshotBinding {
+  dataset_id: string;
+  fields: Array<{ name: string; field_type: string; nullable: boolean }>;
+}
+
+export type DatasetComparedRow = Record<string, string | null>;
+
+export interface DatasetRowComparison {
+  dataset_id: string;
+  key: string;
+  base: DatasetSnapshotBinding;
+  target: DatasetSnapshotBinding;
+  counts: Record<'added' | 'removed' | 'modified' | 'unchanged', number>;
+  changes: Array<{
+    key: string;
+    kind: 'added' | 'removed' | 'modified';
+    before?: DatasetComparedRow;
+    after?: DatasetComparedRow;
+  }>;
+  changes_truncated: boolean;
+  next_cursor?: string;
+}
+
 export interface DatasetPreviewResponse {
   dataset_id: string;
   version?: number;
@@ -690,6 +725,57 @@ export function getDatasetSchemaForBranch(datasetId: string, branch: string) {
   );
 }
 
+function matchesSnapshot(binding: DatasetSnapshotBinding, snapshot: DatasetSnapshot) {
+  return binding?.branch === snapshot.branch
+    && binding.version === snapshot.version
+    && binding.transaction_id === snapshot.id;
+}
+
+function datasetUuid(datasetId: string) {
+  return datasetId.toLowerCase().replace(/^ri\.foundry\.main\.dataset\./, '');
+}
+
+export async function getDatasetSnapshotSchema(datasetId: string, snapshot: DatasetSnapshot) {
+  const query = new URLSearchParams({ branch: snapshot.branch, version: String(snapshot.version) });
+  const schema = await api.get<DatasetSnapshotSchema>(`/datasets/${encodeURIComponent(datasetId)}/schema?${query}`);
+  if (schema.dataset_id !== datasetUuid(datasetId) || !matchesSnapshot(schema, snapshot)) {
+    throw new Error('Schema did not match the selected version.');
+  }
+  return schema;
+}
+
+export async function compareDatasetSnapshotRows(
+  datasetId: string,
+  base: DatasetSnapshot,
+  target: DatasetSnapshot,
+  key: string,
+  pagination?: { limit: number; cursor?: string },
+) {
+  const query = new URLSearchParams({
+    base_branch: base.branch,
+    base_version: String(base.version),
+    base_transaction: base.id,
+    target_branch: target.branch,
+    target_version: String(target.version),
+    target_transaction: target.id,
+    key,
+  });
+  if (pagination) {
+    query.set('limit', String(pagination.limit));
+    if (pagination.cursor !== undefined) query.set('cursor', pagination.cursor);
+  }
+  const comparison = await api.get<DatasetRowComparison>(`/datasets/${encodeURIComponent(datasetId)}/compare/rows?${query}`);
+  if (
+    comparison.dataset_id !== datasetUuid(datasetId)
+    || comparison.key !== key
+    || !matchesSnapshot(comparison.base, base)
+    || !matchesSnapshot(comparison.target, target)
+  ) {
+    throw new Error('Row comparison did not match the selected versions and key.');
+  }
+  return comparison;
+}
+
 export function getViewSchema(datasetId: string, viewId: string) {
   return api.get<DatasetSchemaResponse>(
     `/datasets/${datasetId}/views/${viewId}/schema`,
@@ -891,6 +977,23 @@ function normalizeDatasetTransaction(transaction: DatasetTransaction | RuntimeDa
     return { ...transaction, operation: transaction.tx_type, created_at: transaction.started_at };
   }
   return transaction;
+}
+
+export function committedDatasetSnapshots(transactions: DatasetTransaction[], versions: DatasetVersion[]) {
+  const versionsByTransaction = new Map<string, number>();
+  for (const version of versions) {
+    if (version.transaction_id && !versionsByTransaction.has(version.transaction_id)) {
+      versionsByTransaction.set(version.transaction_id, version.version);
+    }
+  }
+  const history = new Map<string, DatasetSnapshot>();
+  for (const transaction of transactions) {
+    const version = versionsByTransaction.get(transaction.id);
+    if (transaction.status === 'COMMITTED' && transaction.operation === 'SNAPSHOT' && transaction.branch_name && version !== undefined) {
+      history.set(transaction.id, { id: transaction.id, branch: transaction.branch_name, version });
+    }
+  }
+  return Array.from(history.values());
 }
 
 export function getVersions(datasetId: string) {

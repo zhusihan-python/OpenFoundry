@@ -1,14 +1,19 @@
+import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { CompareTab, type CompareFile, type CompareSelector, type CompareSide, type SchemaField } from '@/lib/components/dataset/CompareTab';
 import { DeleteBranchDialog } from '@/lib/components/dataset/DeleteBranchDialog';
+import { SnapshotRowComparison } from '@/lib/components/dataset/SnapshotRowComparison';
 import { Tabs } from '@/lib/components/Tabs';
 import {
+  committedDatasetSnapshots,
   compareBranches,
   getBranchMarkings,
   getDataset,
   getDatasetSchemaForBranch,
+  getDatasetSnapshotSchema,
+  getVersions,
   listBranches,
   listDatasetFiles,
   listDatasetTransactions,
@@ -21,11 +26,14 @@ import {
   type DatasetFilesResponse,
   type DatasetSchema,
   type DatasetSchemaResponse,
+  type DatasetSnapshot,
   type DatasetTransaction,
 } from '@/lib/api/datasets';
 
 type Tab = 'overview' | 'compare' | 'history' | 'retention' | 'security';
 type Policy = 'INHERITED' | 'FOREVER' | 'TTL_DAYS';
+
+const EMPTY_TRANSACTIONS: DatasetTransaction[] = [];
 
 const EMPTY_MARKINGS: BranchMarkingsView = {
   effective: [],
@@ -98,13 +106,41 @@ function defaultSelectors(branches: DatasetBranch[], currentName: string, curren
   };
 }
 
+function snapshotForSelector(selector: CompareSelector, snapshots: DatasetSnapshot[]) {
+  return selector.kind === 'transaction'
+    ? snapshots.find((candidate) => candidate.id === selector.value)
+    : undefined;
+}
+
+function useCompareSide(datasetId: string, selector: CompareSelector, snapshot: DatasetSnapshot | undefined, enabled: boolean) {
+  return useQuery<CompareSide>({
+    queryKey: ['dataset-compare-side', datasetId, selector.kind, selector.value, snapshot?.branch, snapshot?.version],
+    enabled: enabled && Boolean(selector.value),
+    staleTime: 0,
+    retry: false,
+    queryFn: async () => {
+      if (selector.kind === 'transaction') {
+        if (!snapshot) throw new Error('The selected transaction has no committed snapshot version.');
+        const schema = await getDatasetSnapshotSchema(datasetId, snapshot);
+        return {
+          schema: schema.fields.map((field) => ({ name: field.name, type: field.field_type, nullable: field.nullable })),
+        };
+      }
+      const [schema, files] = await Promise.all([
+        getDatasetSchemaForBranch(datasetId, selector.value),
+        listDatasetFiles(datasetId, { branch: selector.value }),
+      ]);
+      return { schema: schemaFields(schema), files: compareFiles(files) };
+    },
+  });
+}
+
 export function DatasetBranchDetailPage() {
   const { id = '', branch: branchName = '' } = useParams<{ id: string; branch: string }>();
   const navigate = useNavigate();
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [branches, setBranches] = useState<DatasetBranch[]>([]);
   const [branch, setBranch] = useState<DatasetBranch | null>(null);
-  const [transactions, setTransactions] = useState<DatasetTransaction[]>([]);
   const [markings, setMarkings] = useState<BranchMarkingsView>(EMPTY_MARKINGS);
   const [tab, setTab] = useState<Tab>('overview');
   const [policy, setPolicy] = useState<Policy>('INHERITED');
@@ -116,11 +152,38 @@ export function DatasetBranchDetailPage() {
 
   const [selectorA, setSelectorA] = useState<CompareSelector>({ kind: 'branch', value: '' });
   const [selectorB, setSelectorB] = useState<CompareSelector>({ kind: 'branch', value: '' });
-  const [sideA, setSideA] = useState<CompareSide | null>(null);
-  const [sideB, setSideB] = useState<CompareSide | null>(null);
-  const [branchCompare, setBranchCompare] = useState<BranchCompareResponse | null>(null);
-  const [compareLoading, setCompareLoading] = useState(false);
-  const [compareError, setCompareError] = useState('');
+  const transactionsQuery = useQuery({
+    queryKey: ['dataset-transactions', id],
+    queryFn: () => listDatasetTransactions(id),
+    enabled: Boolean(id),
+  });
+  const transactions = transactionsQuery.data ?? EMPTY_TRANSACTIONS;
+  const datasetMatchesRoute = dataset?.id === id || dataset?.rid === id;
+  const canCompare = datasetMatchesRoute && branch?.name === branchName && !loading && tab === 'compare';
+  const versionsQuery = useQuery({
+    queryKey: ['dataset-versions', id],
+    queryFn: () => getVersions(id),
+    enabled: canCompare,
+  });
+  const historyError = transactionsQuery.error ?? versionsQuery.error;
+  const snapshots = useMemo(
+    () => committedDatasetSnapshots(transactions, versionsQuery.data ?? []),
+    [transactions, versionsQuery.data],
+  );
+  const snapshotA = snapshotForSelector(selectorA, snapshots);
+  const snapshotB = snapshotForSelector(selectorB, snapshots);
+  const sideA = useCompareSide(id, selectorA, snapshotA, canCompare);
+  const sideB = useCompareSide(id, selectorB, snapshotB, canCompare);
+  const sidesLoading = sideA.isFetching || sideB.isFetching;
+  const twoBranches = selectorA.kind === 'branch' && selectorB.kind === 'branch';
+  const branchCompare = useQuery({
+    queryKey: ['dataset-branch-comparison', id, selectorA.value, selectorB.value],
+    queryFn: () => compareBranches(id, selectorA.value, selectorB.value),
+    enabled: canCompare && twoBranches && sideA.isSuccess && sideB.isSuccess && !sidesLoading
+      && selectorA.value !== selectorB.value,
+    staleTime: 0,
+    retry: false,
+  });
 
   const branchTransactions = useMemo(() => {
     return transactions.filter((tx) => {
@@ -134,24 +197,19 @@ export function DatasetBranchDetailPage() {
     setLoading(true);
     setError('');
     try {
-      const [nextDataset, nextBranches, nextTransactions] = await Promise.all([
+      const [nextDataset, nextBranches] = await Promise.all([
         getDataset(id),
         listBranches(id),
-        listDatasetTransactions(id).catch(() => [] as DatasetTransaction[]),
       ]);
       const found = nextBranches.find((candidate) => candidate.name === branchName) ?? null;
       const selectors = defaultSelectors(nextBranches, branchName, found);
       setDataset(nextDataset);
       setBranches(nextBranches);
-      setTransactions(nextTransactions);
       setBranch(found);
       setPolicy(found?.retention_policy ?? 'INHERITED');
       setTtlDays(found?.retention_ttl_days ?? null);
       setSelectorA(selectors.A);
       setSelectorB(selectors.B);
-      setSideA(null);
-      setSideB(null);
-      setBranchCompare(null);
       if (!found) {
         setError(`Branch "${branchName}" was not found.`);
         setMarkings(EMPTY_MARKINGS);
@@ -173,54 +231,9 @@ export function DatasetBranchDetailPage() {
     void load();
   }, [id, branchName]);
 
-  async function loadCompareSide(selector: CompareSelector): Promise<CompareSide> {
-    const sideBranch = selector.value || branchName;
-    const [schema, files] = await Promise.all([
-      getDatasetSchemaForBranch(id, sideBranch),
-      listDatasetFiles(id, { branch: sideBranch }),
-    ]);
-    return {
-      label: sideBranch,
-      schema: schemaFields(schema),
-      files: compareFiles(files),
-    };
-  }
-
-  async function loadCompare() {
-    if (!id || !selectorA.value || !selectorB.value) return;
-    setCompareLoading(true);
-    setCompareError('');
-    setBranchCompare(null);
-    try {
-      const [nextA, nextB] = await Promise.all([
-        loadCompareSide(selectorA),
-        loadCompareSide(selectorB),
-      ]);
-      setSideA(nextA);
-      setSideB(nextB);
-      if (selectorA.kind === 'branch' && selectorB.kind === 'branch' && selectorA.value !== selectorB.value) {
-        setBranchCompare(await compareBranches(id, selectorA.value, selectorB.value));
-      }
-    } catch (cause) {
-      setCompareError(cause instanceof Error ? cause.message : 'Failed to load comparison');
-      setSideA(null);
-      setSideB(null);
-    } finally {
-      setCompareLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    if (tab === 'compare') void loadCompare();
-  }, [tab, selectorA.kind, selectorA.value, selectorB.kind, selectorB.value, id]);
-
   function changeSelector(which: 'A' | 'B', selector: CompareSelector) {
     if (which === 'A') setSelectorA(selector);
     else setSelectorB(selector);
-    setSideA(null);
-    setSideB(null);
-    setBranchCompare(null);
-    setCompareError('');
   }
 
   async function saveRetention() {
@@ -357,17 +370,31 @@ export function DatasetBranchDetailPage() {
           {tab === 'compare' && (
             <section style={{ display: 'grid', gap: 12 }}>
               <CompareTab
-                transactions={[]}
+                snapshots={snapshots}
                 branches={branches}
-                sideA={sideA}
-                sideB={sideB}
+                sideA={sideA.data ?? null}
+                sideB={sideB.data ?? null}
+                sideAError={sideA.error?.message}
+                sideBError={sideB.error?.message}
                 selectorA={selectorA}
                 selectorB={selectorB}
-                loading={compareLoading}
-                error={compareError}
+                loading={sidesLoading}
+                error={historyError
+                  ? `Committed versions unavailable. ${historyError.message}`
+                  : branchCompare.error?.message}
                 onChangeSelector={changeSelector}
               />
-              <BranchCompareSummary comparison={branchCompare} />
+              {canCompare && snapshotA && snapshotB && (
+                <SnapshotRowComparison
+                  key={JSON.stringify([id, snapshotA, snapshotB])}
+                  datasetId={id}
+                  base={snapshotA}
+                  target={snapshotB}
+                />
+              )}
+              {twoBranches && !sidesLoading && !branchCompare.isFetching && branchCompare.isSuccess && (
+                <BranchCompareSummary comparison={branchCompare.data} />
+              )}
             </section>
           )}
 
@@ -389,7 +416,9 @@ export function DatasetBranchDetailPage() {
                     </tr>
                   ))}
                   {branchTransactions.length === 0 && (
-                    <tr><td colSpan={6} className="of-text-muted">No transactions on this branch.</td></tr>
+                    <tr><td colSpan={6} className="of-text-muted">
+                      {transactionsQuery.isLoading ? 'Loading transactions…' : 'No transactions on this branch.'}
+                    </td></tr>
                   )}
                 </tbody>
               </table>
