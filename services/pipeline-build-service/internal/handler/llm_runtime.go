@@ -32,11 +32,12 @@ type LLMTransformRunner interface {
 }
 
 type AIServiceLLMConfig struct {
-	AgentRuntime bool
-	BaseURL      string
-	BearerToken  string
-	Client       *http.Client
-	Timeout      time.Duration
+	AgentRuntime         bool
+	PurposeJustification string
+	BaseURL              string
+	BearerToken          string
+	Client               *http.Client
+	Timeout              time.Duration
 }
 
 type AIServiceLLMRunner struct {
@@ -235,11 +236,12 @@ func (r *AIServiceLLMRunner) complete(ctx context.Context, body aiChatCompletion
 		}
 		messages = append(messages, message{Role: "user", Content: body.UserMessage})
 		requestBody = struct {
-			Model       string    `json:"model,omitempty"`
-			Messages    []message `json:"messages"`
-			MaxTokens   int       `json:"max_tokens,omitempty"`
-			Temperature *float32  `json:"temperature,omitempty"`
-		}{body.Model, messages, body.MaxTokens, body.Temperature}
+			Model                string    `json:"model,omitempty"`
+			Messages             []message `json:"messages"`
+			MaxTokens            int       `json:"max_tokens,omitempty"`
+			Temperature          *float32  `json:"temperature,omitempty"`
+			PurposeJustification string    `json:"purpose_justification,omitempty"`
+		}{Model: body.Model, Messages: messages, MaxTokens: body.MaxTokens, Temperature: body.Temperature, PurposeJustification: r.cfg.PurposeJustification}
 	}
 	payload, err := json.Marshal(requestBody)
 	if err != nil {

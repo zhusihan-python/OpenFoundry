@@ -147,7 +147,7 @@ func main() {
 			Timeout:      time.Duration(cfg.DistributedComputeTimeoutSecs) * time.Second,
 		})
 		aiClient := &http.Client{Timeout: 45 * time.Second}
-		aiConfig := handler.AIServiceLLMConfig{AgentRuntime: cfg.PipelineLLMProtocol == "agent-runtime", BaseURL: cfg.AIServiceURL, BearerToken: cfg.AIServiceBearer, Client: aiClient}
+		aiConfig := handler.AIServiceLLMConfig{PurposeJustification: cfg.PipelineLLMPurposeJustification, AgentRuntime: cfg.PipelineLLMProtocol == "agent-runtime", BaseURL: cfg.AIServiceURL, BearerToken: cfg.AIServiceBearer, Client: aiClient}
 		llmRunner := handler.NewAIServiceLLMRunner(aiConfig)
 		aipGenerator := handler.NewAIServicePipelineAIPGenerator(aiConfig)
 		// Uses its own redirect-refusing client: the rows endpoint must be

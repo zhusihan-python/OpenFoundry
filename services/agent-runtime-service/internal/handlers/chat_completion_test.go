@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -79,11 +80,21 @@ func TestCreateChatCompletionInjectedProviderDoesNotUseFake(t *testing.T) {
 		MaxOutputTokens: 256,
 		RouteRules:      aimodels.DefaultProviderRoutingRules(),
 	}
-	h := &Handlers{Runtime: runtime, Provider: provider}
+	actor := uuid.New()
+	checkpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var decision authmw.PurposeCheckpointRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&decision))
+		require.Equal(t, &actor, decision.ActorID)
+		require.False(t, decision.RequestedPrivateNetwork)
+		require.NotContains(t, string(decision.Evidence), "hello")
+		_ = json.NewEncoder(w).Encode(authmw.PurposeCheckpointEvaluation{RecordID: uuid.New(), Approved: true, Status: "approved"})
+	}))
+	defer checkpoint.Close()
+	h := &Handlers{Runtime: runtime, Provider: provider, PurposeCheckpoint: authmw.NewPurposeCheckpointClient(checkpoint.URL)}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
 	w := httptest.NewRecorder()
 
-	h.CreateChatCompletion(w, req)
+	h.CreateChatCompletion(w, req.WithContext(authmw.ContextWithClaims(req.Context(), &authmw.Claims{Sub: actor})))
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, runtime.Calls, 1)
@@ -186,7 +197,7 @@ func TestAskCopilotPassesRequestContextToRuntime(t *testing.T) {
 	assert.Contains(t, prompt, "Dataset IDs: [11111111-1111-1111-1111-111111111111]")
 	assert.Contains(t, prompt, "Ontology type IDs: [22222222-2222-2222-2222-222222222222]")
 	assert.Contains(t, prompt, "Knowledge base IDs: [33333333-3333-3333-3333-333333333333]")
-	assert.Contains(t, prompt, "Purpose justification: incident response")
+	assert.NotContains(t, prompt, "incident response")
 	assert.Contains(t, prompt, "Map the response to ontology type 22222222222222222222222222222222")
 }
 
@@ -268,7 +279,7 @@ func TestCreateChatCompletionPurposeCheckpointAllow(t *testing.T) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, authmw.PurposeCheckpointEnforcePath, r.URL.Path)
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
-		_ = json.NewEncoder(w).Encode(authmw.PurposeCheckpointEvaluation{Approved: true, Status: "approved"})
+		_ = json.NewEncoder(w).Encode(authmw.PurposeCheckpointEvaluation{RecordID: uuid.New(), Approved: true, Status: "approved"})
 	}))
 	defer checkpoint.Close()
 
@@ -277,7 +288,7 @@ func TestCreateChatCompletionPurposeCheckpointAllow(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}],"require_private_network":true,"purpose_justification":"incident response"}`))
 	w := httptest.NewRecorder()
 
-	h.CreateChatCompletion(w, req)
+	h.CreateChatCompletion(w, req.WithContext(authmw.ContextWithClaims(req.Context(), &authmw.Claims{Sub: uuid.New()})))
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, runtime.Calls, 1)
@@ -286,7 +297,7 @@ func TestCreateChatCompletionPurposeCheckpointAllow(t *testing.T) {
 	assert.Equal(t, "incident response", *got.PurposeJustification)
 	assert.True(t, got.RequestedPrivateNetwork)
 	assert.Contains(t, got.Tags, "private-network")
-	assert.JSONEq(t, `{"network_scope":"public","provider_name":"agent-runtime-fake","service":"agent-runtime-service"}`, string(got.Evidence))
+	assert.JSONEq(t, `{"network_scope":"public","provider_name":"agent-runtime-fake","service":"agent-runtime-service","operation":"chat/completions"}`, string(got.Evidence))
 }
 
 func TestCreateChatCompletionPurposeCheckpointDeny(t *testing.T) {
@@ -301,7 +312,7 @@ func TestCreateChatCompletionPurposeCheckpointDeny(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}],"require_private_network":true}`))
 	w := httptest.NewRecorder()
 
-	h.CreateChatCompletion(w, req)
+	h.CreateChatCompletion(w, req.WithContext(authmw.ContextWithClaims(req.Context(), &authmw.Claims{Sub: uuid.New()})))
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), "purpose justification is required")
@@ -320,9 +331,9 @@ func TestCreateChatCompletionPurposeCheckpointServiceError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}],"require_private_network":true,"purpose_justification":"incident response"}`))
 	w := httptest.NewRecorder()
 
-	h.CreateChatCompletion(w, req)
+	h.CreateChatCompletion(w, req.WithContext(authmw.ContextWithClaims(req.Context(), &authmw.Claims{Sub: uuid.New()})))
 
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Contains(t, w.Body.String(), "checkpoint unavailable")
 	assert.Empty(t, runtime.Calls)
 }
@@ -337,4 +348,45 @@ func TestConfiguredProviderRejectsMismatchingModel(t *testing.T) {
 	h.CreateChatCompletion(w, req)
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	require.Empty(t, runtime.Calls)
+}
+
+func TestConfiguredProviderRequiresPurposeForChatAndCopilot(t *testing.T) {
+	for _, tc := range []struct {
+		operation string
+		body      string
+		call      func(*Handlers, http.ResponseWriter, *http.Request)
+	}{
+		{"chat/completions", `{"messages":[{"role":"user","content":"sample input"}]}`, (*Handlers).CreateChatCompletion},
+		{"copilot/ask", `{"question":"sample input"}`, (*Handlers).AskCopilot},
+	} {
+		t.Run(tc.operation, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			actor := uuid.New()
+			ctx := authmw.ContextWithClaims(req.Context(), &authmw.Claims{Sub: actor})
+			runtime := &llm.FakeRuntime{}
+			h := &Handlers{Provider: &aimodels.LlmProvider{Name: "test"}, Runtime: runtime, AllowFakeLLMProvider: true}
+			call := func(status int) {
+				t.Helper()
+				w := httptest.NewRecorder()
+				tc.call(h, w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body)).WithContext(ctx))
+				require.Equal(t, status, w.Code)
+				require.Empty(t, runtime.Calls)
+			}
+			call(http.StatusServiceUnavailable)
+			checkpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var input authmw.PurposeCheckpointRequest
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
+				require.Equal(t, &actor, input.ActorID)
+				var evidence map[string]string
+				require.NoError(t, json.Unmarshal(input.Evidence, &evidence))
+				require.Equal(t, tc.operation, evidence["operation"])
+				require.NotContains(t, string(input.Evidence), "sample input")
+				_ = json.NewEncoder(w).Encode(authmw.PurposeCheckpointEvaluation{RecordID: uuid.New(), Status: "pending_justification"})
+			}))
+			h.PurposeCheckpoint = authmw.NewPurposeCheckpointClient(checkpoint.URL)
+			call(http.StatusForbidden)
+			checkpoint.Close()
+			call(http.StatusServiceUnavailable)
+		})
+	}
 }

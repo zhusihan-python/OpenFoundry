@@ -55,6 +55,8 @@ unsupported IR versions.
 
 LLM node previews honor `max_rows`. A build processes the complete input up to 50 rows per node. Larger inputs fail before the first model request. Empty inputs retain their columns and produce zero rows. An independent prompt with no upstream node generates one row. The `boolean` and `double` output types write typed cells. The `json` output type writes validated JSON text to a string column that can feed a JSON extraction step.
 
+AIP generation proposes new nodes for a draft or saved graph. The model connects transforms to existing graph node IDs through `depends_on`. Any explicit dataset ID must already be present in the graph in the same input or output role. PBS validates the proposal and returns a preview or a runtime preview diagnostic. The author chooses whether to apply the nodes.
+
 Use `openfoundry-go/docs/migration/route-parity-audit.md` as the generated
 source of truth for route-shape parity. Productive handlers either execute real
 repository/runtime work or return a machine-readable configuration error that
@@ -104,6 +106,7 @@ go test ./services/pipeline-build-service/...
 | `AI_SERVICE_URL` | `http://localhost:50127` |
 | `PIPELINE_LLM_PROTOCOL` | `ai-service` by default. Set to `agent-runtime` for LLM nodes and AIP-assisted generation calling the authenticated chat route of the Go agent-runtime-service at `AI_SERVICE_URL`. |
 | `AI_SERVICE_BEARER` | unset; forwarded as `Authorization: Bearer` for LLM nodes and AIP-assisted generation when configured |
+| `PIPELINE_LLM_PURPOSE_JUSTIFICATION` | Explicit business purpose for calls made by this deployment’s PBS service identity to agent-runtime, including generation and LLM rows. Set a purpose appropriate for the workload. The seeded policy requires at least 20 characters and an eligible provider route. Empty by default. |
 | `STORAGE_BACKEND` | `local` |
 | `STORAGE_BUCKET` | unset |
 | `S3_*` | unset |

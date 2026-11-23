@@ -13,10 +13,10 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	aimodels "github.com/openfoundry/openfoundry-go/libs/ai-kernel-go/models"
-	"strconv"
 )
 
 type Config struct {
@@ -25,12 +25,13 @@ type Config struct {
 		Host string
 		Port uint16
 	}
-	DatabaseURL          string
-	JWTSecret            string
-	KafkaBootstrap       string
-	PurposeCheckpointURL string
-	AllowFakeLLMProvider bool
-	ChatProvider         *aimodels.LlmProvider
+	DatabaseURL             string
+	JWTSecret               string
+	KafkaBootstrap          string
+	PurposeCheckpointURL    string
+	PurposeCheckpointBearer string
+	AllowFakeLLMProvider    bool
+	ChatProvider            *aimodels.LlmProvider
 }
 
 func FromEnv() (*Config, error) {
@@ -46,6 +47,12 @@ func FromEnv() (*Config, error) {
 		os.Getenv("AUTHORIZATION_POLICY_SERVICE_URL"),
 		os.Getenv("PURPOSE_CHECKPOINT_URL"),
 	)
+	if cfg.PurposeCheckpointURL != "" {
+		if err := validateBaseURL("purpose checkpoint", cfg.PurposeCheckpointURL); err != nil {
+			return nil, err
+		}
+	}
+	cfg.PurposeCheckpointBearer = strings.TrimSpace(os.Getenv("PURPOSE_CHECKPOINT_BEARER"))
 	cfg.AllowFakeLLMProvider = parseBool(os.Getenv("ALLOW_FAKE_LLM_PROVIDER"), false)
 	if cfg.DatabaseURL == "" {
 		return nil, &MissingEnvError{Key: "DATABASE_URL"}
@@ -63,18 +70,40 @@ func FromEnv() (*Config, error) {
 		if endpoint == "" {
 			return nil, &MissingEnvError{Key: "LLM_PROVIDER_BASE_URL"}
 		}
-		u, err := url.Parse(endpoint)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return nil, errors.New("LLM_PROVIDER_BASE_URL requires an absolute HTTP(S) base URL without credentials, query or fragment")
+		if err := validateBaseURL("LLM_PROVIDER_BASE_URL", endpoint); err != nil {
+			return nil, err
+		}
+		if cfg.PurposeCheckpointURL == "" {
+			return nil, &MissingEnvError{Key: "AUTHORIZATION_POLICY_SERVICE_URL"}
+		}
+		if cfg.PurposeCheckpointBearer == "" {
+			return nil, &MissingEnvError{Key: "PURPOSE_CHECKPOINT_BEARER"}
+		}
+		rules := aimodels.DefaultProviderRoutingRules()
+		if scope := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_PROVIDER_NETWORK_SCOPE"))); scope != "" {
+			switch scope {
+			case "public", "private", "hybrid", "local":
+				rules.NetworkScope = scope
+			default:
+				return nil, errors.New("unsupported LLM_PROVIDER_NETWORK_SCOPE")
+			}
 		}
 		tokenEnv := "LLM_PROVIDER_TOKEN"
 		cfg.ChatProvider = &aimodels.LlmProvider{
 			Name: "OpenAI-compatible inference", ModelName: model, ProviderType: "openai_compatible",
 			EndpointURL: endpoint, APIMode: "chat_completions", Enabled: true,
-			CredentialReference: &tokenEnv, RouteRules: aimodels.DefaultProviderRoutingRules(),
+			CredentialReference: &tokenEnv, RouteRules: rules,
 		}
 	}
 	return cfg, nil
+}
+
+func validateBaseURL(setting, value string) error {
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s requires an absolute HTTP(S) base URL without credentials, query or fragment", setting)
+	}
+	return nil
 }
 
 type MissingEnvError struct{ Key string }

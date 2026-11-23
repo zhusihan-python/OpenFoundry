@@ -128,6 +128,13 @@ services:
         memory: 1Gi
 
   agent-runtime-service:
+    env:
+      AUTHORIZATION_POLICY_SERVICE_URL: http://authorization-policy-service:8080
+    envSecrets:
+      PURPOSE_CHECKPOINT_BEARER:
+        secretName: agent-runtime-purpose-checkpoint
+        key: bearer
+        optional: true
     replicas: 3
     ports:
       - name: http

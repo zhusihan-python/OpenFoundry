@@ -85,7 +85,7 @@ func (g *AIServicePipelineAIPGenerator) GeneratePipelineTransform(ctx context.Co
 	if err != nil {
 		return PipelineAIPGenerateResult{}, err
 	}
-	result, err := parseAIPGenerateCompletion(completion.Text)
+	result, err := parseAIPGenerateCompletion(completion.Text, req)
 	if err != nil {
 		return PipelineAIPGenerateResult{}, err
 	}
@@ -94,7 +94,12 @@ func (g *AIServicePipelineAIPGenerator) GeneratePipelineTransform(ctx context.Co
 	return result, nil
 }
 
-const pipelineAIPSystemPrompt = "You generate OpenFoundry Pipeline Builder graph nodes. Return only JSON with description and nodes. Nodes must use normal PipelineNode fields: id, label, transform_type, config, depends_on, input_dataset_ids, output_dataset_id. Prefer supported transform_type values filter, select, sql, llm, output_dataset."
+const pipelineAIPSystemPrompt = `You author transforms for OpenFoundry Pipeline Builder. Respond with exactly one JSON object of this shape:
+{"description":"<short description>","nodes":[{"id":"<new unique node name>","label":"<label>","transform_type":"<transform type>","depends_on":["<upstream graph node ID>"],"config":{}}]}
+Replace placeholders and fill config to implement the user request. The root must contain the literal key "nodes" with at least one new node.
+Wire the first transform to the selected node IDs and later transforms to the appropriate upstream nodes. Return only the new nodes.
+Omit input_dataset_ids, output_dataset_id and dataset references in config for ordinary transforms. Link upstream nodes using depends_on. Only reuse an explicit dataset binding from the graph in the same input or output role. Never use a graph node ID as a dataset UUID.
+Use the actual input columns and values from the request. Use filter with config.predicate as a single Boolean expression string; use select with config.columns as a list of column names; use llm with config.prompt and config.output_column. Structured sql and output_dataset are also supported. Return the description and nodes together in the JSON object.`
 
 func PipelineAIPGenerate(w http.ResponseWriter, r *http.Request) {
 	pipelineAIPGenerate(w, r, uuid.Nil)
@@ -151,7 +156,8 @@ func pipelineAIPGenerate(w http.ResponseWriter, r *http.Request, pipelineID uuid
 	}
 	previewID := firstNonEmpty(result.GeneratedNodeID, lastGeneratedNodeID(generated))
 	if previewID != "" {
-		preview, previewErr := executeLocalPipelinePreviewWithPorts(r.Context(), firstNonNilUUID(pipelineID), previewID, append(append([]models.PipelineNode(nil), nodes...), generated...), clampPipelinePreviewSampleSize(firstPositiveInt(req.SampleSize, defaultPipelinePreviewSampleSize)), ports)
+		previewCtx := contextWithCallerBearer(r.Context(), callerBearerFromRequest(r))
+		preview, previewErr := executeLocalPipelinePreviewWithPorts(previewCtx, firstNonNilUUID(pipelineID), previewID, append(append([]models.PipelineNode(nil), nodes...), generated...), clampPipelinePreviewSampleSize(firstPositiveInt(req.SampleSize, defaultPipelinePreviewSampleSize)), ports)
 		if previewErr == nil {
 			response.Preview = &preview
 		} else {
@@ -211,19 +217,104 @@ func buildAIPGeneratePrompt(req PipelineAIPGenerateRequest) (string, error) {
 	return "User prompt:\n" + strings.TrimSpace(req.Prompt) + "\n\nPipeline context JSON:\n" + string(contextJSON) + "\n\nReturn JSON only.", nil
 }
 
-func parseAIPGenerateCompletion(text string) (PipelineAIPGenerateResult, error) {
-	payload := extractJSONObject(text)
+func parseAIPGenerateCompletion(text string, req PipelineAIPGenerateRequest) (PipelineAIPGenerateResult, error) {
+	payload := extractAIPJSON(text)
 	var result PipelineAIPGenerateResult
-	if err := json.Unmarshal([]byte(payload), &result); err != nil {
+	var target any = &result
+	// Some instruction models return the requested nodes as a bare array.
+	// Decode both representations into the same proposal before validation.
+	if strings.HasPrefix(payload, "[") {
+		target = &result.Nodes
+	}
+	if err := json.Unmarshal([]byte(payload), target); err != nil {
 		return result, fmt.Errorf("aip_generation_invalid_json: %w", err)
 	}
 	if len(result.Nodes) == 0 {
 		return result, errors.New("aip_generation_empty_nodes")
 	}
+	known := make(map[aipDatasetBinding]bool)
+	for _, node := range req.Nodes {
+		bindings, _ := aipDatasetBindings(node)
+		for _, binding := range bindings {
+			known[binding] = true
+		}
+	}
+	for _, node := range result.Nodes {
+		if strings.TrimSpace(node.TransformType) == "" {
+			return result, errors.New("aip_generation_invalid_node: transform_type is required")
+		}
+		bindings, err := aipDatasetBindings(node)
+		if err != nil {
+			return result, fmt.Errorf("aip_generation_invalid_node: %w", err)
+		}
+		for _, binding := range bindings {
+			if !known[binding] {
+				return result, fmt.Errorf("aip_generation_invalid_binding: unknown %s dataset %q; use depends_on for graph node IDs", binding.role, binding.id)
+			}
+		}
+	}
+	result.Nodes = normalizeGeneratedPipelineNodes(result.Nodes, req.SelectedNodeIDs)
+	generated := make(map[string]bool, len(result.Nodes))
+	for _, node := range result.Nodes {
+		generated[node.ID] = true
+	}
+	if result.GeneratedNodeID != "" && !generated[result.GeneratedNodeID] {
+		return result, errors.New("aip_generation_invalid_node: preview target must be a generated node")
+	}
+	combined := append(append([]models.PipelineNode(nil), req.Nodes...), result.Nodes...)
+	report := validatePipelineIRStrict(req.PipelineID, models.NewPipelineIRFromNodes(combined))
+	for _, failure := range report.Errors {
+		if generated[failure.NodeID] || failure.Code == "cycle_detected" {
+			return result, fmt.Errorf("aip_generation_invalid_node: %s: %s", failure.Code, failure.Message)
+		}
+	}
 	return result, nil
 }
 
-func extractJSONObject(text string) string {
+// A read binding on an existing node does not authorize a generated write.
+type aipDatasetBinding struct {
+	role string
+	id   string
+}
+
+func aipDatasetBindings(node models.PipelineNode) ([]aipDatasetBinding, error) {
+	cfg, err := parseTableRuntimeConfig(node.Config)
+	if err != nil {
+		return nil, err
+	}
+	if bytes.Equal(bytes.TrimSpace(node.Config), []byte("null")) {
+		return nil, errors.New("config must be an object")
+	}
+	inputs := append(uuidStrings(node.InputDatasetIDs), cfg.InputDatasetIDs...)
+	outputs := []string{}
+	if node.OutputDatasetID != nil {
+		outputs = append(outputs, node.OutputDatasetID.String())
+	}
+	if normaliseTableTransform(node.TransformType) == "output" || node.OutputDatasetID != nil {
+		out := parseOutputDatasetConfig(node.Config)
+		outputs = append(outputs, out.DatasetID, out.DatasetRID, out.OutputDatasetRID)
+	} else {
+		inputs = append(inputs, cfg.DatasetID, cfg.DatasetRID)
+	}
+	var bindings []aipDatasetBinding
+	for _, refs := range []struct {
+		role string
+		ids  []string
+	}{{"input", inputs}, {"output", outputs}} {
+		for _, raw := range refs.ids {
+			id, err := canonicalDatasetRIDForComparison(raw)
+			if err != nil {
+				return nil, err
+			}
+			if id != "" {
+				bindings = append(bindings, aipDatasetBinding{refs.role, id})
+			}
+		}
+	}
+	return bindings, nil
+}
+
+func extractAIPJSON(text string) string {
 	trimmed := strings.TrimSpace(text)
 	if strings.HasPrefix(trimmed, "```") {
 		trimmed = strings.TrimPrefix(trimmed, "```json")
@@ -231,7 +322,7 @@ func extractJSONObject(text string) string {
 		trimmed = strings.TrimSuffix(trimmed, "```")
 		trimmed = strings.TrimSpace(trimmed)
 	}
-	if strings.HasPrefix(trimmed, "{") {
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 		return trimmed
 	}
 	re := regexp.MustCompile(`(?s)\{.*\}`)
@@ -245,7 +336,8 @@ func normalizeGeneratedPipelineNodes(nodes []models.PipelineNode, selected []str
 	out := make([]models.PipelineNode, 0, len(nodes))
 	previousID := ""
 	for i, node := range nodes {
-		if strings.TrimSpace(node.ID) == "" {
+		node.ID = strings.TrimSpace(node.ID)
+		if node.ID == "" {
 			node.ID = uuid.NewString()
 		}
 		if strings.TrimSpace(node.Label) == "" {
@@ -318,11 +410,13 @@ func summarizeAIPNodes(nodes []models.PipelineNode) []map[string]any {
 
 func summarizeAIPNode(node models.PipelineNode) map[string]any {
 	return map[string]any{
-		"id":             node.ID,
-		"label":          node.Label,
-		"transform_type": node.TransformType,
-		"depends_on":     node.DependsOn,
-		"config":         json.RawMessage(node.Config),
+		"id":                node.ID,
+		"label":             node.Label,
+		"transform_type":    node.TransformType,
+		"depends_on":        node.DependsOn,
+		"config":            node.Config,
+		"input_dataset_ids": node.InputDatasetIDs,
+		"output_dataset_id": node.OutputDatasetID,
 	}
 }
 

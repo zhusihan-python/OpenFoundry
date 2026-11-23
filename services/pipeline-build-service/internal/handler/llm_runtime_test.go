@@ -131,11 +131,12 @@ func TestAgentRuntimeCompletionTracksServedModel(t *testing.T) {
 		require.Equal(t, "Bearer service", r.Header.Get("Authorization"))
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "Reconcile this week’s order totals", body["purpose_justification"])
 		require.Equal(t, []any{map[string]any{"role": "system", "content": "system"}, map[string]any{"role": "user", "content": "order"}}, body["messages"])
 		writeJSON(w, 200, map[string]any{"model": "served-version", "provider_name": "local", "choices": []any{map[string]any{"message": map[string]string{"content": "ok"}}}, "usage": map[string]int{"total_tokens": 3}})
 	}))
 	defer server.Close()
-	runner := NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: server.URL, AgentRuntime: true, BearerToken: "service"})
+	runner := NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: server.URL, AgentRuntime: true, PurposeJustification: "Reconcile this week’s order totals", BearerToken: "service"})
 	response, err := runner.RunLLMTransform(context.Background(), LLMTransformRequest{Payload: json.RawMessage(`{"system_prompt":"system","prompt":"order"}`)})
 	require.NoError(t, err)
 	require.Equal(t, "served-version", response.Metadata["model"])

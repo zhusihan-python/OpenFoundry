@@ -152,3 +152,31 @@ go test -race ./services/authorization-policy-service/...
 go run ./services/authorization-policy-service/cmd/authorization-policy-service
 # → ERROR config load failed error="required environment variable DATABASE_URL is not set"
 ```
+
+### Runtime chat purpose decisions
+
+`POST /api/v1/checkpoints/purpose/enforce` evaluates the configured
+`ai_chat_completion` policy before a runtime provider call. The service JWT
+must carry `auth_methods: ["service"]` and the explicit
+`purpose-checkpoint:enforce` permission. Provision this credential only for
+runtimes trusted to supply the authenticated actor, operation, and selected
+provider's network scope. Migration 0008 registers permission names. The
+operator assigns the credential and permissions.
+
+The seeded `ai-private-network` policy requires a selected private, local or
+hybrid route and a justification of at least 20 Unicode characters. The
+ledger accepts up to 1,024 characters of independent business justification.
+The route accepts chat completions and copilot requests. Missing or
+unsupported policy configuration and storage failures return 503. A completed
+evaluation returns HTTP 200 and a receipt with its approval decision. A
+client must honor the decision before making the provider call.
+
+Each evaluated row has a trusted `enforced_by` service subject and a separate
+`actor_id`. Only these subjects and callers explicitly granted
+`purpose-checkpoint:read` can list those rows. The earlier manual-record API
+continues to create rows with a null enforced subject. The service commits
+its receipt and `purpose_checkpoint.evaluated` audit outbox event in the same
+PostgreSQL transaction. The ledger retains the independent justification.
+The event retains the route, reason, length and digest. Chat messages, model
+replies and credentials are excluded. Shipping outbox events beyond
+PostgreSQL requires a configured CDC consumer.

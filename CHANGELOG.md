@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - _(add entries here)_
 
 ### Fixed
+- Agent-runtime records a purpose decision before chat and copilot inference. Pipeline Builder supplies its configured workload purpose and checks generated transforms against the current graph.
 - Composed LLM previews account for downstream joins, filters, and ordering.
   A preview that needs more rows than the model preview budget fails before
   invoking that model. Row-preserving previews infer only the requested prefix.

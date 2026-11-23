@@ -71,9 +71,7 @@ func main() {
 
 	var purposeCheckpoint *authmw.PurposeCheckpointClient
 	if cfg.PurposeCheckpointURL != "" {
-		purposeCheckpoint = authmw.NewPurposeCheckpointClient(cfg.PurposeCheckpointURL)
-	} else {
-		log.Warn("AUTHORIZATION_POLICY_SERVICE_URL/PURPOSE_CHECKPOINT_URL unset — sensitive AI chat purpose checks are disabled")
+		purposeCheckpoint = authmw.NewPurposeCheckpointClient(cfg.PurposeCheckpointURL, authmw.WithPurposeCheckpointBearerToken(cfg.PurposeCheckpointBearer))
 	}
 
 	jwt := authmw.NewJWTConfig(cfg.JWTSecret)
