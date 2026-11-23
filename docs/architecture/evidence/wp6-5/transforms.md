@@ -1,0 +1,1404 @@
+# WP6.5 变换验收摘录
+
+受测提交为 `2aa0eecd219bb8502e02d87eb63e3f54c3d27e71`。以下保留本地验收归档中的部分断言与回读值。每组列出对应的清单编号和原始 JSON 文件的 SHA-256，供持有原包的维护者复核。
+
+## 复跑套件退出码
+
+```json
+{
+  "order": 0,
+  "typed-join": 0,
+  "06-formula": 0,
+  "07-derive": 0,
+  "09-units": 0,
+  "10-sort": 0,
+  "12-union-position": 0,
+  "17-aggregate": 0,
+  "18-explode": 0,
+  "19-json": 0,
+  "20-csv": 0,
+  "12-union-name": 0
+}
+```
+
+## 01、03、05 · wp65-returns-link
+
+原始文件 `replay/order/wp65-returns-link.json`，SHA-256 为 `0b93584ce1bf011d4705b44f0fba319e8b66db94c566e495fc90227f70a72313`。
+
+```json
+{
+  "passed_checks": 54,
+  "observation_only": 11,
+  "observations": [
+    {
+      "check": "saved preview pick: values",
+      "actual": [
+        {
+          "amount": 120.0,
+          "customer": "ann",
+          "order_id": "O-1001",
+          "refund_reason": "damaged",
+          "refund_refund_amount": 20.0,
+          "refund_refund_id": "RF-01"
+        },
+        {
+          "amount": 80.5,
+          "customer": "bob",
+          "order_id": "O-1002",
+          "refund_reason": null,
+          "refund_refund_amount": null,
+          "refund_refund_id": null
+        },
+        {
+          "amount": 200.0,
+          "customer": "dee",
+          "order_id": "O-1004",
+          "refund_reason": "late",
+          "refund_refund_amount": 50.0,
+          "refund_refund_id": "RF-02"
+        },
+        {
+          "amount": 200.0,
+          "customer": "dee",
+          "order_id": "O-1004",
+          "refund_reason": "wrong item",
+          "refund_refund_amount": 10.0,
+          "refund_refund_id": "RF-03"
+        },
+        {
+          "amount": 45.25,
+          "customer": "fox",
+          "order_id": "O-1006",
+          "refund_reason": null,
+          "refund_refund_amount": null,
+          "refund_refund_id": null
+        }
+      ],
+      "status": "passed"
+    },
+    {
+      "check": "build clean: column order",
+      "actual": [
+        "amount",
+        "customer",
+        "order_id",
+        "status"
+      ],
+      "status": "observed"
+    },
+    {
+      "check": "build names: column order",
+      "actual": [
+        "customer",
+        "order_amount",
+        "order_id",
+        "refund_amount",
+        "refund_id",
+        "refund_reason"
+      ],
+      "status": "observed"
+    },
+    {
+      "check": "rejected projection preserves previous published output",
+      "actual": {
+        "backing_files": [
+          "/var/of/backing/datasets/7f2334cd-bf77-4791-9644-bbe3c5079751/transactions/a7129a84-9ca0-4ff3-9f8e-e7da136e3694/old-head.ndjson"
+        ],
+        "file_index": [
+          {
+            "content_type": "application/x-ndjson",
+            "created_at": "2026-11-22T19:56:52.196814Z",
+            "dataset_id": "7f2334cd-bf77-4791-9644-bbe3c5079751",
+            "entry_type": "file",
+            "id": "cb58960f-b26d-409a-8ccb-02e536a6c65f",
+            "last_modified": "2026-11-22T19:56:52.197721Z",
+            "metadata": {
+              "dataset_id": "7f2334cd-bf77-4791-9644-bbe3c5079751",
+              "preview_columns": null,
+              "preview_rows": null,
+              "transaction_id": "a7129a84-9ca0-4ff3-9f8e-e7da136e3694"
+            },
+            "path": "old-head.ndjson",
+            "size_bytes": 42,
+            "storage_path": "local:///datasets/7f2334cd-bf77-4791-9644-bbe3c5079751/transactions/a7129a84-9ca0-4ff3-9f8e-e7da136e3694/old-head.ndjson",
+            "updated_at": "2026-11-22T19:56:52.196814Z"
+          }
+        ],
+        "files": [
+          {
+            "created_at": "2026-11-22T19:56:52.196814Z",
+            "dataset_id": "7f2334cd-bf77-4791-9644-bbe3c5079751",
+            "id": "e737a639-6caf-465e-8ae4-9d06e86b0a21",
+            "logical_path": "old-head.ndjson",
+            "modified_at": "2026-11-22T19:56:52.196814Z",
+            "physical_uri": "local:///datasets/7f2334cd-bf77-4791-9644-bbe3c5079751/transactions/a7129a84-9ca0-4ff3-9f8e-e7da136e3694/old-head.ndjson",
+            "size_bytes": 42,
+            "status": "active",
+            "transaction_id": "a7129a84-9ca0-4ff3-9f8e-e7da136e3694"
+          }
+        ],
+        "head": "a7129a84-9ca0-4ff3-9f8e-e7da136e3694",
+        "old_file_sha256": "0f031d5cb18b3098068ae0017f726f8b9b8a0ed739db2664aa6788b0cde7f9c8",
+        "versions": [
+          {
+            "created_at": "2026-11-22T19:56:52.196814Z",
+            "dataset_id": "7f2334cd-bf77-4791-9644-bbe3c5079751",
+            "id": "aac7b545-eaf3-4e30-b02b-22c26bd13127",
+            "message": "WP3.13 old head",
+            "row_count": 1,
+            "size_bytes": 42,
+            "storage_path": "bronze/7f2334cd-bf77-4791-9644-bbe3c5079751/v1",
+            "transaction_id": "a7129a84-9ca0-4ff3-9f8e-e7da136e3694",
+            "version": 1
+          }
+        ]
+      },
+      "status": "passed"
+    }
+  ]
+}
+```
+
+## 02、08 · wp65-cleaning
+
+原始文件 `cleaning/results/wp65-cleaning.json`，SHA-256 为 `c1722ce1587f66db12d931b73fae366f2a3e4b0cf00af71c0b4bbd3b8299ee6c`。
+
+```json
+{
+  "passed_checks": 84,
+  "observation_only": 8,
+  "observations": [
+    {
+      "check": "validate: drop unknown column",
+      "actual": [
+        false,
+        [
+          "missing_column"
+        ]
+      ],
+      "status": "passed"
+    },
+    {
+      "check": "draft preview (normalize off) rows",
+      "actual": [
+        {
+          "CustomerName": "ann",
+          "Order ID": "O-1001",
+          "Order Status": "paid",
+          "Paid Amount": 120.5
+        },
+        {
+          "CustomerName": "bob",
+          "Order ID": "O-1002",
+          "Order Status": "paid",
+          "Paid Amount": 80
+        },
+        {
+          "CustomerName": "dee",
+          "Order ID": "O-1004",
+          "Order Status": "paid",
+          "Paid Amount": null
+        },
+        {
+          "CustomerName": "eve",
+          "Order ID": "O-1005",
+          "Order Status": "paid",
+          "Paid Amount": 0
+        }
+      ],
+      "status": "passed"
+    },
+    {
+      "check": "invalid amount preserved the previous published output",
+      "actual": {
+        "backing_files": [
+          "/var/of/backing/datasets/b88e6c34-df99-4e6e-899f-99cb81960707/transactions/50fefd06-689c-4c93-bfe9-a703c8d4a2c1/old-head.ndjson"
+        ],
+        "file_index": [
+          {
+            "content_type": "application/x-ndjson",
+            "created_at": "2026-11-22T19:54:54.612414Z",
+            "dataset_id": "b88e6c34-df99-4e6e-899f-99cb81960707",
+            "entry_type": "file",
+            "id": "feccaf42-103b-48de-91c6-a3e2b25e003d",
+            "last_modified": "2026-11-22T19:54:54.614097Z",
+            "metadata": {
+              "dataset_id": "b88e6c34-df99-4e6e-899f-99cb81960707",
+              "preview_columns": null,
+              "preview_rows": null,
+              "transaction_id": "50fefd06-689c-4c93-bfe9-a703c8d4a2c1"
+            },
+            "path": "old-head.ndjson",
+            "size_bytes": 42,
+            "storage_path": "local:///datasets/b88e6c34-df99-4e6e-899f-99cb81960707/transactions/50fefd06-689c-4c93-bfe9-a703c8d4a2c1/old-head.ndjson",
+            "updated_at": "2026-11-22T19:54:54.612414Z"
+          }
+        ],
+        "files": [
+          {
+            "created_at": "2026-11-22T19:54:54.612414Z",
+            "dataset_id": "b88e6c34-df99-4e6e-899f-99cb81960707",
+            "id": "d221d44c-86e9-451c-90fd-a7a3219b8192",
+            "logical_path": "old-head.ndjson",
+            "modified_at": "2026-11-22T19:54:54.612414Z",
+            "physical_uri": "local:///datasets/b88e6c34-df99-4e6e-899f-99cb81960707/transactions/50fefd06-689c-4c93-bfe9-a703c8d4a2c1/old-head.ndjson",
+            "size_bytes": 42,
+            "status": "active",
+            "transaction_id": "50fefd06-689c-4c93-bfe9-a703c8d4a2c1"
+          }
+        ],
+        "head": "50fefd06-689c-4c93-bfe9-a703c8d4a2c1",
+        "old_file_sha256": "0f031d5cb18b3098068ae0017f726f8b9b8a0ed739db2664aa6788b0cde7f9c8",
+        "versions": [
+          {
+            "created_at": "2026-11-22T19:54:54.612414Z",
+            "dataset_id": "b88e6c34-df99-4e6e-899f-99cb81960707",
+            "id": "d4325808-ecda-4f99-b39d-9a980b2bba72",
+            "message": "WP3.13 old head",
+            "row_count": 1,
+            "size_bytes": 42,
+            "storage_path": "bronze/b88e6c34-df99-4e6e-899f-99cb81960707/v1",
+            "transaction_id": "50fefd06-689c-4c93-bfe9-a703c8d4a2c1",
+            "version": 1
+          }
+        ]
+      },
+      "status": "passed"
+    },
+    {
+      "check": "normalize clash preserved the previous published output",
+      "actual": {
+        "backing_files": [
+          "/var/of/backing/datasets/9efd8812-4d84-4f26-8bfe-210cb0cc37ca/transactions/f14cfe5d-90d9-4f8d-b76e-5d8a2400456d/old-head.ndjson"
+        ],
+        "file_index": [
+          {
+            "content_type": "application/x-ndjson",
+            "created_at": "2026-11-22T19:54:55.006503Z",
+            "dataset_id": "9efd8812-4d84-4f26-8bfe-210cb0cc37ca",
+            "entry_type": "file",
+            "id": "ba502f73-371d-43af-a990-3b93583a0716",
+            "last_modified": "2026-11-22T19:54:55.008331Z",
+            "metadata": {
+              "dataset_id": "9efd8812-4d84-4f26-8bfe-210cb0cc37ca",
+              "preview_columns": null,
+              "preview_rows": null,
+              "transaction_id": "f14cfe5d-90d9-4f8d-b76e-5d8a2400456d"
+            },
+            "path": "old-head.ndjson",
+            "size_bytes": 42,
+            "storage_path": "local:///datasets/9efd8812-4d84-4f26-8bfe-210cb0cc37ca/transactions/f14cfe5d-90d9-4f8d-b76e-5d8a2400456d/old-head.ndjson",
+            "updated_at": "2026-11-22T19:54:55.006503Z"
+          }
+        ],
+        "files": [
+          {
+            "created_at": "2026-11-22T19:54:55.006503Z",
+            "dataset_id": "9efd8812-4d84-4f26-8bfe-210cb0cc37ca",
+            "id": "8fde4321-4699-4bf0-9c6b-009ffde46e5d",
+            "logical_path": "old-head.ndjson",
+            "modified_at": "2026-11-22T19:54:55.006503Z",
+            "physical_uri": "local:///datasets/9efd8812-4d84-4f26-8bfe-210cb0cc37ca/transactions/f14cfe5d-90d9-4f8d-b76e-5d8a2400456d/old-head.ndjson",
+            "size_bytes": 42,
+            "status": "active",
+            "transaction_id": "f14cfe5d-90d9-4f8d-b76e-5d8a2400456d"
+          }
+        ],
+        "head": "f14cfe5d-90d9-4f8d-b76e-5d8a2400456d",
+        "old_file_sha256": "0f031d5cb18b3098068ae0017f726f8b9b8a0ed739db2664aa6788b0cde7f9c8",
+        "versions": [
+          {
+            "created_at": "2026-11-22T19:54:55.006503Z",
+            "dataset_id": "9efd8812-4d84-4f26-8bfe-210cb0cc37ca",
+            "id": "ffe7cd28-ac74-4970-b0c5-384e249fc1ea",
+            "message": "WP3.13 old head",
+            "row_count": 1,
+            "size_bytes": 42,
+            "storage_path": "bronze/9efd8812-4d84-4f26-8bfe-210cb0cc37ca/v1",
+            "transaction_id": "f14cfe5d-90d9-4f8d-b76e-5d8a2400456d",
+            "version": 1
+          }
+        ]
+      },
+      "status": "passed"
+    }
+  ]
+}
+```
+
+## 04 · seven-casts
+
+原始文件 `cleaning/results/seven-casts.json`，SHA-256 为 `95c83bf068e4e1ea4c22d2a5d0453e84362b3094adba76f9c3b1b271586b068b`。
+
+```json
+{
+  "checks": {
+    "all seven declared types": true,
+    "download": true,
+    "draft": true,
+    "saved": true
+  }
+}
+```
+
+## 06 · wp62-formula
+
+原始文件 `replay/06-formula/wp62-formula.json`，SHA-256 为 `7247f67a8f6bada33a4257d1bad62aa44af56439a3f7056adc3996354c05c57d`。
+
+```json
+{
+  "readback": [
+    {
+      "id": "first",
+      "n": 9007199254740994,
+      "name": "Ada",
+      "upper_name": "ADA"
+    },
+    {
+      "id": "second",
+      "n": -3,
+      "name": null,
+      "upper_name": null
+    }
+  ],
+  "download_sha256": "195928d442d1ae93b5b18155f756a8f88e577129878a03db067919e74f90a67e"
+}
+```
+
+## 07 · wp62-derive
+
+原始文件 `replay/07-derive/wp62-derive.json`，SHA-256 为 `406547a5ba69227fea32edefbd3ad0c416bf339c4fb862cf9e63bf6b8e26a715`。
+
+```json
+{
+  "readback": [
+    {
+      "id": "first",
+      "n": 9007199254740993,
+      "name": "Ada",
+      "next_n": 9007199254740994,
+      "upper_name": "ADA"
+    },
+    {
+      "id": "second",
+      "n": -4,
+      "name": null,
+      "next_n": -3,
+      "upper_name": null
+    }
+  ],
+  "download_sha256": "36b7401bea7e92871bd8bb16d7f3212929d240dbe06398113690cf48fa1d4d64"
+}
+```
+
+## 09 · wp62-units
+
+原始文件 `replay/09-units/wp62-units.json`，SHA-256 为 `8c0964942b2f52164f6ab4d972a856d8b73267ec288174e312f8a7bcb677ef92`。
+
+```json
+{
+  "readback": [
+    {
+      "id": "converted",
+      "mass_kg": 0.45359237,
+      "mass_lb": 1,
+      "temp_f": 100,
+      "travel_km": 1.5,
+      "travel_m": 1500
+    },
+    {
+      "id": "negative",
+      "mass_kg": -0.90718474,
+      "mass_lb": -2,
+      "temp_f": 0,
+      "travel_km": -0.5,
+      "travel_m": -500
+    },
+    {
+      "id": "null",
+      "mass_kg": null,
+      "mass_lb": null,
+      "temp_f": null,
+      "travel_km": null,
+      "travel_m": null
+    },
+    {
+      "id": "missing",
+      "mass_kg": null,
+      "temp_f": null,
+      "travel_m": null
+    }
+  ],
+  "download_sha256": "1a57bfeaf983a74874e7e5abd0ad1006b30e653be7971fd59485a43a4b82493d"
+}
+```
+
+## 10 · wp62-sort
+
+原始文件 `replay/10-sort/wp62-sort.json`，SHA-256 为 `37ed57faf1ea087830f4bac1df065e0d4e3e7085e18428c3f4d06f8289e6236a`。
+
+```json
+{
+  "readback": [
+    {
+      "group": "a",
+      "id": "large",
+      "value": 9007199254740993
+    },
+    {
+      "group": "a",
+      "id": "tie",
+      "value": 9007199254740993
+    },
+    {
+      "group": "a",
+      "id": "small",
+      "mixed": 2,
+      "value": 9007199254740992
+    },
+    {
+      "group": "a",
+      "id": "fraction",
+      "value": 1.5
+    },
+    {
+      "group": "a",
+      "id": "null",
+      "mixed": "2",
+      "value": null
+    },
+    {
+      "group": "a",
+      "id": "missing"
+    },
+    {
+      "group": "b",
+      "id": "b",
+      "value": -1
+    }
+  ],
+  "download_sha256": "3ea681381658f9baf0416966891404d27634293ccb3dcae213152725a15df695"
+}
+```
+
+## 11 · wp65-join-keys
+
+原始文件 `replay/typed-join/wp65-join-keys.json`，SHA-256 为 `6aabeac0aafc4da90bbf8393330b047c0644d8a6f07e66d505d9fe6799235fce`。
+
+```json
+{
+  "passed_checks": 42,
+  "observation_only": 0,
+  "observations": [
+    {
+      "check": "null-key preview values",
+      "actual": [
+        {
+          "amount": 120.0,
+          "customer": "ann",
+          "order_id": "O-1001",
+          "refund_order_id": "O-1001",
+          "refund_reason": "damaged",
+          "refund_refund_amount": 20.0,
+          "refund_refund_id": "RF-01",
+          "status": "paid"
+        },
+        {
+          "amount": 80.5,
+          "customer": "bob",
+          "order_id": "O-1002",
+          "refund_order_id": null,
+          "refund_reason": null,
+          "refund_refund_amount": null,
+          "refund_refund_id": null,
+          "status": "paid"
+        },
+        {
+          "amount": 200.0,
+          "customer": "dee",
+          "order_id": "O-1004",
+          "refund_order_id": "O-1004",
+          "refund_reason": "late",
+          "refund_refund_amount": 50.0,
+          "refund_refund_id": "RF-02",
+          "status": "paid"
+        },
+        {
+          "amount": 200.0,
+          "customer": "dee",
+          "order_id": "O-1004",
+          "refund_order_id": "O-1004",
+          "refund_reason": "wrong item",
+          "refund_refund_amount": 10.0,
+          "refund_refund_id": "RF-03",
+          "status": "paid"
+        },
+        {
+          "amount": 45.25,
+          "customer": "fox",
+          "order_id": "O-1006",
+          "refund_order_id": null,
+          "refund_reason": null,
+          "refund_refund_amount": null,
+          "refund_refund_id": null,
+          "status": "paid"
+        },
+        {
+          "amount": 15.0,
+          "customer": "gil",
+          "order_id": null,
+          "refund_order_id": null,
+          "refund_reason": null,
+          "refund_refund_amount": null,
+          "refund_refund_id": null,
+          "status": "paid"
+        }
+      ],
+      "status": "passed"
+    },
+    {
+      "check": "left short preview",
+      "actual": [
+        {
+          "order_id": "A",
+          "refund_id": null
+        },
+        {
+          "order_id": "B",
+          "refund_id": "R1"
+        }
+      ],
+      "status": "passed"
+    },
+    {
+      "check": "cross signed download",
+      "actual": [
+        {
+          "order_id": "A",
+          "refund_id": "R1"
+        },
+        {
+          "order_id": "A",
+          "refund_id": "R2"
+        },
+        {
+          "order_id": "A",
+          "refund_id": "R3"
+        },
+        {
+          "order_id": "B",
+          "refund_id": "R1"
+        },
+        {
+          "order_id": "B",
+          "refund_id": "R2"
+        },
+        {
+          "order_id": "B",
+          "refund_id": "R3"
+        },
+        {
+          "order_id": "C",
+          "refund_id": "R1"
+        },
+        {
+          "order_id": "C",
+          "refund_id": "R2"
+        },
+        {
+          "order_id": "C",
+          "refund_id": "R3"
+        }
+      ],
+      "status": "passed"
+    }
+  ]
+}
+```
+
+## 12 · wp65-by-name-union
+
+原始文件 `replay/12-union-name/wp65-by-name-union.json`，SHA-256 为 `a486ebd2f291a2093b883456f3ffcf3dde5c6537ed20744a2a2a3c5e20aa632d`。
+
+```json
+{
+  "readback": [
+    {
+      "shop": "A",
+      "sku": "O1"
+    },
+    {
+      "shop": "S2",
+      "sku": "O2"
+    },
+    {
+      "shop": "A",
+      "sku": "O1"
+    },
+    {
+      "shop": null,
+      "sku": "O3"
+    }
+  ],
+  "download_sha256": "315eeabbef214c06032af86c5726f64bb38f5ff51ad2e8d64ed03d16ddc4f3ac"
+}
+```
+
+## 13、14、15、16、21 · wp65-geo
+
+原始文件 `geo/results/wp65-geo.json`，SHA-256 为 `7fa886f990afb3bbaa863eb767567823d815df2b0cd5f648696d5f25084506da`。
+
+```json
+{
+  "passed_checks": 150,
+  "observation_only": 7,
+  "observations": [
+    {
+      "check": "haversine meters: saved preview values",
+      "actual": [
+        {
+          "distance_meters": 129612.9505554069,
+          "end_lat": 39.9526,
+          "end_lon": -75.1652,
+          "start_lat": 40.7128,
+          "start_lon": -74.006
+        },
+        {
+          "distance_meters": 343556.5348808833,
+          "end_lat": 48.8566,
+          "end_lon": 2.3522,
+          "start_lat": 51.5074,
+          "start_lon": -0.1278
+        },
+        {
+          "distance_meters": 0,
+          "end_lat": 40.0163,
+          "end_lon": -105.3446,
+          "start_lat": 40.0163,
+          "start_lon": -105.3446
+        },
+        {
+          "distance_meters": 20015114.442035925,
+          "end_lat": 0.0,
+          "end_lon": 180.0,
+          "start_lat": 0.0,
+          "start_lon": 0.0
+        },
+        {
+          "distance_meters": null,
+          "end_lat": null,
+          "end_lon": null,
+          "start_lat": -33.8688,
+          "start_lon": 151.2093
+        }
+      ],
+      "status": "passed"
+    },
+    {
+      "check": "short preview distance: saved is the publication prefix",
+      "actual": [
+        {
+          "geo_distance_meters": 111.19508023327376,
+          "pid": "p1",
+          "right_qid": "q1"
+        },
+        {
+          "geo_distance_meters": null,
+          "pid": "p2",
+          "right_qid": null
+        }
+      ],
+      "status": "passed"
+    },
+    {
+      "check": "nearest k=1: deterministic tie-break",
+      "actual": [
+        {
+          "near_nid": "n1",
+          "nn_distance_m": 85.18037331502686,
+          "nn_rank": 1,
+          "tid": "t1"
+        },
+        {
+          "near_nid": "n3",
+          "nn_distance_m": 424780.38325156475,
+          "nn_rank": 1,
+          "tid": "t2"
+        }
+      ],
+      "status": "passed"
+    },
+    {
+      "check": "bad gpx preserved the previous published output",
+      "actual": {
+        "backing_files": [
+          "/var/of/backing/datasets/c1c3492f-3e77-4c35-a3aa-cbe5f7e8ed4e/transactions/08bb5f12-cf8e-4cfb-9894-7bde0bca576f/old-head.ndjson"
+        ],
+        "file_index": [
+          {
+            "content_type": "application/x-ndjson",
+            "created_at": "2026-11-22T19:56:09.329694Z",
+            "dataset_id": "c1c3492f-3e77-4c35-a3aa-cbe5f7e8ed4e",
+            "entry_type": "file",
+            "id": "eb3265d4-983b-4957-87a7-dc7df947fcdb",
+            "last_modified": "2026-11-22T19:56:09.331848Z",
+            "metadata": {
+              "dataset_id": "c1c3492f-3e77-4c35-a3aa-cbe5f7e8ed4e",
+              "preview_columns": null,
+              "preview_rows": null,
+              "transaction_id": "08bb5f12-cf8e-4cfb-9894-7bde0bca576f"
+            },
+            "path": "old-head.ndjson",
+            "size_bytes": 42,
+            "storage_path": "local:///datasets/c1c3492f-3e77-4c35-a3aa-cbe5f7e8ed4e/transactions/08bb5f12-cf8e-4cfb-9894-7bde0bca576f/old-head.ndjson",
+            "updated_at": "2026-11-22T19:56:09.329694Z"
+          }
+        ],
+        "files": [
+          {
+            "created_at": "2026-11-22T19:56:09.329694Z",
+            "dataset_id": "c1c3492f-3e77-4c35-a3aa-cbe5f7e8ed4e",
+            "id": "4cb87b42-b0be-4a16-be84-335b2ff81a7c",
+            "logical_path": "old-head.ndjson",
+            "modified_at": "2026-11-22T19:56:09.329694Z",
+            "physical_uri": "local:///datasets/c1c3492f-3e77-4c35-a3aa-cbe5f7e8ed4e/transactions/08bb5f12-cf8e-4cfb-9894-7bde0bca576f/old-head.ndjson",
+            "size_bytes": 42,
+            "status": "active",
+            "transaction_id": "08bb5f12-cf8e-4cfb-9894-7bde0bca576f"
+          }
+        ],
+        "head": "08bb5f12-cf8e-4cfb-9894-7bde0bca576f",
+        "old_file_sha256": "0f031d5cb18b3098068ae0017f726f8b9b8a0ed739db2664aa6788b0cde7f9c8",
+        "versions": [
+          {
+            "created_at": "2026-11-22T19:56:09.329694Z",
+            "dataset_id": "c1c3492f-3e77-4c35-a3aa-cbe5f7e8ed4e",
+            "id": "18dfdc8a-fd92-4b1f-998b-e3d921b553ca",
+            "message": "WP3.13 old head",
+            "row_count": 1,
+            "size_bytes": 42,
+            "storage_path": "bronze/c1c3492f-3e77-4c35-a3aa-cbe5f7e8ed4e/v1",
+            "transaction_id": "08bb5f12-cf8e-4cfb-9894-7bde0bca576f",
+            "version": 1
+          }
+        ]
+      },
+      "status": "passed"
+    }
+  ]
+}
+```
+
+## 17 · wp62-aggregate
+
+原始文件 `replay/17-aggregate/wp62-aggregate.json`，SHA-256 为 `8d5fc6bc4605c863fe3900622bf1ce09cfa3091add5892ebf418cb78de6058d3`。
+
+```json
+{
+  "checks": {
+    "global_empty": {
+      "rows": [
+        {
+          "highest": null,
+          "lowest": null,
+          "mean": null,
+          "present": 0,
+          "rows": 0,
+          "total": null
+        }
+      ]
+    },
+    "grouped": {
+      "rows": [
+        {
+          "highest": 7.5,
+          "lowest": 3,
+          "mean": 5.25,
+          "present": 2,
+          "region": "B",
+          "rows": 2,
+          "total": 10.5
+        },
+        {
+          "highest": null,
+          "lowest": null,
+          "mean": null,
+          "present": 0,
+          "region": "A",
+          "rows": 2,
+          "total": null
+        },
+        {
+          "highest": 9007199254740993,
+          "lowest": 1,
+          "mean": 4503599627370497,
+          "present": 2,
+          "region": null,
+          "rows": 2,
+          "total": 9007199254740994
+        }
+      ]
+    },
+    "grouped_empty": {
+      "rows": []
+    }
+  }
+}
+```
+
+## 18 · wp62-explode
+
+原始文件 `replay/18-explode/wp62-explode.json`，SHA-256 为 `aa9cb4cd9e91ba21bd8f445b2912757fea88b8d6bb90eea286ba854d75f8c1cb`。
+
+```json
+{
+  "checks": {
+    "in_place": {
+      "rows": [
+        {
+          "id": "native",
+          "items": 9007199254740993
+        },
+        {
+          "id": "native",
+          "items": null
+        },
+        {
+          "id": "native",
+          "items": {
+            "k": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "native",
+          "items": [
+            2,
+            3
+          ]
+        },
+        {
+          "id": "encoded",
+          "items": true
+        },
+        {
+          "id": "encoded",
+          "items": false
+        }
+      ],
+      "download_sha256": "77d92bef6d3b928f540a534282c0fa40dc0f5db825d8ad9a02e9488a57e0f1e5"
+    },
+    "named": {
+      "rows": [
+        {
+          "element": 9007199254740993,
+          "id": "native",
+          "items": [
+            9007199254740993,
+            null,
+            {
+              "k": [
+                1
+              ]
+            },
+            [
+              2,
+              3
+            ]
+          ]
+        },
+        {
+          "element": null,
+          "id": "native",
+          "items": [
+            9007199254740993,
+            null,
+            {
+              "k": [
+                1
+              ]
+            },
+            [
+              2,
+              3
+            ]
+          ]
+        },
+        {
+          "element": {
+            "k": [
+              1
+            ]
+          },
+          "id": "native",
+          "items": [
+            9007199254740993,
+            null,
+            {
+              "k": [
+                1
+              ]
+            },
+            [
+              2,
+              3
+            ]
+          ]
+        },
+        {
+          "element": [
+            2,
+            3
+          ],
+          "id": "native",
+          "items": [
+            9007199254740993,
+            null,
+            {
+              "k": [
+                1
+              ]
+            },
+            [
+              2,
+              3
+            ]
+          ]
+        },
+        {
+          "element": true,
+          "id": "encoded",
+          "items": " [true, false] "
+        },
+        {
+          "element": false,
+          "id": "encoded",
+          "items": " [true, false] "
+        }
+      ],
+      "download_sha256": "dafe6a0c64a9242447c92b56e2b588ab2ad39cb8a92ec60a4ba0139927e5cf4e"
+    },
+    "zero": {
+      "rows": [],
+      "download_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}
+```
+
+## 19 · wp62-json-extract
+
+原始文件 `replay/19-json/wp62-json-extract.json`，SHA-256 为 `74af68c95f7e3b68343e7d8eb59811c0aa6d3407791d51287118b75f3178bfb2`。
+
+```json
+{
+  "readback": [
+    {
+      "extracted": "9007199254740993",
+      "id": "native",
+      "payload": {
+        "items": [
+          {
+            "field.name": 9007199254740993
+          }
+        ]
+      }
+    },
+    {
+      "extracted": "内容",
+      "id": "encoded",
+      "payload": "{\"items\":[{\"field.name\":\"内容\"}]}"
+    },
+    {
+      "extracted": "{\"nested\":[1,2]}",
+      "id": "object",
+      "payload": {
+        "items": [
+          {
+            "field.name": {
+              "nested": [
+                1,
+                2
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "extracted": null,
+      "id": "empty",
+      "payload": {
+        "items": []
+      }
+    },
+    {
+      "extracted": null,
+      "id": "null",
+      "payload": null
+    },
+    {
+      "extracted": null,
+      "id": "missing"
+    }
+  ],
+  "download_sha256": "5429b7d059234f31ffffb3bfa48b1f3cc325bbb60c63cca2e572b18641c1a16d"
+}
+```
+
+## 20 · wp62-csv-parse
+
+原始文件 `replay/20-csv/wp62-csv-parse.json`，SHA-256 为 `2791851a61f3fd39268adb3788dd3b7a8d0e87d6b14a25d83b56c1bc0eef5753`。
+
+```json
+{
+  "checks": {
+    "empty": {
+      "rows": [],
+      "download_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "with_header": {
+      "rows": [
+        {
+          "code": "001",
+          "id": "first",
+          "name": "a,b",
+          "note": "line 1\nline 2",
+          "payload": "﻿code,name,note\r\n001,\"a,b\",\"line 1\r\nline 2\"\r\n002,second,\r\n"
+        },
+        {
+          "code": "002",
+          "id": "first",
+          "name": "second",
+          "note": "",
+          "payload": "﻿code,name,note\r\n001,\"a,b\",\"line 1\r\nline 2\"\r\n002,second,\r\n"
+        },
+        {
+          "code": "003",
+          "id": "second",
+          "name": "quoted \"value\"",
+          "note": "extra",
+          "payload": "note,name,code\nextra,\"quoted \"\"value\"\"\",003\n"
+        }
+      ],
+      "download_sha256": "08c624ded0393ffb626b00117da3e84dad133f39246af4453865f58c0cfe28b1"
+    },
+    "without_header": {
+      "rows": [
+        {
+          "column_1": "0001",
+          "column_2": "true",
+          "id": "semi",
+          "payload": "0001;true\n0002;\"x;y\""
+        },
+        {
+          "column_1": "0002",
+          "column_2": "x;y",
+          "id": "semi",
+          "payload": "0001;true\n0002;\"x;y\""
+        }
+      ],
+      "download_sha256": "62b33da5cb287fe39c6076a3d7b47d8aa566d2fb712a3da9c7ca461efea3f349"
+    }
+  }
+}
+```
+
+## 22 · wp65-python-release
+
+原始文件 `python/results/wp65-python-release.json`，SHA-256 为 `d1dc0b554dc68791e28cde80ec316f62fcaa046e0dd8f9012908a50f1250cf66`。
+
+```json
+{
+  "passed_checks": 44,
+  "observation_only": 0,
+  "observations": [
+    {
+      "check": "python node runtime",
+      "actual": "python",
+      "status": "passed"
+    },
+    {
+      "check": "script error build status",
+      "actual": "failed",
+      "status": "passed"
+    },
+    {
+      "check": "recovery download bytes identical to the first release",
+      "actual": "5b1e6c925da84bc4125241a7429102a60b877d5d979816f15d7282580f0f1844",
+      "status": "passed"
+    }
+  ]
+}
+```
+
+## 23 · llm
+
+原始文件 `model/results/llm.json`，SHA-256 为 `05835cab94ebfe893bf774aaf2c0a3e568af0b76ab01f842402d06efdb4a05c3`。
+
+```json
+{
+  "checks": {
+    "authenticated real agent-runtime completion": true,
+    "draft preview": true,
+    "empty DVS schema keeps all three text columns": true,
+    "empty build succeeds": true,
+    "empty input consumes zero tokens": true,
+    "empty model preview retains upstream and generated columns": true,
+    "empty signed download has no rows": true,
+    "failed retry leaves committed bytes and head intact": true,
+    "healthy agent reports inference provider unavailable": true,
+    "offline model rejects build": true,
+    "offline model rejects preview": true,
+    "pipeline attributes inference tokens to build": true,
+    "pipeline records real served model and provider": true,
+    "provider reports actual tokens": true,
+    "provider returns translation": true,
+    "real build succeeded": true,
+    "saved preview": true,
+    "signed download": true
+  },
+  "download_sha256": "774281c5758c058a8b31ece9c52e2ec37bc1a277624d5b8d6f96cf66ece6f122"
+}
+```
+
+## 24 · output-mapping-summary
+
+原始文件 `ontology/results/output-mapping-summary.json`，SHA-256 为 `469d895bf35ae7df81c521d814589a06b3e00defe8d8660972364068905a60fb`。
+
+```json
+{
+  "checks": {
+    "A1 download carries only projected columns": true,
+    "A1 projected values match source": true,
+    "A1 schema projects declared columns in order": true,
+    "A2 default keeps all columns": true,
+    "A2 default rows intact": true,
+    "A3 head unchanged": true,
+    "A3 old version still readable": true,
+    "A3 run failed with projection reason": true,
+    "A3 version count unchanged": true,
+    "A4 head unchanged": true,
+    "A4 old version still readable": true,
+    "A4 run failed with projection reason": true,
+    "A4 version count unchanged": true,
+    "B1 ODS object type exists": true,
+    "B1 cross-name properties deployed": true,
+    "B1 object properties carry target names and source values": true,
+    "B1 unmapped source column not written": true,
+    "B2 object count equals rows": true,
+    "B2 primary-key readback finds object": true,
+    "B3 changed input updates in place": true,
+    "B3 rerun keeps object count": true,
+    "B3 rerun object still readable": true,
+    "B3 updated value visible": true,
+    "B4 missing primary key fails run": true,
+    "B4 partial objects recorded (fact)": true,
+    "B4 recovery completes objects": true,
+    "B5 ODS link type exists": true,
+    "B5 both C-01 orders link to the same customer": true,
+    "B5 incoming edge names source object": true,
+    "B5 link cardinality recorded": true,
+    "B5 one-to-one link rejected": true,
+    "B5 outgoing edge reaches target object": true,
+    "B6 commit failure does not retry within the run (max_attempts=3, attempts=1)": true,
+    "B6 failure reason is the object commit error": true,
+    "B6 link commit failure does not retry within the run (attempts=1)": true,
+    "B6 link failure reason is the cardinality violation": true,
+    "B6 link retry keeps one edge per source (upsert, no duplicate)": true,
+    "B6 link retry run succeeds": true,
+    "B6 partial link edge from failed attempt remains (exactly one)": true,
+    "B6 partial objects from failed attempt remain": true,
+    "B6 retry endpoint creates a NEW run": true,
+    "B6 retry patches in place (no duplicates)": true,
+    "B6 retry run carries attempt_number=2 and retry_of linkage": true,
+    "B6 retry run succeeds after input fix": true,
+    "B7a ODS outage fails the run with the real transport error": true,
+    "B7a ODS recovers": true,
+    "B7a backing dataset already committed (dataset-first order)": true,
+    "B7a object type deployed after retry": true,
+    "B7a objects complete after retry": true,
+    "B7a outage does not retry within the run (attempts=1)": true,
+    "B7a retry run after recovery succeeds": true,
+    "B7b ObjectDB outage fails materialization with the real transport error": true,
+    "B7b ObjectDB recovers": true,
+    "B7b objects complete after retry": true,
+    "B7b outage does not retry within the run (attempts=1)": true,
+    "B7b recovered store contains zero target objects before retry": true,
+    "B7b retry run after recovery succeeds": true,
+    "B7b type deployed before materialization failed": true,
+    "C1a no dataset version written": true,
+    "C1a object-target build on mixed graph rejected": true,
+    "C1a rejection names the graph run path": true,
+    "C1a2 dataset published": true,
+    "C1a2 mixed-graph dataset build completes": true,
+    "C1a2 mixed-graph dataset target resolves": true,
+    "C1a2 object side untouched by dataset build": true,
+    "C1b backing dataset published via DVS": true,
+    "C1b pure-dataset manual build completed": true,
+    "C1c ObjectDB objects NOT written by manual build": true,
+    "C1c ontology services answer (probe type 404 as expected)": true,
+    "C1d no dataset version written": true,
+    "C1d ontology-declaring JobSpec build rejected": true,
+    "run 2609ba11-b2e2-46fa-aed0-c26aab1e9f3f failed": true,
+    "run 266bd3d3-3396-441e-9099-762acaa97bb0 failed": true,
+    "run 2ea1f7d4-c6e3-41a3-90fc-8e086d1fea9e succeeded": true,
+    "run 37ae9862-a4c8-4b75-bae1-9c2c6095ccf7 succeeded": true,
+    "run 44f7d8f1-166c-4113-bbb8-75af25939d9c failed": true,
+    "run 7e3ae2b1-1d86-48e1-8a7c-02ec893e5590 failed": true,
+    "run a4dfd407-ac9e-44ee-ad17-2d21c7a02869 failed": true,
+    "run dec248d0-9fbe-43a0-a513-d45ef5d4e42c succeeded": true,
+    "run e162762c-89a6-4723-9242-5e313f75cbf5 succeeded": true,
+    "run e31326a5-81e2-49b5-813a-b6b7bcb4c6eb succeeded": true,
+    "run f0d480ef-f1bc-4d66-ad02-6f4c1ee1226e failed": true,
+    "run f82bdbdd-6585-4497-bc65-96c71ed45711 failed": true
+  }
+}
+```
+
+## 12 · wp6-positional-union
+
+原始文件 `replay/12-union-position/wp6-positional-union.json`，SHA-256 为 `10119cb59c0c209baa1bf550be1ff98f40cfa2c37e9233d29feb0b8fe9283305`。
+
+```json
+{
+  "readback": [
+    {
+      "a_number": 1,
+      "z_text": "first"
+    },
+    {
+      "a_number": null,
+      "z_text": "second"
+    },
+    {
+      "a_number": 3,
+      "z_text": null
+    }
+  ],
+  "download_sha256": "de5ac76307a4e156896079be92fcc57cb1e65e2fb475b50be8724c5959196727"
+}
+```
+
+## 24 · projection
+
+原始文件 `projection/results/projection.json`，SHA-256 为 `48c684f95d198b5f821b3e28d9de2fd9c69859771f21bffd7733922a8c7b37ad`。
+
+```json
+{
+  "cases": {
+    "attached_drop": {
+      "draft": true,
+      "file_values": true,
+      "run": true,
+      "saved": true,
+      "schema_order_and_types": true
+    },
+    "default": {
+      "draft": true,
+      "file_values": true,
+      "run": true,
+      "saved": true,
+      "schema_order_and_types": true
+    },
+    "empty": {
+      "draft": true,
+      "file_values": true,
+      "run": true,
+      "saved": true,
+      "schema_order_and_types": true
+    },
+    "missing": {
+      "draft_rejected": true,
+      "prior_head_and_bytes": true,
+      "run_rejected": true,
+      "saved_rejected": true
+    },
+    "ordered": {
+      "draft": true,
+      "file_values": true,
+      "run": true,
+      "saved": true,
+      "schema_order_and_types": true
+    },
+    "twice": {
+      "draft_rejected": true,
+      "prior_head_and_bytes": true,
+      "run_rejected": true,
+      "saved_rejected": true
+    },
+    "wrong_shape": {
+      "draft_rejected": true,
+      "prior_head_and_bytes": true,
+      "run_rejected": true,
+      "saved_rejected": true
+    }
+  }
+}
+```
+
+## 04 · invalid-casts
+
+原始文件 `cleaning/results/invalid-casts.json`，SHA-256 为 `ac03e3fe9a4eee075e1ce50929e8f95504ce4f8b50d6b88dfc9b39b78d70e84f`。
+
+```json
+{
+  "cases": [
+    {
+      "input": "9223372036854775808",
+      "passed": true,
+      "preview_status": 400,
+      "previous_version_intact": true,
+      "run_http": 201,
+      "run_status": "failed",
+      "target": "Long"
+    },
+    {
+      "input": "2147483648",
+      "passed": true,
+      "preview_status": 400,
+      "previous_version_intact": true,
+      "run_http": 201,
+      "run_status": "failed",
+      "target": "Integer"
+    },
+    {
+      "input": "NaN",
+      "passed": true,
+      "preview_status": 400,
+      "previous_version_intact": true,
+      "run_http": 201,
+      "run_status": "failed",
+      "target": "Double"
+    },
+    {
+      "input": "2026-02-30",
+      "passed": true,
+      "preview_status": 400,
+      "previous_version_intact": true,
+      "run_http": 201,
+      "run_status": "failed",
+      "target": "Date"
+    },
+    {
+      "input": "2026-14-01T25:00:00Z",
+      "passed": true,
+      "preview_status": 400,
+      "previous_version_intact": true,
+      "run_http": 201,
+      "run_status": "failed",
+      "target": "Timestamp"
+    },
+    {
+      "input": "maybe",
+      "passed": true,
+      "preview_status": 400,
+      "previous_version_intact": true,
+      "run_http": 201,
+      "run_status": "failed",
+      "target": "Boolean"
+    }
+  ]
+}
+```

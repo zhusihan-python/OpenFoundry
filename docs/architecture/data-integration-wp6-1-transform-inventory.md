@@ -4,7 +4,7 @@
 
 ## 目录与逐项功能验收
 
-目录盘点以 #56 合并提交 `308e15e3` 为基线，静态目录含 26 个唯一 ID。下表 01–24 的验收使用同一干净提交 `2aa0eecd219bb8502e02d87eb63e3f54c3d27e71`。证据摘录按编号关联各套件的回读值、断言或下载摘要，并保留原始文件 SHA-256。订单链等 12 套复跑的退出码均为 0。[功能验收摘录](evidence/wp6-5/transforms.json) · [功能合并记录](https://github.com/zhusihan-python/OpenFoundry/pull/59)
+目录盘点以 #56 合并提交 `308e15e3` 为基线，静态目录含 26 个唯一 ID。下表 01–24 的验收使用同一干净提交 `2aa0eecd219bb8502e02d87eb63e3f54c3d27e71`。证据摘录按编号关联各套件的回读值、断言或下载摘要，并保留原始文件 SHA-256。订单链等 12 套复跑的退出码均为 0。[功能验收摘录](evidence/wp6-5/transforms.md) · [功能合并记录](https://github.com/zhusihan-python/OpenFoundry/pull/59)
 
 | 编号 | 目录 ID | 能力 | 目录状态 | 执行入口与语义 | 已验证的行为 |
 | --- | --- | --- | --- | --- | --- |
@@ -65,13 +65,13 @@
 
 ## 本批验收边界
 
-第 22 项通过已保存管道调用真实 Python sidecar。第 23 项通过 agent-runtime 调用本地 TranslateGemma，构建处理六行、短预览处理一行，并验证空输入和模型失联后已发布文件可读。第 24 项验证 NDJSON 数据集列投影，以及已保存图通过 `/runs` 发布对象、链接后回读主键、属性和链接两端。手动构建选本体目标返回 409。媒体集、时序和虚拟表尚未纳入本批输出验收。[功能验收摘录](evidence/wp6-5/transforms.json)
+第 22 项通过已保存管道调用真实 Python sidecar。第 23 项通过 agent-runtime 调用本地 TranslateGemma，构建处理六行、短预览处理一行，并验证空输入和模型失联后已发布文件可读。第 24 项验证 NDJSON 数据集列投影，以及已保存图通过 `/runs` 发布对象、链接后回读主键、属性和链接两端。手动构建选本体目标返回 409。媒体集、时序和虚拟表尚未纳入本批输出验收。[功能验收摘录](evidence/wp6-5/transforms.md)
 
 **第 25 项仍待产品决定。** 取得原始名单中的条目，或出现静态节点无法满足、明确需要由管道原生执行已发布函数的用例时，再确认是否纳入、执行语言与固定版本的要求，并估算增量工作量。[UDF 目录与执行边界](data-integration-wp6-4-udf-catalog-boundary.md)
 
 ## 用途审计的本地端到端验收
 
-2026-11-23，提交 `ace69f182470403bd7d2ef57a74251afe143eaae` 合并写入器和连接器后通过 Docker Desktop 验收。Helm 渲染的连接器配置通过 Kafka Connect REST 应用。PostgreSQL 已提交 WAL 中的批准、拒绝回执进入 Kafka，两个独立写入器共享 Lakekeeper 目录和 S3 兼容存储。独立读取器核对了 Iceberg 元数据、Parquet 文件和实际行值。[审计运行记录](evidence/wp6-5/audit.json) · [写入器 PR](https://github.com/zhusihan-python/OpenFoundry/pull/65) · [连接器 PR](https://github.com/zhusihan-python/OpenFoundry/pull/66)
+2026-11-23，提交 `ace69f182470403bd7d2ef57a74251afe143eaae` 合并写入器和连接器后通过 Docker Desktop 验收。Helm 渲染的连接器配置通过 Kafka Connect REST 应用。PostgreSQL 已提交 WAL 中的批准、拒绝回执进入 Kafka，两个独立写入器共享 Lakekeeper 目录和 S3 兼容存储。独立读取器核对了 Iceberg 元数据、Parquet 文件和实际行值。[审计运行记录](evidence/wp6-5/audit.md) · [写入器 PR](https://github.com/zhusihan-python/OpenFoundry/pull/65) · [连接器 PR](https://github.com/zhusihan-python/OpenFoundry/pull/66)
 
 | 场景 | 观察结果 |
 | --- | --- |
@@ -79,4 +79,4 @@
 | 成功应答丢失 | Kafka 位点保持在 1，另一实例收到相同请求后推进到 2。重放前后同为 8 行，快照 ID 与数据文件清单一致。 |
 | S3 拒绝写入或表保留配置不匹配 | 目录健康时 S3 拒写返回 403，写入器返回 503。恢复后重放成功，全套场景累计 10 行、8 个快照。缩短保留期限的表拒绝追加，返回 409。 |
 
-`of-apps-ops` chart 的 `services.audit-sink.env.ICEBERG_CATALOG_URL` 默认指向 Lakekeeper。部署独立写入器时，将该值设为 audit-sink 可访问的写入器 HTTP 基址。例：同命名空间的写入器 Service 名为 `audit-table-writer`、端口为 8080 时，覆盖值为 `http://audit-table-writer:8080`。共享 Kubernetes 上的 Strimzi 调谐、Secret 注入和服务身份鉴权仍待环境验收。[chart 配置](../../infra/helm/apps/of-apps-ops/values.yaml) · [写入器启动说明](../../services/audit-sink/table-writer/README.md)
+`of-apps-ops` chart 的 `services.audit-sink.env.ICEBERG_CATALOG_URL` 默认指向 Lakekeeper。部署独立写入器时，将该值设为 audit-sink 可访问的写入器 HTTP 基址。例如，同命名空间的写入器 Service 名为 `audit-table-writer`、端口为 8080 时，覆盖值为 `http://audit-table-writer:8080`。共享 Kubernetes 上的 Strimzi 调谐、Secret 注入和服务身份鉴权仍待环境验收。[chart 配置](https://github.com/zhusihan-python/OpenFoundry/blob/ace69f182470403bd7d2ef57a74251afe143eaae/infra/helm/apps/of-apps-ops/values.yaml) · [写入器启动说明](https://github.com/zhusihan-python/OpenFoundry/blob/ace69f182470403bd7d2ef57a74251afe143eaae/services/audit-sink/table-writer/README.md)

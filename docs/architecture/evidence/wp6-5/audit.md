@@ -1,3 +1,8 @@
+# WP6.5 合并后审计链路运行记录
+
+以下是 2026-11-23 在 Docker Desktop 上以合成数据运行的完整结果。
+
+```json
 {
   "revision": "ace69f182470403bd7d2ef57a74251afe143eaae",
   "dirty": false,
@@ -255,3 +260,4 @@
   "helm_revision": "ace69f182470403bd7d2ef57a74251afe143eaae",
   "debezium": "2.7.0.Final"
 }
+```

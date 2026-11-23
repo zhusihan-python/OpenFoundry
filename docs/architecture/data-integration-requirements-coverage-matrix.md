@@ -188,7 +188,7 @@
 
 **本期范围与进展**：11 月 7 日的产品资料给出既有 25 项的总数。11 月 23 日用户保留输出映射并授权执行 01–24。24 项均已完成功能验收。第 25 项 UDF 待取得原名单条目或明确的管道原生执行用例后再定。另列的按条件聚合、窗口聚合和反连接已有轻量路径验收。[逐项清单与受测提交](data-integration-wp6-1-transform-inventory.md)
 
-**运行边界**：静态 Python 用已保存管道和 sidecar 验证，LLM 节点用本地模型验证。动态 UDF 的表达式和 Python 执行边界见 WP6.4；分布式 Spark 路径仍待集群验收。[UDF 目录与执行边界](data-integration-wp6-4-udf-catalog-boundary.md) · [Spark 入口](../../services/pipeline-build-service/internal/handler/distributed_runtime.go)
+**运行边界**：静态 Python 用已保存管道和 sidecar 验证，LLM 节点用本地模型验证。动态 UDF 的表达式和 Python 执行边界见 WP6.4；分布式 Spark 路径仍待集群验收。[UDF 目录与执行边界](data-integration-wp6-4-udf-catalog-boundary.md) · [Spark 入口](https://github.com/zhusihan-python/OpenFoundry/blob/ace69f182470403bd7d2ef57a74251afe143eaae/services/pipeline-build-service/internal/handler/distributed_runtime.go)
 
 **前置依赖/协作边界**：依赖 DI-03（执行 runtime 与契约）与 DI-05（聚合/窗口中的表达式语义）。
 
