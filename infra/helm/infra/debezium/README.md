@@ -82,3 +82,5 @@ Connector unpause is gated on:
    `max_replication_slots ≥ 8` (S6.1.b).
 3. Schemas registered in Apicurio for all 4 topics.
 4. Chaos test ([`chaos-test.md`](chaos-test.md)) signed off.
+
+The [checkpoint audit connector](docs/checkpoint-audit.md) registers the dedicated policy relay when enabled.
