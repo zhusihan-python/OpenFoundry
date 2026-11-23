@@ -19,6 +19,20 @@ import (
 // returned operation only resolves credentials and contacts the source after it.
 func (h *Handlers) prepareSnapshotPull(conn *models.Connection, tenant repo.Tenant, lease *repo.LeaseClaim, beforePage func(context.Context) error) (func(context.Context) (*cmruntime.SnapshotResult, error), error) {
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(conn.ConnectorType), "-", "_")) {
+	case "postgresql", "postgres":
+		table, err := models.ParsePostgresSnapshotSource(conn.Config)
+		if err != nil {
+			return nil, err
+		}
+		if table == nil || h.Config.PostgresSyncEndpoint == "" {
+			return nil, errors.New("PostgreSQL snapshot requires a configured endpoint and sync.postgres_table")
+		}
+		if lease.Run.CPMode != "" || lease.Run.RecoveryProtocol != "" {
+			return nil, errors.New("PostgreSQL table snapshots do not support checkpoint or recovery protocols")
+		}
+		return func(ctx context.Context) (*cmruntime.SnapshotResult, error) {
+			return h.pullPostgresSnapshot(ctx, conn, tenant, table, beforePage)
+		}, nil
 	case "s3":
 		source, err := models.ParseS3SnapshotSource(conn.Config)
 		if err != nil {
@@ -115,4 +129,27 @@ func (h *Handlers) pullS3Snapshot(ctx context.Context, conn *models.Connection, 
 		AllowedEgressHosts: h.Config.AllowedEgressHosts, AllowPrivateNetworks: h.Config.AllowPrivateNetworkEgress,
 		BeforePage: beforePage,
 	})
+}
+
+func (h *Handlers) pullPostgresSnapshot(ctx context.Context, conn *models.Connection, tenant repo.Tenant, table *models.PostgresTable, beforeRead func(context.Context) error) (*cmruntime.SnapshotResult, error) {
+	endpoint, err := cmruntime.PostgresEndpoint(h.Config.PostgresSyncEndpoint, h.Config.AllowedEgressHosts, h.Config.AllowPrivateNetworkEgress)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := h.Repo.GetSourceCredentialCiphertext(ctx, conn.ID, tenant, "password")
+	if err != nil || len(ciphertext) == 0 {
+		return nil, errors.New("PostgreSQL source password credential unavailable")
+	}
+	raw, err := domain.DecryptCredential(h.Config.CredentialKey, ciphertext)
+	if err != nil {
+		return nil, errors.New("PostgreSQL source credential could not be decrypted")
+	}
+	var login struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if json.Unmarshal(raw, &login) != nil || login.Username == "" || login.Password == "" {
+		return nil, errors.New("PostgreSQL credential requires username and password")
+	}
+	return cmruntime.FetchPostgresSnapshot(ctx, cmruntime.PostgresSnapshotOptions{Endpoint: endpoint, Table: *table, User: login.Username, Password: login.Password, BeforeRead: beforeRead})
 }

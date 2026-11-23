@@ -68,6 +68,41 @@ def s3_request(method, path, body=None, signed=True, credentials=None):
     return int(subprocess.check_output(cmd, input=config.encode(), timeout=15))
 
 
+def verify_pinned_output(state, p1, graph, downstream, raw, out, first, check, report):
+    # Construct the pinned pipeline AFTER v2 exists. Reading the head would give wrong amounts.
+    nodes = graph.graph_nodes(raw, first["version"], first["transaction"], out)
+    nodes.insert(1, {"id": "project-orders", "label": "Publish order amounts", "depends_on": ["input"],
+                     "transform_type": "select", "config": {"columns": ["order_id", "amount_cents"]}})
+    nodes[-1]["depends_on"] = ["project-orders"]
+    pid = graph.create_pipeline("order-amounts", nodes)
+    built = graph.run_pipeline(pid)
+    check(f"pinned pipeline succeeded ({built.get('status')} / {built.get('error_message') or ''})",
+          built.get("status") == "succeeded")
+    versions = graph.list_versions(out)
+    check("one pipeline output version", len(versions) == 1)
+    produced = versions[0]
+    graph.TOKEN = downstream
+    actual = graph.scan_all(out, produced["version"])["rows"]
+    expected = [{"order_id": row["order_id"], "amount_cents": row["amount_cents"]} for row in SAMPLES[0]]
+    check("downstream read pinned v1 order IDs and integer amounts after v2",
+          actual == expected and all(type(r["amount_cents"]) is int for r in actual))
+    files = [f for f in p1.list_files(downstream, out) if f.get("transaction_id") == produced["transaction_id"]]
+    check("output file bound to pipeline transaction", len(files) == 1)
+    file_id = files[0]["id"]
+    response = p1.download_file(downstream, out, file_id)
+    check("consumer downloaded committed output file", response.status == 200 and bool(response.body))
+    downloaded_rows = [json.loads(line) for line in response.body.splitlines() if line.strip()]
+    check("downloaded bytes decode to the expected projection", downloaded_rows == expected)
+    (state / "published-orders.ndjson").write_bytes(response.body)
+    report.update(pipeline_id=pid, pipeline_run=built["id"], build_id=built["id"], output_version=produced["version"],
+                  output_transaction=produced["transaction_id"], output_file_id=file_id,
+                  output_sha256=hashlib.sha256(response.body).hexdigest(), expected_rows=expected)
+    for i, row in enumerate(report["snapshots"]):
+        check(f"historical input version {row['version']} independently readable",
+              graph.scan_all(raw, row["version"])["rows"] == SAMPLES[i])
+    return produced, file_id, response, expected
+
+
 def main(state):
     p1 = module("wp23_p1", HERE.parent / "business-platform-p1/smoke/smoke.py")
     p1.BASES.update(dataset=os.environ["WP23_DVS"], pipeline=os.environ["WP23_PBS"],
@@ -175,37 +210,7 @@ def main(state):
           and graph.list_versions(foreign_ds) == foreign_versions and not p1.list_files(other, foreign_ds))
     graph.TOKEN = owner
 
-    # Construct the pinned pipeline AFTER v2 exists. Reading the head would give wrong amounts.
-    nodes = graph.graph_nodes(raw, first["version"], first["transaction"], out)
-    nodes.insert(1, {"id": "project-orders", "label": "Publish order amounts", "depends_on": ["input"],
-                     "transform_type": "select", "config": {"columns": ["order_id", "amount_cents"]}})
-    nodes[-1]["depends_on"] = ["project-orders"]
-    pid = graph.create_pipeline("order-amounts", nodes)
-    built = graph.run_pipeline(pid)
-    check(f"pinned pipeline succeeded ({built.get('status')} / {built.get('error_message') or ''})",
-          built.get("status") == "succeeded")
-    versions = graph.list_versions(out)
-    check("one pipeline output version", len(versions) == 1)
-    produced = versions[0]
-    graph.TOKEN = downstream
-    actual = graph.scan_all(out, produced["version"])["rows"]
-    expected = [{"order_id": row["order_id"], "amount_cents": row["amount_cents"]} for row in SAMPLES[0]]
-    check("downstream read pinned v1 order IDs and integer amounts after v2",
-          actual == expected and all(type(r["amount_cents"]) is int for r in actual))
-    files = [f for f in p1.list_files(downstream, out) if f.get("transaction_id") == produced["transaction_id"]]
-    check("output file bound to pipeline transaction", len(files) == 1)
-    file_id = files[0]["id"]
-    response = p1.download_file(downstream, out, file_id)
-    check("consumer downloaded committed output file", response.status == 200 and bool(response.body))
-    downloaded_rows = [json.loads(line) for line in response.body.splitlines() if line.strip()]
-    check("downloaded bytes decode to the expected projection", downloaded_rows == expected)
-    (state / "published-orders.ndjson").write_bytes(response.body)
-    report.update(pipeline_id=pid, pipeline_run=built["id"], build_id=built["id"], output_version=produced["version"],
-                  output_transaction=produced["transaction_id"], output_file_id=file_id,
-                  output_sha256=hashlib.sha256(response.body).hexdigest(), expected_rows=expected)
-    for i, row in enumerate(report["snapshots"]):
-        check(f"historical input version {row['version']} independently readable",
-              graph.scan_all(raw, row["version"])["rows"] == SAMPLES[i])
+    produced, file_id, response, expected = verify_pinned_output(state, p1, graph, downstream, raw, out, first, check, report)
     before = graph.list_versions(raw)
     malformed = state / "malformed.ndjson"
     malformed.write_text('{"order_id":"partial"}\ntruncated\n')
@@ -230,6 +235,10 @@ def main(state):
     ]:
         check(f"other tenant denied {label} (HTTP {response.status})", response.status in (403, 404))
 
+    verify_browser(state, owner)
+
+
+def verify_browser(state, owner):
     if os.getenv("WP23_VERIFY_UI") == "1":
         token_file = state / "browser.jwt"
         try:

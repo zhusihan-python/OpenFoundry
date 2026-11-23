@@ -1,0 +1,31 @@
+services:
+  orders-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_PASSWORD: ${WP25_ADMIN_PASSWORD:?}
+      READER_PASSWORD: ${WP25_READER_PASSWORD:?}
+      OTHER_PASSWORD: ${WP25_OTHER_PASSWORD:?}
+    volumes:
+      - ${WP25_TLS:?}:/fixture-tls:ro
+      - ../data-integration-wp2-5/init.sql:/docker-entrypoint-initdb.d/orders.sql:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        install -m 0600 -o postgres /fixture-tls/server.key /tmp/orders.key
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/fixture-tls/server.crt -c ssl_key_file=/tmp/orders.key
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "orders"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+  connector:
+    environment:
+      POSTGRES_SYNC_ENDPOINT: postgresql://orders-db:5432/orders
+      ALLOWED_EGRESS_HOSTS: store,orders-db
+      SSL_CERT_FILE: /fixture-ca/orders.crt
+    volumes:
+      - ${WP25_TLS:?}/server.crt:/fixture-ca/orders.crt:ro
+    depends_on:
+      orders-db:
+        condition: service_healthy

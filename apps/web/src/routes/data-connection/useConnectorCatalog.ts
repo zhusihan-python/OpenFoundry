@@ -28,6 +28,8 @@ export function useSourceCatalogEntry(source: Source | null | undefined) {
     ...entry,
     capabilities: entry.capabilities.filter((item) => {
       if (item === 'batch_sync') return effective?.native_snapshot_sync;
+      if (item === 'virtual_table') return effective?.supports_zero_copy;
+      if (item === 'cdc_sync') return effective?.supports_cdc;
       if (item === 'exploration') return effective?.supports_discovery;
       return true;
     }),

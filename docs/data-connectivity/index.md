@@ -24,3 +24,5 @@ This section covers how OpenFoundry connects to source systems, ingests data, an
 ## S3 order snapshots
 
 Create an S3 source, bind its read credential, and run a snapshot sync to publish a dataset version. Downstream pipelines can pin that version and independently download the result after the source changes. [Source configuration](../../services/connector-management-service/README.md#s3-snapshot-sources) · [Docker acceptance and sample orders](../../tools/smoke/data-integration-wp2-3/README.md)
+
+PostgreSQL table snapshots can publish two versions of the same order table and feed a version-pinned downstream pipeline. The connector reads one primary-keyed table using a source-scoped login and verified TLS. [Reproducible PostgreSQL acceptance](https://github.com/zhusihan-python/OpenFoundry/tree/codex/wp11-5-biff-cell-range/tools/smoke/data-integration-wp2-5)

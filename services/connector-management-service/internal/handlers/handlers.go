@@ -101,6 +101,7 @@ type RuntimeConfig struct {
 	NetworkBoundaryServiceURL    string
 	SyncPollIntervalSecs         uint64
 	AllowPrivateNetworkEgress    bool
+	PostgresSyncEndpoint         string
 	S3SyncEndpoint               string
 	S3SyncRegion                 string
 	AllowedEgressHosts           []string
@@ -286,7 +287,7 @@ func (h *Handlers) notImplemented(w http.ResponseWriter, r *http.Request, code s
 }
 
 func (h *Handlers) GetConnectorCatalog(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, models.BuildGalleryCatalog(h.Config.S3SyncEndpoint != ""))
+	writeJSON(w, http.StatusOK, models.BuildGalleryCatalog(models.SnapshotRuntimes{S3: h.Config.S3SyncEndpoint != "", Postgres: h.Config.PostgresSyncEndpoint != ""}))
 }
 
 func (h *Handlers) GetConnectorContracts(w http.ResponseWriter, r *http.Request) {
@@ -377,20 +378,29 @@ func (h *Handlers) connectionEffectiveCapabilities(connection models.Connection,
 	case "s3":
 		source, err := models.ParseS3SnapshotSource(connection.Config)
 		if err == nil && source != nil {
-			effective.NativeSnapshotSync = h.Config.S3SyncEndpoint != ""
-			effective.Modes = []string{}
-			if effective.NativeSnapshotSync {
-				effective.Modes = []string{"batch"}
-			}
-			effective.SupportsIncremental = false
-			effective.SupportsCDC = false
-			effective.SupportsZeroCopy = false
-			effective.SupportsConnectionTesting = effective.NativeSnapshotSync
-			effective.SupportsDiscovery = false
-			effective.SupportsSchemaIntrospection = false
+			setTableSnapshotCapabilities(&effective, h.Config.S3SyncEndpoint != "")
+		}
+	case "postgresql", "postgres":
+		source, err := models.ParsePostgresSnapshotSource(connection.Config)
+		if err == nil && source != nil {
+			setTableSnapshotCapabilities(&effective, h.Config.PostgresSyncEndpoint != "")
 		}
 	}
 	return effective
+}
+
+func setTableSnapshotCapabilities(e *models.ConnectionEffectiveCapabilities, enabled bool) {
+	e.NativeSnapshotSync = enabled
+	e.Modes = []string{}
+	if enabled {
+		e.Modes = []string{"batch"}
+	}
+	e.SupportsConnectionTesting = enabled
+	e.SupportsIncremental = false
+	e.SupportsCDC = false
+	e.SupportsZeroCopy = false
+	e.SupportsDiscovery = false
+	e.SupportsSchemaIntrospection = false
 }
 
 var validCredentialKinds = map[string]bool{
@@ -1169,6 +1179,9 @@ func normalizeConnectionConfig(connectorType string, raw json.RawMessage) (json.
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(connectorType), "-", "_")) {
 	case "s3":
 		_, err := models.ParseS3SnapshotSource(raw)
+		return raw, err
+	case "postgresql", "postgres":
+		_, err := models.ParsePostgresSnapshotSource(raw)
 		return raw, err
 	case "rest_api":
 		return models.NormalizeRESTAPISourceConfig(raw)
