@@ -94,7 +94,12 @@ def serve(args):
                 self.send_error(422, "invalid audit batch")
                 return
             if (root / "reject-append").exists():
-                (root / "append-rejected").touch()
+                marker = root / "append-rejected"
+                if not marker.exists():
+                    event_ids = [str(event_id) for event_id in rows["event_id"].to_pylist()]
+                    pending = marker.with_suffix(".tmp")
+                    pending.write_text(json.dumps(event_ids))
+                    pending.replace(marker)
                 self.send_error(503, "append disabled for recovery check")
                 return
             try:
