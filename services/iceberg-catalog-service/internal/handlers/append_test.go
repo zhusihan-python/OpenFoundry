@@ -3,7 +3,6 @@ package handlers_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,12 +20,10 @@ import (
 type fakeAppendStore struct {
 	table       *models.IcebergTable
 	getErr      error
-	commitErr   error
 	commitCalls int
 	seenProject string
 	seenNS      []string
 	seenTable   string
-	seenCommit  *models.CommitTableRequest
 }
 
 func (f *fakeAppendStore) ListNamespaces(context.Context, string) ([]models.IcebergNamespace, error) {
@@ -62,13 +59,9 @@ func (f *fakeAppendStore) GetTable(_ context.Context, projectRID string, namespa
 func (f *fakeAppendStore) CreateTable(context.Context, string, []string, *models.CreateTableRequest, uuid.UUID) (*models.IcebergTable, string, error) {
 	return nil, "", nil
 }
-func (f *fakeAppendStore) CommitTable(_ context.Context, _ string, _ []string, _ string, body *models.CommitTableRequest) (*models.IcebergTable, string, error) {
+func (f *fakeAppendStore) CommitTable(context.Context, string, []string, string, *models.CommitTableRequest) (*models.IcebergTable, string, error) {
 	f.commitCalls++
-	f.seenCommit = body
-	if f.commitErr != nil {
-		return nil, "", f.commitErr
-	}
-	return f.table, "s3://warehouse/of_test/events/metadata/v2.metadata.json", nil
+	return f.table, "", nil
 }
 func (f *fakeAppendStore) MultiTableCommit(context.Context, string, *models.MultiTableCommitRequest) ([]models.CommittedTable, error) {
 	return nil, nil
@@ -104,37 +97,31 @@ func (f *fakeAppendStore) RenameTable(context.Context, string, []string, string,
 	return nil, nil
 }
 
-func TestAppendBatchAuditContractFixtureCommits(t *testing.T) {
+func TestAppendBatchRequiresDurableWriterBeforeAcknowledgingRows(t *testing.T) {
 	t.Parallel()
-	store := &fakeAppendStore{table: appendFixtureTable("of_audit", "events", auditAppendSchema())}
-	h := &handlers.Handlers{Repo: store}
+	for _, tc := range []struct {
+		namespace string
+		table     string
+		schema    []models.FieldSpec
+		body      string
+	}{
+		{"of_audit", "events", auditAppendSchema(), auditAppendFixture()},
+		{"of_ai", "responses", aiAppendSchema(), aiAppendFixture()},
+	} {
+		t.Run(tc.namespace, func(t *testing.T) {
+			store := &fakeAppendStore{table: appendFixtureTable(tc.namespace, tc.table, tc.schema)}
+			h := &handlers.Handlers{Repo: store}
+			rec := httptest.NewRecorder()
+			h.AppendBatch(rec, httptest.NewRequest(http.MethodPost, "/openfoundry/iceberg/v1/append", strings.NewReader(tc.body)))
 
-	rec := httptest.NewRecorder()
-	h.AppendBatch(rec, httptest.NewRequest(http.MethodPost, "/openfoundry/iceberg/v1/append", strings.NewReader(auditAppendFixture())))
-
-	require.Equal(t, http.StatusAccepted, rec.Code)
-	assert.Equal(t, "ri.foundry.main.project.default", store.seenProject)
-	assert.Equal(t, []string{"of_audit"}, store.seenNS)
-	assert.Equal(t, "events", store.seenTable)
-	require.Equal(t, 1, store.commitCalls)
-	require.NotNil(t, store.seenCommit)
-	require.Len(t, store.seenCommit.Updates, 1)
-	assert.Contains(t, string(store.seenCommit.Updates[0]), `"action":"add-snapshot"`)
-	assert.Contains(t, rec.Body.String(), `"rows":1`)
-}
-
-func TestAppendBatchAIContractFixtureCommits(t *testing.T) {
-	t.Parallel()
-	store := &fakeAppendStore{table: appendFixtureTable("of_ai", "responses", aiAppendSchema())}
-	h := &handlers.Handlers{Repo: store}
-
-	rec := httptest.NewRecorder()
-	h.AppendBatch(rec, httptest.NewRequest(http.MethodPost, "/openfoundry/iceberg/v1/append", strings.NewReader(aiAppendFixture())))
-
-	require.Equal(t, http.StatusAccepted, rec.Code)
-	assert.Equal(t, []string{"of_ai"}, store.seenNS)
-	assert.Equal(t, "responses", store.seenTable)
-	require.Equal(t, 1, store.commitCalls)
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			assert.Contains(t, rec.Body.String(), "durable Iceberg table writer required")
+			assert.Zero(t, store.commitCalls, "no snapshot may be published without durable data")
+			assert.Equal(t, "ri.foundry.main.project.default", store.seenProject)
+			assert.Equal(t, []string{tc.namespace}, store.seenNS)
+			assert.Equal(t, tc.table, store.seenTable)
+		})
+	}
 }
 
 func TestAppendBatchReturnsNotFoundForMissingTable(t *testing.T) {
@@ -152,15 +139,6 @@ func TestAppendBatchReturnsUnprocessableEntityForSchemaMismatch(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.AppendBatch(rec, httptest.NewRequest(http.MethodPost, "/openfoundry/iceberg/v1/append", strings.NewReader(auditAppendFixture())))
 	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
-}
-
-func TestAppendBatchReturnsConflictForCommitSchemaAssertion(t *testing.T) {
-	t.Parallel()
-	store := &fakeAppendStore{table: appendFixtureTable("of_audit", "events", auditAppendSchema()), commitErr: errors.New("assert-current-schema-id failed")}
-	h := &handlers.Handlers{Repo: store}
-	rec := httptest.NewRecorder()
-	h.AppendBatch(rec, httptest.NewRequest(http.MethodPost, "/openfoundry/iceberg/v1/append", strings.NewReader(auditAppendFixture())))
-	assert.Equal(t, http.StatusConflict, rec.Code)
 }
 
 func appendFixtureTable(namespace, table string, schema []models.FieldSpec) *models.IcebergTable {

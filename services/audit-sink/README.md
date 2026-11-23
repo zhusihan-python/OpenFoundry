@@ -33,6 +33,10 @@ missing tables, schema mismatches, and commit failures all return typed
 writer errors; JSONL is never selected unless `AUDIT_SINK_JSONL_PATH` is
 set.
 
+The bundled Go catalog is metadata-only and returns HTTP 503 on valid append
+requests. Configure the sink to reach a durable writer before enabling Iceberg
+delivery. See the [deployment contract](../../docs/migration/audit-sink-iceberg.md).
+
 ## Configuration
 
 Operator-facing env contract — names match the Rust crate exactly so a

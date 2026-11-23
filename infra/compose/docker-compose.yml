@@ -38,10 +38,9 @@ services:
       POSTGRES_DB: openfoundry
       # Comma-separated extra databases created by ./local/postgres-init/01-create-databases.sh.
       # Override (extend) in `docker-compose.dev.yml` for full per-service split.
-      # `pg_policy` is included by default because the transactional outbox
-      # (ADR-0022) lives in `pg_policy.outbox.events` and is mirrored to Kafka
-      # by the Debezium Connect service below.
-      POSTGRES_MULTIPLE_DATABASES: ${OPENFOUNDRY_POSTGRES_EXTRA_DATABASES:-pg_policy}
+      # The existing pg_policy outbox and policy-service audit outbox use separate databases.
+      POSTGRES_MULTIPLE_DATABASES: ${OPENFOUNDRY_POSTGRES_EXTRA_DATABASES:-pg_policy,openfoundry_auth_service}
+      CHECKPOINT_AUDIT_CDC_PASSWORD: ${OPENFOUNDRY_CHECKPOINT_AUDIT_CDC_PASSWORD:-}
     # WAL logical decoding is required by the Debezium Postgres connector
     # (ADR-0022). `max_replication_slots`/`max_wal_senders` are sized for
     # one Debezium task per logical DB plus headroom; bump if you add more.
@@ -50,14 +49,14 @@ services:
       - -c
       - wal_level=logical
       - -c
-      - max_replication_slots=4
+      - max_replication_slots=5
       - -c
-      - max_wal_senders=4
+      - max_wal_senders=5
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./local/postgres-init:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U openfoundry"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U openfoundry"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -294,12 +293,16 @@ services:
   # whose lifecycle does not depend on the connector definition.
   debezium-connect:
     <<: *common
-    image: ${OPENFOUNDRY_DEBEZIUM_IMAGE:-debezium/connect:2.7}
+    image: ${OPENFOUNDRY_DEBEZIUM_IMAGE:-quay.io/debezium/connect:2.7.2.Final}
     ports:
       - "${OPENFOUNDRY_DEBEZIUM_HOST_PORT:-8083}:8083"
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
       GROUP_ID: of-debezium-connect
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN: CHECKPOINT_AUDIT_CDC_PASSWORD
+      CHECKPOINT_AUDIT_CDC_PASSWORD: ${OPENFOUNDRY_CHECKPOINT_AUDIT_CDC_PASSWORD:-}
       CONFIG_STORAGE_TOPIC: of_connect_configs
       OFFSET_STORAGE_TOPIC: of_connect_offsets
       STATUS_STORAGE_TOPIC: of_connect_statuses
@@ -381,7 +384,7 @@ services:
             "transforms.outbox.table.field.event.timestamp": "created_at",
             "transforms.outbox.table.expand.json.payload": "true",
             "transforms.outbox.route.by.field": "topic",
-            "transforms.outbox.route.topic.replacement": "${routedByValue}",
+            "transforms.outbox.route.topic.replacement": "$${routedByValue}",
             "transforms.outbox.table.fields.additional.placement": "aggregate:header:aggregateType,event_id:header:id",
             "transforms.outbox.headers.json.fields.placement": "headers"
           }' \
@@ -417,7 +420,7 @@ services:
             "transforms.outbox.table.field.event.timestamp": "created_at",
             "transforms.outbox.table.expand.json.payload": "true",
             "transforms.outbox.route.by.field": "topic",
-            "transforms.outbox.route.topic.replacement": "${routedByValue}",
+            "transforms.outbox.route.topic.replacement": "$${routedByValue}",
             "transforms.outbox.table.fields.additional.placement": "aggregate:header:aggregateType,event_id:header:id",
             "transforms.outbox.headers.json.fields.placement": "headers"
           }' \
@@ -453,12 +456,34 @@ services:
             "transforms.outbox.table.field.event.timestamp": "created_at",
             "transforms.outbox.table.expand.json.payload": "true",
             "transforms.outbox.route.by.field": "topic",
-            "transforms.outbox.route.topic.replacement": "${routedByValue}",
+            "transforms.outbox.route.topic.replacement": "$${routedByValue}",
             "transforms.outbox.table.fields.additional.placement": "aggregate:header:aggregateType,event_id:header:id",
             "transforms.outbox.headers.json.fields.placement": "headers"
           }' \
           http://debezium-connect:8083/connectors/connector-management-outbox/config
         echo "Done."
+
+  # Keep the checkpoint connector independent of the legacy pg_policy and other outboxes.
+  checkpoint-audit-connect-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      debezium-connect:
+        condition: service_healthy
+    restart: "no"
+    volumes:
+      - ./local/debezium/checkpoint-audit-outbox.json:/config/checkpoint-audit-outbox.json:ro
+    environment:
+      CHECKPOINT_AUDIT_CDC_ENABLED: ${OPENFOUNDRY_CHECKPOINT_AUDIT_CDC_PASSWORD:+1}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -z "$$CHECKPOINT_AUDIT_CDC_ENABLED" ]; then
+          echo 'Checkpoint audit CDC is disabled (no password supplied).'
+          exit 0
+        fi
+        curl -fsS -X PUT -H 'Content-Type: application/json' \
+          --data-binary @/config/checkpoint-audit-outbox.json \
+          http://debezium-connect:8083/connectors/checkpoint-audit-outbox/config
 
   # ── Apicurio Registry (Schema Registry) ────────────────────
   # ADR-0022 §3.6 — schemas of every event published through the
@@ -602,7 +627,7 @@ services:
     <<: *app-common
     profiles: *profiles-foundation
     build:
-      context: ..
+      context: ../..
       dockerfile: services/identity-federation-service/Dockerfile
     environment:
       OPENFOUNDRY_ENV: development
@@ -635,7 +660,7 @@ services:
     <<: *app-common
     profiles: *profiles-foundation
     build:
-      context: ..
+      context: ../..
       dockerfile: services/authorization-policy-service/Dockerfile
     environment:
       OPENFOUNDRY_ENV: development
@@ -657,7 +682,7 @@ services:
     <<: *app-common
     profiles: *profiles-foundation
     build:
-      context: ..
+      context: ../..
       dockerfile: services/tenancy-organizations-service/Dockerfile
     environment:
       OPENFOUNDRY_ENV: development
@@ -1480,7 +1505,7 @@ services:
     <<: *app-common
     profiles: *profiles-foundation
     build:
-      context: ..
+      context: ../..
       dockerfile: services/notification-alerting-service/Dockerfile
     environment:
       OPENFOUNDRY_ENV: development
@@ -1501,7 +1526,7 @@ services:
     <<: *app-common
     profiles: *profiles-foundation
     build:
-      context: ..
+      context: ../..
       dockerfile: services/audit-compliance-service/Dockerfile
     environment:
       HOST: 0.0.0.0

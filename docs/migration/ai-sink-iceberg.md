@@ -27,18 +27,15 @@ The adapter must load the target Lakekeeper table, write Parquet data files, com
 
 ## Adapter dependency and in-repo contract
 
-This repository includes the OpenFoundry table-writer adapter in
-`services/iceberg-catalog-service`: the append route is
-`POST /openfoundry/iceberg/v1/append` in
-`services/iceberg-catalog-service/internal/server/server.go`, and the request
-model is documented in `services/iceberg-catalog-service/internal/models/models.go`.
-The ai-sink writer contract tests pin the exact JSON payload sent to that route,
-including table identity, field IDs, layout, and row encoding.
+The bundled Go catalog service validates the OpenFoundry append contract at
+`POST /openfoundry/iceberg/v1/append`. Its metadata store cannot write Parquet
+data files or manifests. A valid append therefore returns HTTP 503 and leaves
+the snapshot unchanged. This applies to both audit and AI events. The sink
+retains the Kafka offsets on failure.
 
-Deployments may point `AI_SINK_TABLE_WRITER_URL` (or the shared
-`ICEBERG_TABLE_WRITER_URL` fallback) at that service. If an external adapter is
-used instead, it must implement the same route and error contract before
-Iceberg mode is considered production-equivalent.
+Configure `AI_SINK_TABLE_WRITER_URL` or `ICEBERG_TABLE_WRITER_URL` to reach a
+durable table writer that implements the route and error contract above.
+Co-located deployments can proxy the same route at `ICEBERG_CATALOG_URL`.
 
 ## Configuration
 

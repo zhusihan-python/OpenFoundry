@@ -37,7 +37,10 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
   runs and canonical scheduled builds.
 
 ### Changed
-- _(add entries here)_
+- **BREAKING:** The bundled Iceberg catalog returns HTTP 503 for valid row appends
+  because it cannot persist Parquet data. Before resuming audit or AI consumers,
+  configure a durable OpenFoundry table writer as described in the
+  [audit](docs/migration/audit-sink-iceberg.md) and [AI](docs/migration/ai-sink-iceberg.md) cutovers.
 
 ### Deprecated
 - _(add entries here)_

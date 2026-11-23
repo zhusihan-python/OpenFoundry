@@ -25,13 +25,17 @@ import (
 var version = "dev"
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	cfg, err := config.FromEnv()
 	if err != nil {
 		slog.Error("config load failed", slog.String("error", err.Error()))
-		os.Exit(1)
+		return 1
 	}
 	if cfg.Service.Version == "dev" {
 		cfg.Service.Version = version
@@ -41,21 +45,21 @@ func main() {
 	shutdownTracing, err := observability.InitTracing(ctx, cfg.Service.Name, cfg.Service.Version)
 	if err != nil {
 		log.Error("tracing init failed", slog.String("error", err.Error()))
-		os.Exit(1)
+		return 1
 	}
 	defer func() { _ = shutdownTracing(context.Background()) }()
 
 	w, err := buildWriter(cfg)
 	if err != nil {
 		log.Error("writer build failed", slog.String("error", err.Error()))
-		os.Exit(1)
+		return 1
 	}
 	defer func() { _ = w.Close() }()
 
 	sub, err := databus.NewKafkaSubscriber(cfg.DataBus, config.ConsumerGroup, []string{config.SourceTopic})
 	if err != nil {
 		log.Error("kafka subscriber init failed", slog.String("error", err.Error()))
-		os.Exit(1)
+		return 1
 	}
 	defer func() { _ = sub.Close() }()
 
@@ -87,18 +91,22 @@ func main() {
 		}
 	}()
 
-	// Whichever finishes first cancels the other.
+	// Signal shutdown is successful. A runtime failure must trigger on-failure restart.
+	status := 0
 	select {
 	case err := <-httpErr:
+		status = 1
 		log.Error("metrics http server failed", slog.String("error", err.Error()))
 		cancel()
 	case err := <-runErr:
+		status = 1
 		log.Error("kafka runtime failed", slog.String("error", err.Error()))
 		cancel()
 	case <-ctx.Done():
 		log.Info("shutdown signal received")
 	}
 	wg.Wait()
+	return status
 }
 
 // buildWriter picks the Writer implementation per config.

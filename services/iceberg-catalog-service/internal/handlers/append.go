@@ -13,13 +13,8 @@ import (
 	"github.com/openfoundry/openfoundry-go/services/iceberg-catalog-service/internal/models"
 )
 
-const appendEndpointPath = "/openfoundry/iceberg/v1/append"
-
-// AppendBatch implements the OpenFoundry HTTP table-writer adapter consumed by
-// audit-sink and ai-sink. The Go catalog service owns the HTTP contract and
-// delegates the durable Iceberg metadata commit to the existing CommitTable
-// path; production deployments can swap the store implementation underneath
-// this handler to write Parquet/manifests before CommitTable is called.
+// AppendBatch validates the OpenFoundry writer contract for both sinks.
+// The catalog's metadata store cannot write row data or manifests.
 func (h *Handlers) AppendBatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -58,18 +53,9 @@ func (h *Handlers) AppendBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	commit := appendCommitRequest(table, batch)
-	_, location, err := h.Repo.CommitTable(r.Context(), projectRID(r), namespace, batch.Spec.Table, commit)
-	if err != nil {
-		writeJSONErr(w, statusFromErr(err), err.Error())
-		return
-	}
-	writeJSON(w, http.StatusAccepted, models.AppendBatchResponse{
-		Namespace:        batch.Spec.Namespace,
-		Table:            batch.Spec.Table,
-		Rows:             len(batch.Rows),
-		MetadataLocation: location,
-	})
+	// A 2xx response allows the sink to commit Kafka offsets. Only a durable
+	// table writer can acknowledge this request after its files and snapshot commit.
+	writeJSONErr(w, http.StatusServiceUnavailable, "durable Iceberg table writer required")
 }
 
 func validateAppendSpec(spec models.TableSpec) error {
@@ -247,35 +233,4 @@ func jsonStringValue(raw json.RawMessage) string {
 		return value
 	}
 	return ""
-}
-
-func appendCommitRequest(table *models.IcebergTable, batch models.AppendBatch) *models.CommitTableRequest {
-	now := time.Now().UTC().UnixMilli()
-	snapshotID := now
-	seq := table.LastSequenceNumber + 1
-	manifest := fmt.Sprintf("%s/metadata/openfoundry-append-%d.avro", strings.TrimRight(table.Location, "/"), snapshotID)
-	summary, _ := json.Marshal(map[string]string{
-		"operation":        "append",
-		"added-records":    fmt.Sprintf("%d", len(batch.Rows)),
-		"added-data-files": "1",
-	})
-	snapshot, _ := json.Marshal(map[string]any{
-		"snapshot-id":     snapshotID,
-		"sequence-number": seq,
-		"manifest-list":   manifest,
-		"summary":         json.RawMessage(summary),
-		"schema-id":       0,
-	})
-	return &models.CommitTableRequest{
-		Identifier: &models.TableIdentifier{Namespace: namespacePath(batch.Spec.Namespace), Name: batch.Spec.Table},
-		Updates: []json.RawMessage{mustMarshalJSON(map[string]any{
-			"action":   "add-snapshot",
-			"snapshot": json.RawMessage(snapshot),
-		})},
-	}
-}
-
-func mustMarshalJSON(value any) json.RawMessage {
-	out, _ := json.Marshal(value)
-	return out
 }
