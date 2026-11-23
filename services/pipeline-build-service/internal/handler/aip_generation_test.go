@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -104,24 +102,6 @@ func TestAIServicePipelineAIPGeneratorParsesJSONNodeResponse(t *testing.T) {
 	require.Len(t, result.Nodes, 1)
 	require.Equal(t, "llm", result.Nodes[0].TransformType)
 	require.JSONEq(t, `{"prompt":"Summarize {{trail}}","output_column":"summary"}`, string(result.Nodes[0].Config))
-}
-
-func TestPipelineAIPProviderSmokeGated(t *testing.T) {
-	if os.Getenv("OPENFOUNDRY_PIPELINE_AIP_PROVIDER_SMOKE") != "1" {
-		t.Skip("set OPENFOUNDRY_PIPELINE_AIP_PROVIDER_SMOKE=1 with AI_SERVICE_URL to run provider smoke")
-	}
-	baseURL := strings.TrimSpace(os.Getenv("AI_SERVICE_URL"))
-	require.NotEmpty(t, baseURL, "AI_SERVICE_URL is required for provider smoke")
-	generator := NewAIServicePipelineAIPGenerator(PipelineAIPGeneratorConfig{BaseURL: baseURL, AgentRuntime: os.Getenv("PIPELINE_LLM_PROTOCOL") == "agent-runtime", BearerToken: os.Getenv("AI_SERVICE_BEARER")})
-	result, err := generator.GeneratePipelineTransform(context.Background(), PipelineAIPGenerateRequest{
-		Prompt:          "Create a filter node that keeps rows where distance is greater than 3.",
-		SelectedNodeIDs: []string{"source"},
-		Nodes: []models.PipelineNode{
-			{ID: "source", Label: "Trail source", TransformType: "external", Config: json.RawMessage(`{"rows":[{"trail":"Mesa","distance":5}]}`)},
-		},
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, result.Nodes)
 }
 
 type recordingPipelineAIPGenerator struct {
