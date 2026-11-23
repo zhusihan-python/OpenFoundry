@@ -119,6 +119,26 @@ def batch_rows(request):
     return pa.Table.from_pylist(rows, schema=schema_to_pyarrow(SCHEMA)).sort_by("at")
 
 
+class EventConflict(Exception):
+    """An existing event ID has different audit fields."""
+
+
+def append_events(table, rows):
+    # The smoke owns a small table and serializes all writes in one HTTPServer.
+    seen = {row["event_id"]: row for row in table.scan().to_arrow().to_pylist()}
+    new_indices = []
+    for index, row in enumerate(rows.to_pylist()):
+        event_id = row["event_id"]
+        if event_id in seen:
+            if seen[event_id] != row:
+                raise EventConflict
+        else:
+            seen[event_id] = row
+            new_indices.append(index)
+    if new_indices:
+        table.append(rows.take(new_indices))
+
+
 def serve(args):
     root = args.root
     root.mkdir(parents=True, exist_ok=True)
@@ -126,8 +146,8 @@ def serve(args):
     db.create_namespace_if_not_exists(TABLE[0])
     table = db.create_table_if_not_exists(TABLE, SCHEMA, partition_spec=PARTITION, sort_order=ORDER)
 
-    def record_rejection(rows):
-        marker = root / "append-rejected"
+    def record_batch(name, rows):
+        marker = root / name
         if not marker.exists():
             pending = marker.with_suffix(".tmp")
             pending.write_text(json.dumps([str(value) for value in rows["event_id"].to_pylist()]))
@@ -135,6 +155,7 @@ def serve(args):
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
+            nonlocal table
             if self.path != APPEND_PATH:
                 self.send_error(404)
                 return
@@ -154,20 +175,33 @@ def serve(args):
                 self.send_error(422, "invalid audit batch")
                 return
             if (root / "reject-append").exists():
-                record_rejection(rows)
+                record_batch("append-rejected", rows)
                 self.send_error(503, "append disabled for recovery check")
                 return
             try:
-                table.append(rows)
+                if table is None:
+                    table = db.load_table(TABLE)
+                append_events(table, rows)
+            except EventConflict:
+                self.send_error(409, "event ID already has different audit fields")
+                return
             except Exception as exc:
+                # A failed request can leave the catalog commit outcome unknown.
+                table = None
                 if isinstance(exc, CatalogConnectionError) and exc.request is not None:
                     request = exc.request
                     url = urlsplit(request.url)
                     if (request.method == "POST" and url.netloc == urlsplit(os.environ.get("FIXTURE_REST_URL", "")).netloc
                             and url.path.endswith("/namespaces/of_audit/tables/events")):
-                        record_rejection(rows)
+                        record_batch("append-rejected", rows)
                 print(f"Iceberg append failed: {type(exc).__name__}", file=sys.stderr, flush=True)
                 self.send_error(503, "Iceberg append failed")
+                return
+            drop = root / "drop-append-response"
+            if drop.exists():
+                drop.unlink()
+                record_batch("append-response-dropped", rows)
+                self.close_connection = True
                 return
             self.send_response(204)
             self.end_headers()

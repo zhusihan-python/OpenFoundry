@@ -21,3 +21,16 @@ The JSON report includes the source revision and dirty state, component versions
 Add `--lakekeeper` to the same command to deploy Lakekeeper v0.12.0, its PostgreSQL metadata database and RustFS 1.0.6 in the isolated Compose project. Use the pinned Python dependencies above. The fixture creates a fresh bucket and warehouse named `audit-fixture` with random local credentials. Only loopback ports are published. This local catalog runs without OIDC and the PyIceberg adapter implements the audit table contract for this test.
 
 The runner stops Lakekeeper after the first successful append. A real catalog commit fails for the second decision, the adapter responds with 503 and the sink exits. The runner restores the catalog, checks that the committed snapshot and Kafka offset stayed fixed, then restarts the sink. A separate reader reopens the table through REST, reads its current metadata JSON and physical Parquet from S3, and checks both payloads and event IDs. The report records the committed file paths. An interrupted commit can leave unreferenced objects in the disposable bucket. Cleanup removes the project's data volumes and containers.
+
+## Lost append response
+
+Add `--lost-ack` to exercise a third checkpoint. The writer commits the
+event and closes the HTTP connection before sending its success response.
+The runner reads the committed event while the consumer offset is still 2,
+then restarts the sink. The offset must reach 3 with the same snapshot,
+files and rows. The additional evidence is in the report's `lost_ack` field.
+
+This fixture has a single writer and a small disposable table. It compares
+incoming events with committed rows, acknowledges exact retries, and returns
+HTTP 409 for a reused ID with different fields. Multiple independent writers
+need atomic coordination at their own durable write boundary.

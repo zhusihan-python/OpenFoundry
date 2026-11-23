@@ -9,9 +9,9 @@ everything `edge-gateway-service` and `libs/audit-trail` publish.
 
 `Writer.Append` happens BEFORE the Kafka offset commit. A crash between
 the Iceberg append and the commit replays the batch on restart;
-downstream dedup (Iceberg primary key by `event_id`, or an
-`idempotency.Store` if one is wired in) handles duplicates. Same
-trade-off the Rust crate makes — see ADR-0022 § Consumer-side contract.
+the table writer must deduplicate by `event_id` at the durable write boundary,
+including retries after a lost HTTP response. ADR-0022 defines this
+consumer-side contract. Each deployed writer needs its own replay test.
 
 ## Writer backends
 
