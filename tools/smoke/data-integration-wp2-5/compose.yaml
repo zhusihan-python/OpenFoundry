@@ -8,6 +8,7 @@ services:
       OTHER_PASSWORD: ${WP25_OTHER_PASSWORD:?}
     volumes:
       - ${WP25_TLS:?}:/fixture-tls:ro
+      - ../data-integration-wp2-5/tls-only.sh:/docker-entrypoint-initdb.d/tls-only.sh:ro
       - ../data-integration-wp2-5/init.sql:/docker-entrypoint-initdb.d/orders.sql:ro
     entrypoint: ["/bin/sh", "-ec"]
     command:

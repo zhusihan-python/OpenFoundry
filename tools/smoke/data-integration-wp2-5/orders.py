@@ -13,16 +13,18 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
 
-def sql(statement, user="postgres", *, records=None, denied=False):
+def sql(statement, user="postgres", *, records=None, denied=False, sslmode="verify-full"):
     passwords = {"postgres": "WP25_ADMIN_PASSWORD", "orders_reader": "WP25_READER_PASSWORD",
                  "other_reader": "WP25_OTHER_PASSWORD"}
     env = dict(os.environ, PGPASSWORD=os.environ[passwords[user]])
-    cmd = ["docker", "exec", "-i", "-e", "PGPASSWORD", "-e", "PGSSLMODE=verify-full",
+    cmd = ["docker", "exec", "-i", "-e", "PGPASSWORD", "-e", "PGSSLMODE=" + sslmode,
            "-e", "PGSSLROOTCERT=/fixture-tls/server.crt", os.environ["WP25_DB_CONTAINER"],
            "psql", "-XAtq", "-v", "ON_ERROR_STOP=1", "-h", "orders-db", "-U", user, "-d", "orders"]
     if records is not None:
         cmd.extend(["-v", "records=" + json.dumps(records)])
     result = subprocess.run(cmd, input=statement, capture_output=True, text=True, timeout=30, env=env)
+    if sslmode == "disable":
+        return result.returncode != 0 and "rejects connection" in result.stderr
     if denied:
         return result.returncode != 0 and "permission denied" in result.stderr
     result.check_returncode()
@@ -71,6 +73,7 @@ def main(state):
 
     check("fixture authenticates read role over verified TLS",
           sql("SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()", "orders_reader") == "t")
+    check("source rejects plaintext logins", sql("SELECT 1", "orders_reader", sslmode="disable"))
     check("read role cannot modify orders", sql("DELETE FROM sales.orders", "orders_reader", denied=True))
     check("other database role cannot read orders", sql("SELECT * FROM sales.orders", "other_reader", denied=True))
     src, sync = new_sync(owner, "orders_reader", os.environ["WP25_READER_PASSWORD"], raw)

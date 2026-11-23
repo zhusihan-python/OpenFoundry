@@ -22,7 +22,11 @@ import (
 // pgx options, alternate hosts and local sockets cannot be supplied through this URL.
 func PostgresEndpoint(raw string, allowed []string, private bool) (*url.URL, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "postgresql" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(u.Host, ",%/\\") || u.Path == "" || len(strings.TrimPrefix(u.Path, "/")) == 0 || strings.ContainsAny(strings.TrimPrefix(u.Path, "/"), "/\x00") {
+	if err != nil {
+		return nil, errors.New("invalid PostgreSQL endpoint")
+	}
+	database := strings.TrimPrefix(u.Path, "/")
+	if u.Scheme != "postgresql" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(u.Host, ",%/\\") || database == "" || strings.ContainsAny(database, "/\x00") || strings.HasSuffix(u.Host, ":") {
 		return nil, errors.New("expected PostgreSQL endpoint postgresql://host[:port]/database")
 	}
 	if port := u.Port(); port != "" {

@@ -24,8 +24,11 @@ func (h *Handlers) prepareSnapshotPull(conn *models.Connection, tenant repo.Tena
 		if err != nil {
 			return nil, err
 		}
-		if table == nil || h.Config.PostgresSyncEndpoint == "" {
-			return nil, errors.New("PostgreSQL snapshot requires a configured endpoint and sync.postgres_table")
+		if table == nil {
+			return nil, fmt.Errorf("sync runtime for connector type %q is not available", conn.ConnectorType)
+		}
+		if h.Config.PostgresSyncEndpoint == "" {
+			return nil, errors.New("PostgreSQL snapshot requires a configured endpoint")
 		}
 		if lease.Run.CPMode != "" || lease.Run.RecoveryProtocol != "" {
 			return nil, errors.New("PostgreSQL table snapshots do not support checkpoint or recovery protocols")
