@@ -190,3 +190,13 @@ grant during initdb. It adds column-level `SELECT (event_id)` to
 this role or an equivalently scoped producer on the same database.
 Migration 0008 uses the platform-owned ADR-0022 table with replica identity
 `FULL`. On a fresh standalone database, it creates the outbox.
+
+For a fresh dev installation backed by the pg-policy chart, apply
+`infra/helm/apps/of-platform/values-checkpoint-db.yaml` after `values-dev.yaml`
+to the of-platform release. It selects the generated
+`checkpoints-purpose-db-dsn` writer and reader credentials. An existing
+installation using `authorization-policy-db-dsn` should keep its configured
+database and schema and apply the owner grant there. If that database has
+not yet run migration 0007 or installed pgcrypto, its owner must first run
+`CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public`. Switching DSNs
+changes the source of existing policies and audit history.

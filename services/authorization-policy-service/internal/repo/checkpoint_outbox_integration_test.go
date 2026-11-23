@@ -26,7 +26,6 @@ func TestPurposeAuditWithPlatformOwnedOutbox(t *testing.T) {
 		return string(body)
 	}
 	db.MustExec(ctx, chartSQL("pg-policy-bootstrap.sql"))
-	db.MustExec(ctx, "CREATE EXTENSION pgcrypto")
 	cfg, err := pgxpool.ParseConfig(db.URL)
 	require.NoError(t, err)
 	cfg.ConnConfig.User = "svc_checkpoints_purpose"

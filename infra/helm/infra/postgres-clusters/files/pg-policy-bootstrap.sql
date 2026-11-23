@@ -2,6 +2,9 @@
 -- pg-policy — security/policy/audit/governance bounded contexts
 -- (CDC source via Debezium — see cluster manifest comments)
 -- ============================================================
+-- Migration 0007 requires pgcrypto; application roles have no database CREATE.
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+
 DO $$
 DECLARE
   bc TEXT;
