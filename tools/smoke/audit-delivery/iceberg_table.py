@@ -6,6 +6,10 @@ import os
 import time
 from urllib.request import Request, urlopen
 from urllib.error import URLError
+from urllib.parse import urlsplit
+
+from requests.exceptions import ConnectionError as CatalogConnectionError
+from pyiceberg.serializers import FromInputFile
 import sys
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -156,7 +160,12 @@ def serve(args):
             try:
                 table.append(rows)
             except Exception as exc:
-                record_rejection(rows)
+                if isinstance(exc, CatalogConnectionError) and exc.request is not None:
+                    request = exc.request
+                    url = urlsplit(request.url)
+                    if (request.method == "POST" and url.netloc == urlsplit(os.environ.get("FIXTURE_REST_URL", "")).netloc
+                            and url.path.endswith("/namespaces/of_audit/tables/events")):
+                        record_rejection(rows)
                 print(f"Iceberg append failed: {type(exc).__name__}", file=sys.stderr, flush=True)
                 self.send_error(503, "Iceberg append failed")
                 return
@@ -176,9 +185,9 @@ def read(root):
         raise ValueError("persisted Iceberg table contract mismatch")
     snapshot = table.current_snapshot()
     if "FIXTURE_REST_URL" in os.environ:
-        with table.io.new_input(table.metadata_location).open() as metadata:
-            if json.load(metadata)["current-snapshot-id"] != snapshot.snapshot_id:
-                raise ValueError("S3 metadata and REST snapshot disagree")
+        metadata = FromInputFile.table_metadata(table.io.new_input(table.metadata_location))
+        if metadata.current_snapshot_id != snapshot.snapshot_id:
+            raise ValueError("S3 metadata and REST snapshot disagree")
     files = sorted(task.file.file_path for task in table.scan().plan_files())
     for path in files:
         with table.io.new_input(path).open() as source:

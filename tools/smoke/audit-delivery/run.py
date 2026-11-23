@@ -165,9 +165,9 @@ class Fixture:
                                                          "checkpoint-audit-connect-init": init}, "volumes": volumes}))
 
     def start(self):
-        self.stage = "start isolated services"
         if self.lakekeeper:
             self.start_storage()
+        self.stage = "start isolated services"
         self.table_process = subprocess.Popen([self.python, HERE / "iceberg_table.py", "serve", "--root", self.table],
                                               env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         until("Iceberg table server", lambda: (self.table / "port").exists())
@@ -289,6 +289,8 @@ class Fixture:
             status, code = run("docker", "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", sink).split()
             return (int(code),) if status == "exited" else None
         code, = until("audit-sink exit", exit_status)
+        check("HTTP 503 from table-writer adapter" in self.compose("logs", "--no-color", "sink"),
+              "sink did not observe the rejected append status")
         check(code != 0, "sink returned success on failed append")
         check(self.offset() == 1, "Kafka group advanced during the failed append")
         if self.lakekeeper:
