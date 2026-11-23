@@ -26,6 +26,10 @@ responsible for loading the Lakekeeper table, writing Parquet data files,
 and committing the Iceberg snapshot atomically before the sink commits
 Kafka offsets.
 
+The bundled Go catalog is metadata-only and returns HTTP 503 on valid append
+requests. Configure the sink to reach a durable writer before enabling Iceberg
+delivery. See the [deployment contract](../../docs/migration/ai-sink-iceberg.md).
+
 ## Configuration
 
 Identical to `audit-sink` but with AI-specific knobs:

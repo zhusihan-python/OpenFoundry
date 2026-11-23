@@ -41,19 +41,17 @@ Kafka runtime may commit offsets.
 
 ## Adapter dependency and in-repo contract
 
-This repository includes the OpenFoundry table-writer adapter in
-`services/iceberg-catalog-service`: the append route is
-`POST /openfoundry/iceberg/v1/append` in
-`services/iceberg-catalog-service/internal/server/server.go`, and the request
-model is documented in `services/iceberg-catalog-service/internal/models/models.go`.
-The audit-sink writer contract tests pin the exact JSON payload sent to that
-route, including table identity, field IDs, layout, and row encoding.
+The bundled Go catalog service validates the OpenFoundry append contract at
+`POST /openfoundry/iceberg/v1/append`. Its metadata store cannot write Parquet
+data files or manifests. A valid append therefore returns HTTP 503 and leaves
+the snapshot unchanged. This applies to both audit and AI events. The sink
+retains the Kafka offsets on failure.
 
-Deployments must run or proxy that adapter at `ICEBERG_CATALOG_URL` for
-`audit-sink`; unlike `ai-sink`, audit-sink currently has no separate
-`*_TABLE_WRITER_URL` override. If the adapter is deployed out-of-process, the
-external service must implement the same route and error contract before
-Iceberg mode is considered production-equivalent.
+Deploy or proxy a durable table writer at `ICEBERG_CATALOG_URL` for audit-sink.
+It must implement the OpenFoundry route, persist the rows, and commit the target
+Iceberg snapshot before returning 2xx. A standalone Iceberg REST catalog needs
+a writer providing that route. The local audit-delivery smoke exercises the
+same HTTP contract with an isolated PyIceberg SQL catalog and filesystem warehouse.
 
 ## Explicit JSONL dev mode
 

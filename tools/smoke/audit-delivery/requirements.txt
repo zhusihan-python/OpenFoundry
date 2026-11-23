@@ -1,0 +1,3 @@
+# This pair writes the Iceberg UUID column with the Parquet UUID annotation.
+pyiceberg[pyarrow,sql-sqlite]==0.10.0
+pyarrow==21.0.0
