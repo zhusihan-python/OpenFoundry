@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	kafka "github.com/segmentio/kafka-go"
+	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 
 	databus "github.com/openfoundry/openfoundry-go/libs/event-bus-data"
 	"github.com/openfoundry/openfoundry-go/services/audit-sink/internal/config"
@@ -40,13 +41,31 @@ func (w *kafkaAuditWriter) calls() int {
 	return len(w.batches)
 }
 
-func kafkaBrokersOrSkip(t *testing.T) []string {
+func kafkaBrokers(t *testing.T) []string {
 	t.Helper()
-	bootstrap := strings.TrimSpace(os.Getenv("KAFKA_BOOTSTRAP_SERVERS"))
-	if bootstrap == "" {
-		t.Skip("KAFKA_BOOTSTRAP_SERVERS not set; skipping real Kafka consumer integration test")
+	if bootstrap := strings.TrimSpace(os.Getenv("KAFKA_BOOTSTRAP_SERVERS")); bootstrap != "" {
+		return strings.Split(bootstrap, ",")
 	}
-	return strings.Split(bootstrap, ",")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	broker, err := tckafka.Run(ctx, "confluentinc/cp-kafka:7.7.0")
+	if broker != nil {
+		t.Cleanup(func() {
+			stop, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := broker.Terminate(stop); err != nil {
+				t.Errorf("terminate test broker: %v", err)
+			}
+		})
+	}
+	if err != nil {
+		t.Fatalf("start test broker: %v", err)
+	}
+	brokers, err := broker.Brokers(ctx)
+	if err != nil {
+		t.Fatalf("resolve test broker: %v", err)
+	}
+	return brokers
 }
 
 func createKafkaTopic(t *testing.T, brokers []string, topic string) {
@@ -138,7 +157,7 @@ func runAuditSinkOnce(t *testing.T, brokers []string, topic, group string, w *ka
 }
 
 func TestRuntimeWithRealKafkaValidMalformedAndRetry(t *testing.T) {
-	brokers := kafkaBrokersOrSkip(t)
+	brokers := kafkaBrokers(t)
 
 	t.Run("valid event writes and commits", func(t *testing.T) {
 		topic := "of-audit-sink-valid-" + uuid.NewString()
