@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openfoundry
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?}
+      POSTGRES_DB: datasets
+    volumes:
+      - ../business-platform-p1/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "openfoundry", "-d", "datasets"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+  store:
+    image: rustfs/rustfs:1.0.6
+    environment:
+      RUSTFS_ACCESS_KEY: ${STORE_ACCESS:?}
+      RUSTFS_SECRET_KEY: ${STORE_SECRET:?}
+    ports: ["127.0.0.1::9000"]
+  dataset:
+    image: alpine:3.22
+    entrypoint: ["/service"]
+    volumes:
+      - ${BIN_DIR:?}/dataset-versioning-service:/service:ro
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50078
+      JWT_SECRET: ${JWT_SECRET:?}
+      DATABASE_URL: postgres://openfoundry:${DB_PASSWORD:?}@postgres:5432/datasets
+      DATASET_FILES_BASE_URL: http://127.0.0.1:${WP23_DVS_PORT:?}
+      DATASET_FILES_ROOT_DIR: /var/of/backing
+      DATASET_STAGED_OUTPUTS_DIR: /var/of/staging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports: ["127.0.0.1:${WP23_DVS_PORT:?}:50078"]
+  pipeline:
+    image: alpine:3.22
+    entrypoint: ["/service"]
+    volumes:
+      - ${BIN_DIR:?}/pipeline-build-service:/service:ro
+      - ../../../services/pipeline-build-service/config.yaml:/etc/openfoundry/config.yaml:ro
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50081
+      DATABASE_URL: postgres://openfoundry:${DB_PASSWORD:?}@postgres:5432/pipelines
+      JWT_SECRET: ${JWT_SECRET:?}
+      DATASET_SERVICE_URL: http://dataset:50078
+      STORAGE_BACKEND: local
+      DATA_DIR: /var/lib/openfoundry/pipeline-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports: ["127.0.0.1::50081"]
+  connector:
+    image: alpine:3.22
+    entrypoint: ["/service"]
+    volumes:
+      - ${BIN_DIR:?}/connector-management-service:/service:ro
+    environment:
+      HOST: 0.0.0.0
+      PORT: 50088
+      DATABASE_URL: postgres://openfoundry:${DB_PASSWORD:?}@postgres:5432/connectors
+      JWT_SECRET: ${JWT_SECRET:?}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_KEY:?}
+      DATASET_SERVICE_URL: http://dataset:50078
+      ALLOW_PRIVATE_NETWORK_EGRESS: "true"
+      ALLOWED_EGRESS_HOSTS: store
+      S3_SYNC_ENDPOINT: http://store:9000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports: ["127.0.0.1::50088"]

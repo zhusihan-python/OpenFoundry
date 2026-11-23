@@ -1,25 +1,26 @@
-package kinesis
+// Package sigv4 signs the native Kinesis and S3 connector requests.
+package sigv4
 
 import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 )
 
-// signRequest applies AWS Signature V4 to req using the provided
+// SignRequest applies AWS Signature V4 to req using the provided
 // credentials. The body is hashed in full and the request is mutated
 // in-place: x-amz-date is set, x-amz-security-token is added when a
 // session token is present, and Authorization is appended.
 //
 // Mirrors the canonical request / string-to-sign / signing-key
 // derivation documented in the AWS Signature V4 reference. Kept
-// minimal — only what the Kinesis Data API exercises (POST + JSON
-// body + virtual-host endpoint).
-func signRequest(req *http.Request, body []byte, accessKey, secretKey, sessionToken, region, service string, now time.Time) {
+// minimal for Kinesis JSON POST and path-style S3 GetObject.
+func SignRequest(req *http.Request, body []byte, accessKey, secretKey, sessionToken, region, service string, now time.Time) {
 	if req.URL.Path == "" {
 		req.URL.Path = "/"
 	}
@@ -41,7 +42,7 @@ func signRequest(req *http.Request, body []byte, accessKey, secretKey, sessionTo
 	canonicalHeaders, signedHeaders := canonicalHeaderBlock(req)
 	canonicalRequest := strings.Join([]string{
 		req.Method,
-		canonicalURI(req.URL.Path),
+		canonicalURI(req.URL.Path, service),
 		canonicalQuery(req.URL.RawQuery),
 		canonicalHeaders,
 		signedHeaders,
@@ -103,9 +104,16 @@ func signedHeader(name string) bool {
 	return false
 }
 
-func canonicalURI(path string) string {
+func canonicalURI(path, service string) string {
 	if path == "" {
 		return "/"
+	}
+	if service == "s3" {
+		parts := strings.Split(path, "/")
+		for i, part := range parts {
+			parts[i] = strings.ReplaceAll(url.QueryEscape(part), "+", "%20")
+		}
+		return strings.Join(parts, "/")
 	}
 	return path
 }

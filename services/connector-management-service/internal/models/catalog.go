@@ -24,6 +24,7 @@ type GalleryConnector struct {
 }
 
 type ConnectionEffectiveCapabilities struct {
+	NativeSnapshotSync          bool           `json:"native_snapshot_sync"`
 	ConnectionID                uuid.UUID      `json:"connection_id"`
 	ConnectorType               string         `json:"connector_type"`
 	Status                      string         `json:"status"`
@@ -135,21 +136,25 @@ func CertificationSummary() ConnectorCertificationSummary {
 	return ConnectorCertificationSummary{CertifiedConnectors: certified, AdvancedConnectors: advanced, ConnectorsNeedingHardening: len(profiles) - certified - advanced, TemplateFamilies: families}
 }
 
-func BuildGalleryCatalog() GalleryCatalog {
+func BuildGalleryCatalog(s3SyncEnabled bool) GalleryCatalog {
 	profiles := ConnectorProfiles()
 	connectors := make([]GalleryConnector, 0, len(profiles))
 	for _, profile := range profiles {
-		connectors = append(connectors, ToGalleryConnector(profile))
+		connectors = append(connectors, ToGalleryConnector(profile, s3SyncEnabled))
 	}
 	return GalleryCatalog{Connectors: connectors}
 }
 
-func ToGalleryConnector(profile ConnectorContractProfile) GalleryConnector {
+func ToGalleryConnector(profile ConnectorContractProfile, s3SyncEnabled bool) GalleryConnector {
 	capabilities := make([]string, 0, len(profile.Sync.Modes)+2)
 	for _, mode := range profile.Sync.Modes {
 		switch mode {
 		case "batch", "incremental":
-			capabilities = append(capabilities, "batch_sync")
+			// This badge advertises the native sync endpoint. Other profiles
+			// may describe upstream agent features or catalog-only adapters.
+			if profile.ConnectorType == "rest_api" || (profile.ConnectorType == "s3" && s3SyncEnabled) {
+				capabilities = append(capabilities, "batch_sync")
+			}
 		case "streaming":
 			capabilities = append(capabilities, "streaming_sync")
 		case "zero_copy":

@@ -1,3 +1,4 @@
+import { useSourceCatalogEntry } from './useConnectorCatalog';
 import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -7,11 +8,9 @@ import { VirtualTablesTab } from '@/lib/components/data-connection/VirtualTables
 import {
   capabilityLabel,
   dataConnection,
-  FALLBACK_CONNECTOR_CATALOG,
   type BatchSyncDef,
   type BulkRegistrationItem,
   type ConnectionRegistration,
-  type ConnectorCatalogEntry,
   type Credential,
   type CredentialKind,
   type DiscoveredSource,
@@ -96,9 +95,7 @@ export function SourceDetailPage() {
   // media-syncs
   const [mediaSyncs, setMediaSyncs] = useState<MediaSetSyncDef[]>([]);
 
-  const catalogEntry: ConnectorCatalogEntry | undefined = source
-    ? FALLBACK_CONNECTOR_CATALOG.find((e) => e.type === source.connector_type)
-    : undefined;
+  const catalogEntry = useSourceCatalogEntry(source);
   const virtualTableProvider = source ? virtualTableProviderFor(source.connector_type) : null;
   const selectedDiscovered = discovered.filter((d) => selectedSelectors[d.selector]);
 

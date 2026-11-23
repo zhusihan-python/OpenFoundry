@@ -17,7 +17,7 @@
 // `aws-sdk-kinesis`, this port talks to the Kinesis Data API directly
 // over POST /  with the JSON1.1 RPC envelope the AWS service exposes
 // (`X-Amz-Target: Kinesis_20131202.<Action>`). The adapter signs each
-// request with AWS Signature V4 from sigv4.go. The repo deliberately
+// request with the shared AWS Signature V4 signer. The repo deliberately
 // avoids `aws-sdk-go-v2` (see libs/search-abstraction/opensearch's
 // rationale) so we keep the same lightweight pattern here.
 //
@@ -44,6 +44,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/adapters"
+	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/adapters/sigv4"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/models"
 )
 
@@ -574,7 +575,7 @@ func (a *Adapter) invoke(ctx context.Context, cfg *kinesisConfig, action string,
 		region = defaultRegion
 	}
 	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
-		signRequest(req, payload, cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken, region, awsService, a.now())
+		sigv4.SignRequest(req, payload, cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken, region, awsService, a.now())
 	}
 	resp, err := a.httpClient.Do(req)
 	if err != nil {

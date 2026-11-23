@@ -101,6 +101,8 @@ type RuntimeConfig struct {
 	NetworkBoundaryServiceURL    string
 	SyncPollIntervalSecs         uint64
 	AllowPrivateNetworkEgress    bool
+	S3SyncEndpoint               string
+	S3SyncRegion                 string
 	AllowedEgressHosts           []string
 	AgentStaleAfterSecs          uint64
 	CredentialEncryptionKey      string
@@ -284,7 +286,7 @@ func (h *Handlers) notImplemented(w http.ResponseWriter, r *http.Request, code s
 }
 
 func (h *Handlers) GetConnectorCatalog(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, models.BuildGalleryCatalog())
+	writeJSON(w, http.StatusOK, models.BuildGalleryCatalog(h.Config.S3SyncEndpoint != ""))
 }
 
 func (h *Handlers) GetConnectorContracts(w http.ResponseWriter, r *http.Request) {
@@ -347,7 +349,7 @@ func (h *Handlers) connectionEffectiveCapabilities(connection models.Connection,
 	if requiresAgent {
 		warnings = append(warnings, "private network egress is disabled; route through a connector agent or allow egress for this source")
 	}
-	return models.ConnectionEffectiveCapabilities{
+	effective := models.ConnectionEffectiveCapabilities{
 		ConnectionID:                connection.ID,
 		ConnectorType:               connection.ConnectorType,
 		Status:                      connection.Status,
@@ -368,6 +370,27 @@ func (h *Handlers) connectionEffectiveCapabilities(connection models.Connection,
 		PolicyWarnings:              warnings,
 		FoundryCompute:              models.FoundryCompute{PythonSingleNode: true, PythonSpark: true, PipelineBuilderSingleNode: true, PipelineBuilderSpark: true},
 	}
+	switch strings.ToLower(strings.ReplaceAll(connection.ConnectorType, "-", "_")) {
+	case "rest_api":
+		source, err := models.ParseRESTAPISourceConfig(connection.Config)
+		effective.NativeSnapshotSync = err == nil && source.Sync != nil
+	case "s3":
+		source, err := models.ParseS3SnapshotSource(connection.Config)
+		if err == nil && source != nil {
+			effective.NativeSnapshotSync = h.Config.S3SyncEndpoint != ""
+			effective.Modes = []string{}
+			if effective.NativeSnapshotSync {
+				effective.Modes = []string{"batch"}
+			}
+			effective.SupportsIncremental = false
+			effective.SupportsCDC = false
+			effective.SupportsZeroCopy = false
+			effective.SupportsConnectionTesting = effective.NativeSnapshotSync
+			effective.SupportsDiscovery = false
+			effective.SupportsSchemaIntrospection = false
+		}
+	}
+	return effective
 }
 
 var validCredentialKinds = map[string]bool{
@@ -1144,6 +1167,9 @@ func (h *Handlers) UpdateConnection(w http.ResponseWriter, r *http.Request) {
 
 func normalizeConnectionConfig(connectorType string, raw json.RawMessage) (json.RawMessage, error) {
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(connectorType), "-", "_")) {
+	case "s3":
+		_, err := models.ParseS3SnapshotSource(raw)
+		return raw, err
 	case "rest_api":
 		return models.NormalizeRESTAPISourceConfig(raw)
 	default:
@@ -2031,38 +2057,11 @@ func (h *Handlers) executeSnapshotSyncGuarded(ctx context.Context, authorization
 		}
 		return h.completeLeased(finCtx, tenant, lease, status, 0, 0, 0, err, nil, contentHash)
 	}
-	connectorType := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(conn.ConnectorType), "-", "_"))
-	if connectorType != "rest_api" {
-		return fail(fmt.Errorf("sync runtime for connector type %q is not available: only rest_api sources with a sync config are supported", conn.ConnectorType), nil)
-	}
-	source, err := models.ParseRESTAPISourceConfig(conn.Config)
+	pull, err := h.prepareSnapshotPull(conn, tenant, lease, beforePage)
 	if err != nil {
-		return fail(fmt.Errorf("invalid rest_api source config: %w", err), nil)
+		return fail(err, nil)
 	}
-	if source.Sync == nil {
-		return fail(fmt.Errorf("rest_api source %s has no sync configuration", conn.ID), nil)
-	}
-	// P2.5: run.cp_mode is the authority (implementation-release correction
-	// 2) — never the current source config. A captured incremental run whose
-	// config no longer enables incremental is a fenced honest failure (the
-	// admission fences make this out-of-band corruption only).
 	incremental := lease.Run.CPMode != ""
-	var incrementalSpec *cmruntime.IncrementalFetchSpec
-	if incremental {
-		inc := source.Sync.Incremental
-		if inc == nil || !inc.Enabled || source.Sync.Pagination.Type != models.RESTAPISyncPaginationCursor {
-			return fail(fmt.Errorf("incremental run captured, but the source config no longer enables incremental cursor sync"), nil)
-		}
-		// The admission-frozen input token: "" means absent (opaque tokens
-		// are always nonempty when present), so the param is omitted on the
-		// first-ever run without an initial_value.
-		incrementalSpec = &cmruntime.IncrementalFetchSpec{
-			RequestParam:            inc.RequestParam,
-			CompletedCheckpointPath: inc.CompletedCheckpointPath,
-			RequestValue:            lease.Run.CPBaseValue,
-			HasRequestValue:         lease.Run.CPBaseValue != "",
-		}
-	}
 	if outwardGuard != nil {
 		if err := outwardGuard(); err != nil {
 			return fail(fmt.Errorf("outward guard refused the target precheck: %w", err), nil)
@@ -2085,27 +2084,7 @@ func (h *Handlers) executeSnapshotSyncGuarded(ctx context.Context, authorization
 	if lease.Run.RecoveryProtocol == models.RunRecoveryProtocolP26V1 && activeBranch == "" {
 		return fail(fmt.Errorf("output dataset reported no usable active branch; keyed publish requires an explicit branch"), nil)
 	}
-	auth, err := h.resolveSnapshotAuth(workCtx, tenant, conn.ID, &source.Auth)
-	if err != nil {
-		return fail(err, nil)
-	}
-	timeout := time.Duration(source.Sync.Limits.RequestTimeoutMS) * time.Millisecond
-	client := &http.Client{
-		Timeout: timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	snapshot, err := cmruntime.FetchRESTSnapshot(workCtx, client, cmruntime.RESTSnapshotOptions{
-		BaseURL:              source.BaseURL,
-		Sync:                 *source.Sync,
-		Auth:                 auth,
-		AllowedEgressHosts:   h.Config.AllowedEgressHosts,
-		AllowPrivateNetworks: h.Config.AllowPrivateNetworkEgress,
-		Egress:               source.Egress,
-		BeforePage:           beforePage,
-		Incremental:          incrementalSpec,
-	})
+	snapshot, err := pull(workCtx)
 	if err != nil {
 		return fail(err, nil)
 	}
