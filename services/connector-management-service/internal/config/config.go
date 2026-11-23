@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -46,6 +47,8 @@ type Config struct {
 	NetworkBoundaryServiceURL   string
 	SyncPollIntervalSecs        uint64
 	AllowPrivateNetworkEgress   bool
+	S3SyncEndpoint              string
+	S3SyncRegion                string
 	AllowedEgressHosts          []string
 	AgentStaleAfterSecs         uint64
 	MediaSetsServiceURL         string
@@ -60,8 +63,8 @@ type Config struct {
 	// P2.6 automatic recovery (default OFF): when false the service performs
 	// ZERO candidate scans and no auto recovery loop exists at all; manual
 	// fresh-auth recovery is always available.
-	SyncAutoRecoveryEnabled bool
-	VendedCredentialsTTLSeconds  int64
+	SyncAutoRecoveryEnabled     bool
+	VendedCredentialsTTLSeconds int64
 
 	// P2.2 interruptible-run coordinator overrides. nil = not configured
 	// (main substitutes the handlers defaults); a PRESENT value has already
@@ -110,6 +113,14 @@ func FromEnv() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.S3SyncEndpoint = strings.TrimSpace(os.Getenv("S3_SYNC_ENDPOINT"))
+	if cfg.S3SyncEndpoint != "" {
+		endpoint, err := url.Parse(cfg.S3SyncEndpoint)
+		if err != nil || (endpoint.Scheme != "https" && endpoint.Scheme != "http") || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/") {
+			return nil, errors.New("S3_SYNC_ENDPOINT must be an HTTP(S) origin without credentials, path, query or fragment")
+		}
+	}
+	cfg.S3SyncRegion = defaultStr(os.Getenv("S3_SYNC_REGION"), "us-east-1")
 	cfg.AllowedEgressHosts = parseList(os.Getenv("ALLOWED_EGRESS_HOSTS"))
 	cfg.AgentStaleAfterSecs, err = parseUint64("AGENT_STALE_AFTER_SECS", os.Getenv("AGENT_STALE_AFTER_SECS"), DefaultAgentStaleAfterSecs)
 	if err != nil {

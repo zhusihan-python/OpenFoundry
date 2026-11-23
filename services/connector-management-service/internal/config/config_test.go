@@ -14,7 +14,7 @@ import (
 func setBaseEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
-		"SERVICE_VERSION", "HOST", "PORT", "DATABASE_URL", "JWT_SECRET", "OPENFOUNDRY_JWT_SECRET", "METRICS_ADDR",
+		"S3_SYNC_ENDPOINT", "S3_SYNC_REGION", "SERVICE_VERSION", "HOST", "PORT", "DATABASE_URL", "JWT_SECRET", "OPENFOUNDRY_JWT_SECRET", "METRICS_ADDR",
 		"DATASET_SERVICE_URL", "PIPELINE_SERVICE_URL", "ONTOLOGY_SERVICE_URL", "INGESTION_REPLICATION_GRPC_URL",
 		"NETWORK_BOUNDARY_SERVICE_URL", "SYNC_POLL_INTERVAL_SECS", "ALLOW_PRIVATE_NETWORK_EGRESS", "ALLOWED_EGRESS_HOSTS",
 		"AGENT_STALE_AFTER_SECS", "MEDIA_SETS_SERVICE_URL", "CREDENTIAL_ENCRYPTION_KEY", "SECRET_MANAGER_URL",
@@ -353,4 +353,21 @@ func TestFromEnvCredentialKeyGate(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestS3SyncEndpoint(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("S3_SYNC_ENDPOINT", "http://store:9000")
+	t.Setenv("S3_SYNC_REGION", "eu-west-1")
+	cfg, err := config.FromEnv()
+	require.NoError(t, err)
+	require.Equal(t, "http://store:9000", cfg.S3SyncEndpoint)
+	require.Equal(t, "eu-west-1", cfg.S3SyncRegion)
+
+	for _, origin := range []string{"s3://bucket", "https://user@store", "https://store/path", "https://store?token=redacted"} {
+		t.Setenv("S3_SYNC_ENDPOINT", origin)
+		_, err = config.FromEnv()
+		require.ErrorContains(t, err, "S3_SYNC_ENDPOINT")
+		require.NotContains(t, err.Error(), "redacted")
+	}
 }

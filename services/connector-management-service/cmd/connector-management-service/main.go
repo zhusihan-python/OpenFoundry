@@ -126,6 +126,8 @@ func run() error {
 			NetworkBoundaryServiceURL:    cfg.NetworkBoundaryServiceURL,
 			SyncPollIntervalSecs:         cfg.SyncPollIntervalSecs,
 			AllowPrivateNetworkEgress:    cfg.AllowPrivateNetworkEgress,
+			S3SyncEndpoint:               cfg.S3SyncEndpoint,
+			S3SyncRegion:                 cfg.S3SyncRegion,
 			AllowedEgressHosts:           cfg.AllowedEgressHosts,
 			AgentStaleAfterSecs:          cfg.AgentStaleAfterSecs,
 			CredentialEncryptionKey:      cfg.CredentialEncryptionKey,

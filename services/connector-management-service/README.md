@@ -11,6 +11,20 @@ identity, `webhook` for outbound callable definitions, and `output_parameters`
 for parsed webhook/action outputs. Legacy `/connections` aliases may remain at
 the HTTP edge, but internal and new product docs should prefer `source`.
 
+## S3 snapshot sources
+
+The native sync endpoint reads one NDJSON object and commits its rows to a versioned dataset. Configure a trusted, path-style object store origin with `S3_SYNC_ENDPOINT` and its signing region with `S3_SYNC_REGION` (default `us-east-1`). Leave the endpoint unset to disable native S3 reads. Restrict upstream access using `ALLOWED_EGRESS_HOSTS` and the store's object policy.
+
+Create a source using `POST /api/v1/data-connection/sources`:
+
+```json
+{"name":"Daily orders","connector_type":"s3","config":{"bucket":"order-fixture","sync":{"object_key":"orders/daily.ndjson"}}}
+```
+
+The source may instead use `url: "s3://order-fixture/orders/"` and `object_key: "daily.ndjson"`. Bind `kind: "aws_keys"` through the source credentials endpoint. Its `value` is a JSON-encoded string containing `access_key_id`, `secret_access_key` and an optional `session_token`. Grant the upstream identity permission to read the specified object. Source JSON stores the bucket and key. The gallery's `batch_sync` capability identifies types served by the native snapshot runtime, and the per-source capabilities response exposes `native_snapshot_sync` for the saved configuration. Other gallery capabilities describe their respective connector features.
+
+Use the standard sync definition and run endpoints. Each successful run provides the output transaction and content hash. A missing object or malformed row fails the run before publication. [Reproducible order pipeline and downstream readback](../../tools/smoke/data-integration-wp2-3/README.md).
+
 ## REST API sources
 
 `connector_type: "rest_api"` sources use a normalized config shape for outbound
