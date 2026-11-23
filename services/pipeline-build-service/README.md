@@ -68,6 +68,11 @@ To publish ontology objects or links, run the graph with
 requested datasets and every output of their selected JobSpecs against the
 pipeline graph. A mixed graph can build its ordinary dataset targets independently.
 
+Resolution checks the declared dataset output projection before reserving outputs.
+For an older resolved build whose saved projection is invalid, execute returns
+409 with `dataset_output_projection_invalid`. Abort that build to release its
+reservations, publish the corrected JobSpec, and create a new build.
+
 Execution uses the published JobSpec RID and output reservations saved with the
 build. This also applies to older pending builds. A historical JobSpec that
 described only a dataset cannot establish whether an earlier graph declared

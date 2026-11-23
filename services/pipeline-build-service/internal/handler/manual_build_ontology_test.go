@@ -50,6 +50,10 @@ func TestManualResolutionChecksSelectedOutputsBeforeReservation(t *testing.T) {
 	}{
 		{"legacy non-object recipe", dataset, []string{dataset.String()}, `"select x"`, 202, ""},
 		{"ordinary sibling", dataset, []string{dataset.String()}, "{}", 202, ""},
+		{"empty projection", dataset, []string{dataset.String()}, `{"_output":{"columns":[]}}`, 409, "dataset_output_projection_invalid"},
+		{"wrong projection type", dataset, []string{dataset.String()}, `{"_output":{"columns":"id"}}`, 409, "dataset_output_projection_invalid"},
+		{"repeated projection", dataset, []string{dataset.String()}, `{"_output":{"columns":["id"," id "]}}`, 409, "dataset_output_projection_invalid"},
+		{"valid projection", dataset, []string{dataset.String()}, `{"_output":{"columns":["id"]}}`, 202, ""},
 		{"object without JobSpec", object, nil, "", 409, "manual_build_ontology_output_unsupported"},
 		{"implicit link output", link, nil, "", 409, "manual_build_ontology_output_unsupported"},
 		{"companion JobSpec output", dataset, []string{dataset.String(), object.String()}, "{}", 409, "manual_build_ontology_output_unsupported"},
@@ -116,22 +120,32 @@ func (r *replacedJobSpec) Lookup(context.Context, string, string, string, []stri
 }
 
 func TestManualResolutionRechecksJobSpecBeforeReservation(t *testing.T) {
-	store := &recordingBuildRepo{}
-	dvs := newHandlerDatasetRepo()
-	dvs.addBranch("orders", "main")
-	first := handlerJobSpec("ordinary", nil, []string{"orders"})
-	second := handlerJobSpec("ontology", nil, []string{"orders"})
-	canonical := json.RawMessage(`{"transform_type":"output_object_type"}`)
-	second.PublishedLogicPayload = &canonical
-	specs := &replacedJobSpec{first: first, second: second}
-	t.Cleanup(SetBuildLifecyclePorts(BuildLifecyclePorts{Builds: store, JobSpecs: specs, Versioning: dvs}))
-	body := fmt.Sprintf(`{"pipeline_rid":"%s","build_branch":"main","output_dataset_rids":["orders"]}`, uuid.New())
-	rr := httptest.NewRecorder()
-	CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body)))
-	require.Equal(t, 409, rr.Code, rr.Body.String())
-	require.Equal(t, 2, specs.reads)
-	require.Zero(t, dvs.openedTransactions)
-	require.Zero(t, store.persisted)
+	for _, tc := range []struct {
+		payload, code string
+	}{
+		{`{"transform_type":"output_object_type"}`, "manual_build_ontology_output_unsupported"},
+		{`{"_output":{"columns":[]}}`, "dataset_output_projection_invalid"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			store := &recordingBuildRepo{}
+			dvs := newHandlerDatasetRepo()
+			dvs.addBranch("orders", "main")
+			first := handlerJobSpec("ordinary", nil, []string{"orders"})
+			second := handlerJobSpec("replaced", nil, []string{"orders"})
+			canonical := json.RawMessage(tc.payload)
+			second.PublishedLogicPayload = &canonical
+			specs := &replacedJobSpec{first: first, second: second}
+			t.Cleanup(SetBuildLifecyclePorts(BuildLifecyclePorts{Builds: store, JobSpecs: specs, Versioning: dvs}))
+			body := fmt.Sprintf(`{"pipeline_rid":"%s","build_branch":"main","output_dataset_rids":["orders"]}`, uuid.New())
+			rr := httptest.NewRecorder()
+			CreateBuild(rr, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body)))
+			require.Equal(t, 409, rr.Code, rr.Body.String())
+			require.Contains(t, rr.Body.String(), tc.code)
+			require.Equal(t, 2, specs.reads)
+			require.Zero(t, dvs.openedTransactions)
+			require.Zero(t, store.persisted)
+		})
+	}
 }
 
 type historicalManualStore struct {
@@ -213,6 +227,12 @@ func TestManualExecuteUsesHistoricalJobSpecAndKeepsCompletedReceipt(t *testing.T
 	}
 	store.readErr = context.DeadlineExceeded
 	require.Equal(t, 503, call().Code)
+	store.readErr = fmt.Errorf("load pinned spec: %w", errDatasetOutputProjectionInvalid)
+	invalid := call()
+	require.Equal(t, http.StatusConflict, invalid.Code)
+	require.Contains(t, invalid.Body.String(), "Abort the build")
+	require.Zero(t, calls.Load())
+	require.Equal(t, string(models.BuildResolution), store.build.State)
 	store.readErr = nil
 	delete(node.Metadata, "logic_kind")
 	require.Equal(t, 503, call().Code)

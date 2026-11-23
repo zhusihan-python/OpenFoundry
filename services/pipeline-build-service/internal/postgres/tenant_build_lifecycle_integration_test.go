@@ -952,3 +952,38 @@ func TestBuildFlowManualTargetsUseCanonicalJobSpecBeforeReservation(t *testing.T
 	require.Equal(t, http.StatusAccepted, rr.Code, rr.Body.String())
 	require.Len(t, f.dsState.opens, 1)
 }
+
+func TestBuildFlowManualProjectionRejectedBeforeReservation(t *testing.T) {
+	ctx := context.Background()
+	f := newBuildFlowFixture(ctx, t)
+	scoped := handler.ContextWithTenantScope(ctx, &handler.TenantScope{TenantID: f.org, Subject: f.sub})
+	valid := json.RawMessage(`{"_output":{"columns":["id"]}}`)
+	invalid := json.RawMessage(`{"_output":{"columns":[]}}`)
+	for _, tc := range []struct {
+		trigger            string
+		published, mapping json.RawMessage
+	}{
+		{"MANUAL", invalid, valid},
+		{"FORCE", valid, invalid},
+	} {
+		t.Run(tc.trigger, func(t *testing.T) {
+			out := "ri.foundry.main.dataset." + uuid.NewString()
+			req := handler.CreateJobSpecRequest{PipelineRID: f.pipelineRID, BranchName: "main", OutputDatasetRIDs: []string{out}, LogicPayload: tc.published}
+			_, err := f.repo.PublishJobSpec(scoped, "TRANSFORM", req, f.sub.String())
+			require.NoError(t, err)
+			// Older branch mappings can disagree with their canonical publication.
+			tag, err := f.pool.Exec(ctx, `UPDATE pipeline_job_specs SET job_spec_json=jsonb_set(job_spec_json, '{logic_payload}', $1::jsonb) WHERE output_dataset_rid=$2`, tc.mapping, out)
+			require.NoError(t, err)
+			require.EqualValues(t, 1, tag.RowsAffected())
+			body := fmt.Sprintf(`{"pipeline_rid":%q,"build_branch":"main","output_dataset_rids":[%q],"trigger_kind":%q}`, f.pipelineRID, out, tc.trigger)
+			w := httptest.NewRecorder()
+			handler.CreateBuild(w, f.scopedRequest(http.MethodPost, "/api/v1/builds", body, f.org, f.sub))
+			require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+			require.Contains(t, w.Body.String(), "dataset_output_projection_invalid")
+			require.Empty(t, f.dsState.opens)
+			var builds int
+			require.NoError(t, f.pool.QueryRow(ctx, `SELECT COUNT(*) FROM builds`).Scan(&builds))
+			require.Zero(t, builds)
+		})
+	}
+}

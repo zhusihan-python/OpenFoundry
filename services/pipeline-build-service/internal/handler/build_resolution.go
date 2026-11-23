@@ -95,6 +95,8 @@ func buildPipelineParent(ctx context.Context, ports BuildLifecyclePorts, pipelin
 func writeResolutionHTTPError(w http.ResponseWriter, err error) {
 	var httpErr *DatasetHTTPError
 	switch {
+	case errors.Is(err, errDatasetOutputProjectionInvalid):
+		writeManualBuildError(w, http.StatusConflict, "dataset_output_projection_invalid", err)
 	case errors.Is(err, errManualJobSpecUnavailable):
 		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_job_spec_unavailable", err)
 	case errors.Is(err, errManualOntologyOutput):

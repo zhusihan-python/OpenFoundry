@@ -81,6 +81,10 @@ func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts
 		return
 	}
 	plan, err := store.LoadPlan(ctx, buildID)
+	if errors.Is(err, errDatasetOutputProjectionInvalid) {
+		writeManualBuildError(w, http.StatusConflict, "dataset_output_projection_invalid", fmt.Errorf("%w. Abort the build to release its reservations and publish a corrected JobSpec", err))
+		return
+	}
 	if err != nil {
 		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_plan_failed", err)
 		return

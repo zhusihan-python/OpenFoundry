@@ -120,6 +120,10 @@ func checkManualSpecTarget(specRID, transformType string, raw json.RawMessage) e
 	// A legacy scalar or list payload cannot declare a keyed output. Its
 	// registered transform type, if present, still determines the output.
 	if len(raw) > 0 && raw[0] == '{' {
+		fields, nested := datasetOutputConfigFields(raw)
+		if _, err := declaredOutputColumns(fields, nested); err != nil {
+			return fmt.Errorf("JobSpec %s: %w", specRID, err)
+		}
 		if err := json.Unmarshal(raw, &declaration); err != nil {
 			return fmt.Errorf("%w: JobSpec %s: %w", errManualTargetInvalid, specRID, err)
 		}
