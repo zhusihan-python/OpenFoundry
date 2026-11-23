@@ -32,7 +32,11 @@ func (h *Handlers) completionRuntime() llm.Runtime {
 	if h.Runtime != nil {
 		return h.Runtime
 	}
-	return llm.HTTPRuntime{}
+	// Each approval covers the configured inference endpoint. A redirected
+	// request would use a destination that the checkpoint did not assess.
+	return llm.HTTPRuntime{Client: &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 }
 
 var errFakeLLMProviderDisabled = errors.New("configuration error: no LLM provider configured and ALLOW_FAKE_LLM_PROVIDER is not true")
@@ -62,26 +66,32 @@ func fakeAgentRuntimeProvider() aimodels.LlmProvider {
 	}
 }
 
-func (h *Handlers) enforceChatPurposeCheckpoint(ctx context.Context, justification *string, requirePrivateNetwork bool, provider *aimodels.LlmProvider) error {
-	if h.PurposeCheckpoint == nil || !requirePrivateNetwork {
+var errMissingPurposeActor = errors.New("purpose checkpoint requires an authenticated subject")
+
+func (h *Handlers) enforceChatPurposeCheckpoint(ctx context.Context, operation string, justification *string, requirePrivateNetwork bool, provider *aimodels.LlmProvider) error {
+	// The explicitly enabled fake provider performs no external inference.
+	if h.Provider == nil && h.AllowFakeLLMProvider && !requirePrivateNetwork {
 		return nil
 	}
-	providerName := ""
-	networkScope := ""
-	if provider != nil {
-		providerName = provider.Name
-		networkScope = provider.RouteRules.NetworkScope
+	actor := actorIDFromContext(ctx)
+	if actor == nil || *actor == uuid.Nil {
+		return errMissingPurposeActor
+	}
+	tags := []string{"ai", "chat"}
+	if requirePrivateNetwork {
+		tags = append(tags, "private-network")
 	}
 	return h.PurposeCheckpoint.Enforce(ctx, authmw.PurposeCheckpointRequest{
 		InteractionType:         "ai_chat_completion",
-		ActorID:                 actorIDFromContext(ctx),
+		ActorID:                 actor,
 		PurposeJustification:    justification,
 		RequestedPrivateNetwork: requirePrivateNetwork,
-		Tags:                    []string{"ai", "chat", "private-network"},
+		Tags:                    tags,
 		Evidence: mustJSONRaw(map[string]any{
 			"service":       "agent-runtime-service",
-			"provider_name": providerName,
-			"network_scope": networkScope,
+			"operation":     operation,
+			"provider_name": provider.Name,
+			"network_scope": provider.RouteRules.NetworkScope,
 		}),
 	})
 }
@@ -104,12 +114,16 @@ func mustJSONRaw(value any) json.RawMessage {
 }
 
 func writePurposeCheckpointError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errMissingPurposeActor) {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
 	var denied *authmw.PurposeCheckpointDeniedError
 	if errors.As(err, &denied) {
 		writeError(w, http.StatusForbidden, denied.Error())
 		return
 	}
-	writeError(w, http.StatusInternalServerError, err.Error())
+	writeError(w, http.StatusServiceUnavailable, "purpose checkpoint unavailable")
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -317,8 +331,12 @@ func (h *Handlers) CreateChatCompletion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	model := provider.ModelName
-	if strings.TrimSpace(body.Model) != "" {
-		model = body.Model
+	if requested := strings.TrimSpace(body.Model); requested != "" {
+		if h.Provider != nil && requested != provider.ModelName {
+			writeError(w, http.StatusBadRequest, "requested model differs from configured provider model")
+			return
+		}
+		model = requested
 	}
 	temperature := aimodels.DefaultTemperature
 	if body.Temperature != nil {
@@ -328,7 +346,7 @@ func (h *Handlers) CreateChatCompletion(w http.ResponseWriter, r *http.Request) 
 	if body.MaxTokens != nil {
 		maxTokens = *body.MaxTokens
 	}
-	if err := h.enforceChatPurposeCheckpoint(r.Context(), body.PurposeJustification, body.RequirePrivateNetwork, provider); err != nil {
+	if err := h.enforceChatPurposeCheckpoint(r.Context(), "chat/completions", body.PurposeJustification, body.RequirePrivateNetwork, provider); err != nil {
 		writePurposeCheckpointError(w, err)
 		return
 	}
@@ -340,12 +358,18 @@ func (h *Handlers) CreateChatCompletion(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	if completion.Model != "" {
+		model = completion.Model
+	}
 	resp := map[string]any{
 		"id":      uuid.New(),
 		"object":  "chat.completion",
 		"model":   model,
 		"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": completion.Text}, "finish_reason": "stop"}},
 		"usage":   map[string]int32{"prompt_tokens": completion.PromptTokens, "completion_tokens": completion.CompletionTokens, "total_tokens": completion.TotalTokens},
+	}
+	if h.Provider != nil {
+		resp["provider_name"] = provider.Name
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -385,8 +409,9 @@ func (h *Handlers) AskCopilot(w http.ResponseWriter, r *http.Request) {
 		body.KnowledgeBaseIDs,
 		citedKnowledge,
 	)
-	if body.PurposeJustification != nil && strings.TrimSpace(*body.PurposeJustification) != "" {
-		userPrompt += "\nPurpose justification: " + strings.TrimSpace(*body.PurposeJustification)
+	if err := h.enforceChatPurposeCheckpoint(r.Context(), "copilot/ask", body.PurposeJustification, false, provider); err != nil {
+		writePurposeCheckpointError(w, err)
+		return
 	}
 
 	maxTokens := provider.MaxOutputTokens

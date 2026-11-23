@@ -31,6 +31,11 @@ type JobSpec struct {
 	LogicKind         string          `json:"logic_kind"`
 	LogicPayload      json.RawMessage `json:"logic_payload,omitempty"`
 	ContentHash       string          `json:"content_hash"`
+	// A branch mapping may reuse an older published RID for a caller-supplied
+	// content hash. Its canonical payload is what jobs actually execute.
+	// A nil pointer denotes an inline repository without a separate mapping.
+	// A pointed-to SQL NULL means the mapped publication could not be found.
+	PublishedLogicPayload *json.RawMessage `json:"-"`
 }
 
 // BranchSnapshot is a dataset branch as seen by dataset-versioning-service.

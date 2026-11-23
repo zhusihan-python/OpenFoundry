@@ -381,7 +381,18 @@ func planFromExecuteRequest(ctx context.Context, body executePipelineRequest, po
 	}
 	plan := executor.Plan{BuildID: buildID, BuildBranch: body.BuildBranch, AbortPolicy: executor.AbortPolicy(body.AbortPolicy), Parallelism: body.Parallelism, MaxAttempts: body.MaxAttempts, Nodes: make([]executor.Node, 0, len(body.Nodes))}
 	for _, node := range body.Nodes {
-		plan.Nodes = append(plan.Nodes, executorNodeFromRequest(buildID, node))
+		planned := executorNodeFromRequest(buildID, node)
+		fields, nested := datasetOutputConfigFields(metadataRaw(planned.Metadata, "logic_payload"))
+		if nested["columns"] != nil {
+			columns, err := declaredOutputColumns(fields, nested)
+			if err != nil {
+				return executor.Plan{}, err
+			}
+			if err := bindDatasetOutputSchema(fields, nested, columns, planned.Outputs); err != nil {
+				return executor.Plan{}, err
+			}
+		}
+		plan.Nodes = append(plan.Nodes, planned)
 	}
 	return normalizePlan(plan, ports), nil
 }
@@ -458,8 +469,8 @@ func planFromPipeline(pipeline *models.Pipeline, runID uuid.UUID, req models.Tri
 				continue
 			}
 		}
-		outputs, outputRID := outputTransactionsForPipelineNode(pipeline.ID, runID, node, nodes)
-		if err := BindDatasetOutputSchema(node.Config, outputs); err != nil {
+		outputs, outputRID, err := plannedNodeOutputs(pipeline.ID, runID, node, nodes)
+		if err != nil {
 			return executor.Plan{}, fmt.Errorf("pipeline node %q: %w", node.ID, err)
 		}
 		metadata := map[string]any{
@@ -547,6 +558,20 @@ type outputPropertyConfig struct {
 	Type             string `json:"type,omitempty"`
 	Required         bool   `json:"required,omitempty"`
 	UniqueConstraint bool   `json:"unique_constraint,omitempty"`
+}
+
+// Validate publication settings before resolving a graph node's destination.
+func plannedNodeOutputs(pipelineID, runID uuid.UUID, node models.PipelineNode, nodes []models.PipelineNode) ([]executor.OutputTransaction, string, error) {
+	fields, nested := datasetOutputConfigFields(node.Config)
+	columns, err := declaredOutputColumns(fields, nested)
+	if err != nil {
+		return nil, "", err
+	}
+	outputs, rid := outputTransactionsForPipelineNode(pipelineID, runID, node, nodes)
+	if err := bindDatasetOutputSchema(fields, nested, columns, outputs); err != nil {
+		return nil, "", err
+	}
+	return outputs, rid, nil
 }
 
 func outputTransactionsForPipelineNode(pipelineID uuid.UUID, runID uuid.UUID, node models.PipelineNode, nodes []models.PipelineNode) ([]executor.OutputTransaction, string) {
@@ -838,11 +863,13 @@ func upstreamInputDatasetRIDs(nodes []models.PipelineNode, nodeID string) []stri
 }
 
 type runtimeNodeRunner struct {
-	JobRunner runners.JobRunner
-	Python    runtimepkg.TransformExecutor
-	LLM       LLMTransformRunner
-	Table     *lightweightTableRuntime
-	Dist      DistributedTransformRunner
+	CompletePreviewRows bool
+	Preview             bool
+	JobRunner           runners.JobRunner
+	Python              runtimepkg.TransformExecutor
+	LLM                 LLMTransformRunner
+	Table               *lightweightTableRuntime
+	Dist                DistributedTransformRunner
 }
 
 func (r runtimeNodeRunner) Run(ctx context.Context, node executor.NodeContext) (executor.NodeResult, error) {

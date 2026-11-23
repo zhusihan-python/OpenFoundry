@@ -18,11 +18,13 @@ import (
 )
 
 type LLMTransformRequest struct {
-	Node          executor.NodeContext
-	Payload       json.RawMessage
-	TransformType string
-	InputRows     []map[string]json.RawMessage
-	SampleSize    int
+	CompletePreviewRows bool
+	Node                executor.NodeContext
+	Payload             json.RawMessage
+	TransformType       string
+	InputRows           []map[string]json.RawMessage
+	SampleSize          int
+	Preview             bool
 }
 
 type LLMTransformRunner interface {
@@ -30,10 +32,12 @@ type LLMTransformRunner interface {
 }
 
 type AIServiceLLMConfig struct {
-	BaseURL     string
-	BearerToken string
-	Client      *http.Client
-	Timeout     time.Duration
+	AgentRuntime         bool
+	PurposeJustification string
+	BaseURL              string
+	BearerToken          string
+	Client               *http.Client
+	Timeout              time.Duration
 }
 
 type AIServiceLLMRunner struct {
@@ -64,21 +68,27 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 	if strings.TrimSpace(cfg.Prompt) == "" {
 		return executor.NodeResult{}, errors.New("llm_prompt_required")
 	}
-	if strings.TrimSpace(cfg.OutputColumn) == "" {
-		cfg.OutputColumn = "llm_output"
+	if _, err := cfg.fieldType(); err != nil {
+		return executor.NodeResult{}, err
 	}
-	if cfg.MaxRows <= 0 {
-		cfg.MaxRows = firstPositiveInt(req.SampleSize, 5)
-	}
-	if cfg.MaxRows > 50 {
-		cfg.MaxRows = 50
-	}
-	rows := cloneRawRows(req.InputRows)
-	if len(rows) == 0 {
+	const maxModelCalls = 50
+	rows := req.InputRows
+	if len(rows) == 0 && len(req.Node.Node.DependsOn) == 0 {
 		rows = []map[string]json.RawMessage{{}}
 	}
-	if len(rows) > cfg.MaxRows {
-		rows = rows[:cfg.MaxRows]
+	if req.Preview {
+		limit := min(firstPositiveInt(cfg.MaxRows, maxModelCalls), maxModelCalls)
+		if req.CompletePreviewRows && len(rows) > limit {
+			return executor.NodeResult{}, fmt.Errorf("llm_preview_budget_exceeded: downstream transform requires all %d rows, model preview budget is %d", len(rows), limit)
+		}
+		if !req.CompletePreviewRows {
+			limit = min(limit, firstPositiveInt(req.SampleSize, cfg.MaxRows, 5))
+		}
+		if len(rows) > limit {
+			rows = rows[:limit]
+		}
+	} else if len(rows) > maxModelCalls {
+		return executor.NodeResult{}, fmt.Errorf("llm_row_limit_exceeded: %d input rows exceed the build limit of %d", len(rows), maxModelCalls)
 	}
 
 	outRows := make([]map[string]json.RawMessage, 0, len(rows))
@@ -86,6 +96,7 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 	totalCompletionTokens := 0
 	totalTokens := 0
 	providerName := ""
+	model := cfg.Model
 	for _, row := range rows {
 		prompt := renderLLMPrompt(cfg, row)
 		completion, err := r.complete(ctx, aiChatCompletionRequest{
@@ -100,11 +111,18 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 			return executor.NodeResult{}, err
 		}
 		next := cloneRawRow(row)
-		next[cfg.OutputColumn] = mustRuntimeJSON(completion.Text)
+		value, err := cfg.outputValue(completion.Text)
+		if err != nil {
+			return executor.NodeResult{}, fmt.Errorf("llm_invalid_output: row %d: %w", len(outRows)+1, err)
+		}
+		next[cfg.OutputColumn] = value
 		outRows = append(outRows, next)
 		totalPromptTokens += completion.PromptTokens
 		totalCompletionTokens += completion.CompletionTokens
 		totalTokens += completion.TotalTokens
+		if completion.Model != "" {
+			model = completion.Model
+		}
 		if completion.ProviderName != "" {
 			providerName = completion.ProviderName
 		}
@@ -133,8 +151,8 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 			"total_tokens":      totalTokens,
 		},
 	}
-	if cfg.Model != "" {
-		meta["model"] = cfg.Model
+	if model != "" {
+		meta["model"] = model
 	}
 	payload, _ := json.Marshal(outRows)
 	sum := sha256.Sum256(append([]byte(req.Node.Node.ID+"|llm|"), payload...))
@@ -142,6 +160,18 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 }
 
 func parseLLMNodeConfig(raw json.RawMessage) llmNodeConfig {
+	cfg := decodeLLMNodeConfig(raw)
+	if strings.TrimSpace(cfg.OutputColumn) == "" {
+		cfg.OutputColumn = "llm_output"
+	}
+	cfg.OutputType = strings.ToLower(strings.TrimSpace(cfg.OutputType))
+	if cfg.OutputType == "" {
+		cfg.OutputType = "string"
+	}
+	return cfg
+}
+
+func decodeLLMNodeConfig(raw json.RawMessage) llmNodeConfig {
 	var cfg llmNodeConfig
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return cfg
@@ -175,6 +205,7 @@ type aiChatCompletionRequest struct {
 }
 
 type aiChatCompletion struct {
+	Model            string
 	Text             string
 	ProviderName     string
 	PromptTokens     int
@@ -191,8 +222,32 @@ func (r *AIServiceLLMRunner) complete(ctx context.Context, body aiChatCompletion
 		}
 		client = &http.Client{Timeout: timeout}
 	}
-	payload, _ := json.Marshal(body)
-	url := strings.TrimRight(r.cfg.BaseURL, "/") + "/api/v1/ai/chat/completions"
+	var requestBody any = body
+	path := "/api/v1/ai/chat/completions"
+	if r.cfg.AgentRuntime {
+		path = "/api/v1/agent-runtime/chat/completions"
+		type message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		messages := make([]message, 0, 2)
+		if body.SystemPrompt != "" {
+			messages = append(messages, message{Role: "system", Content: body.SystemPrompt})
+		}
+		messages = append(messages, message{Role: "user", Content: body.UserMessage})
+		requestBody = struct {
+			Model                string    `json:"model,omitempty"`
+			Messages             []message `json:"messages"`
+			MaxTokens            int       `json:"max_tokens,omitempty"`
+			Temperature          *float32  `json:"temperature,omitempty"`
+			PurposeJustification string    `json:"purpose_justification,omitempty"`
+		}{Model: body.Model, Messages: messages, MaxTokens: body.MaxTokens, Temperature: body.Temperature, PurposeJustification: r.cfg.PurposeJustification}
+	}
+	payload, err := json.Marshal(requestBody)
+	if err != nil {
+		return aiChatCompletion{}, err
+	}
+	url := strings.TrimRight(r.cfg.BaseURL, "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return aiChatCompletion{}, err
@@ -215,6 +270,7 @@ func (r *AIServiceLLMRunner) complete(ctx context.Context, body aiChatCompletion
 
 func parseAICompletionResponse(raw []byte) (aiChatCompletion, error) {
 	var shaped struct {
+		Model        string          `json:"model"`
 		Reply        string          `json:"reply"`
 		ProviderName string          `json:"provider_name"`
 		Usage        json.RawMessage `json:"usage"`
@@ -234,7 +290,7 @@ func parseAICompletionResponse(raw []byte) (aiChatCompletion, error) {
 	if text == "" {
 		return aiChatCompletion{}, errors.New("ai-service response did not include reply text")
 	}
-	completion := aiChatCompletion{Text: text, ProviderName: shaped.ProviderName}
+	completion := aiChatCompletion{Text: text, Model: shaped.Model, ProviderName: shaped.ProviderName}
 	if len(shaped.Usage) > 0 {
 		var usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -308,17 +364,24 @@ func (r runtimeNodeRunner) runLLM(ctx context.Context, node executor.NodeContext
 		return executor.NodeResult{}, errors.New("ai_service_not_configured: set AI_SERVICE_URL to execute Pipeline Builder LLM nodes")
 	}
 	inputRows := []map[string]json.RawMessage{}
-	if r.Table != nil {
-		if rows, err := r.Table.firstDependencyRows(node); err == nil {
-			inputRows = rowsToMaps(rows)
+	if len(node.Node.DependsOn) > 0 {
+		if r.Table == nil {
+			return executor.NodeResult{}, errors.New("llm_input_not_ready: upstream table is unavailable")
 		}
+		rows, err := r.Table.firstDependencyRows(node)
+		if err != nil {
+			return executor.NodeResult{}, err
+		}
+		inputRows = rowsToMaps(rows)
 	}
 	result, err := r.LLM.RunLLMTransform(ctx, LLMTransformRequest{
-		Node:          node,
-		Payload:       payload,
-		TransformType: metadataString(node.Node.Metadata, "transform_type"),
-		InputRows:     inputRows,
-		SampleSize:    metadataInt(node.Node.Metadata, "sample_size"),
+		Node:                node,
+		Payload:             payload,
+		TransformType:       metadataString(node.Node.Metadata, "transform_type"),
+		InputRows:           inputRows,
+		SampleSize:          metadataInt(node.Node.Metadata, "sample_size"),
+		Preview:             r.Preview,
+		CompletePreviewRows: r.CompletePreviewRows,
 	})
 	if err != nil {
 		return executor.NodeResult{}, err
@@ -326,7 +389,9 @@ func (r runtimeNodeRunner) runLLM(ctx context.Context, node executor.NodeContext
 	if r.Table != nil {
 		rows := rowsFromLLMResult(result)
 		if rows != nil {
-			r.Table.storeRows(node.Node.ID, rows)
+			table := r.Table.runtimeTable(node.Node, "llm", "llm", payload, tableRuntimeConfig{}, nil, rows)
+			r.Table.storeTable(node.Node.ID, table)
+			r.Table.applyTypedOutput(node.Node, table, result.Metadata, len(node.Node.Outputs) > 0)
 		}
 	}
 	return result, nil

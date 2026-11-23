@@ -71,13 +71,11 @@ func main() {
 
 	var purposeCheckpoint *authmw.PurposeCheckpointClient
 	if cfg.PurposeCheckpointURL != "" {
-		purposeCheckpoint = authmw.NewPurposeCheckpointClient(cfg.PurposeCheckpointURL)
-	} else {
-		log.Warn("AUTHORIZATION_POLICY_SERVICE_URL/PURPOSE_CHECKPOINT_URL unset — sensitive AI chat purpose checks are disabled")
+		purposeCheckpoint = authmw.NewPurposeCheckpointClient(cfg.PurposeCheckpointURL, authmw.WithPurposeCheckpointBearerToken(cfg.PurposeCheckpointBearer))
 	}
 
 	jwt := authmw.NewJWTConfig(cfg.JWTSecret)
-	h := &handlers.Handlers{Repo: &repo.Repo{Pool: pool}, AllowFakeLLMProvider: cfg.AllowFakeLLMProvider, PurposeCheckpoint: purposeCheckpoint}
+	h := &handlers.Handlers{Repo: &repo.Repo{Pool: pool}, Provider: cfg.ChatProvider, AllowFakeLLMProvider: cfg.AllowFakeLLMProvider, PurposeCheckpoint: purposeCheckpoint}
 	metrics := observability.NewMetrics()
 
 	srv := server.New(cfg, jwt, h, metrics, probes.Postgres("primary", pool))

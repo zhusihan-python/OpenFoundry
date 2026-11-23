@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -179,6 +180,9 @@ func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputT
 	if err != nil {
 		return datasetOutputCommitRequest{}, err
 	}
+	if len(tx.OutputColumns) > 0 && (tx.OutputSchemaVersion != "" || !projectionSupportsFormat(tx.FileFormat)) {
+		return datasetOutputCommitRequest{}, errors.New("dataset_output_projection_invalid: _output.columns requires unversioned NDJSON output")
+	}
 	logicalPath := strings.Trim(strings.TrimSpace(tx.LogicalPath), "/")
 	var (
 		rows          []map[string]json.RawMessage
@@ -208,11 +212,18 @@ func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputT
 		var hasFullRows bool
 		rows, hasFullRows = fullResultRows(result.Metadata)
 		if !hasFullRows {
+			if len(tx.OutputColumns) > 0 {
+				return datasetOutputCommitRequest{}, errors.New("dataset_output_projection_invalid: projection requires complete data_rows")
+			}
 			rows = resultRows(result.Metadata)
 		}
 		columns = resultColumns(result.Metadata)
 		if len(columns) == 0 {
 			columns = inferResultColumns(rows)
+		}
+		columns, rows, err = applyOutputColumnProjection(tx, columns, rows)
+		if err != nil {
+			return datasetOutputCommitRequest{}, err
 		}
 		previewRows = orderedPreviewRows(columns, rows, 100)
 		payload = encodeNDJSON(rows)
@@ -231,8 +242,23 @@ func datasetOutputCommitBodyWithContext(ctx context.Context, tx executor.OutputT
 		digest = hex.EncodeToString(sum[:])
 		if workbookSchema, ok := result.Metadata["excel_files_output_schema"].(*datasetOutputSchema); ok && hasFullRows {
 			schema = workbookSchema
+			if len(tx.OutputColumns) > 0 {
+				projected, err := projectedOutputFields(workbookSchema.Fields, columns)
+				if err != nil {
+					return datasetOutputCommitRequest{}, err
+				}
+				schema = &datasetOutputSchema{Fields: projected, FileFormat: workbookSchema.FileFormat}
+			}
 		} else {
 			schema = inferOutputSchema(columns, rows, format)
+			if castFields, ok := result.Metadata["cast_output_fields"].(map[string]datasetOutputField); ok && hasFullRows {
+				for i, field := range schema.Fields {
+					if cast, exists := castFields[field.Name]; exists {
+						schema.Fields[i].Type = cast.Type
+						schema.Fields[i].Nullable = cast.Nullable || (len(rows) > 0 && field.Nullable)
+					}
+				}
+			}
 		}
 	}
 	fileMetadata := map[string]any{
@@ -445,6 +471,48 @@ func inferResultColumns(rows []map[string]json.RawMessage) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// applyOutputColumnProjection narrows a dataset publication to the columns
+// declared in the output node's _output.columns, preserving the declared
+// order. Without a declaration the publication keeps every result column.
+// A declaration naming a column the result does not carry, repeating a
+// column, or containing an empty name fails the commit loudly so the
+// previous dataset version stays readable.
+func applyOutputColumnProjection(tx executor.OutputTransaction, columns []string, rows []map[string]json.RawMessage) ([]string, []map[string]json.RawMessage, error) {
+	if len(tx.OutputColumns) == 0 {
+		return columns, rows, nil
+	}
+	available := make(map[string]struct{}, len(columns))
+	for _, column := range columns {
+		available[column] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(tx.OutputColumns))
+	for _, requested := range tx.OutputColumns {
+		if requested == "" {
+			return nil, nil, errors.New("dataset_output_projection_invalid: _output.columns contains an empty column name")
+		}
+		if _, dup := seen[requested]; dup {
+			return nil, nil, fmt.Errorf("dataset_output_projection_invalid: _output.columns repeats column %q", requested)
+		}
+		if _, ok := available[requested]; !ok {
+			return nil, nil, fmt.Errorf("dataset_output_projection_invalid: _output.columns names %q which the output result does not carry", requested)
+		}
+		seen[requested] = struct{}{}
+	}
+	projected := make([]map[string]json.RawMessage, 0, len(rows))
+	for _, row := range rows {
+		next := make(map[string]json.RawMessage, len(tx.OutputColumns))
+		for _, column := range tx.OutputColumns {
+			value := row[column]
+			if len(value) == 0 {
+				value = json.RawMessage("null")
+			}
+			next[column] = value
+		}
+		projected = append(projected, next)
+	}
+	return append([]string(nil), tx.OutputColumns...), projected, nil
 }
 
 func orderedPreviewRows(columns []string, rows []map[string]json.RawMessage, limit int) [][]json.RawMessage {

@@ -30,6 +30,11 @@ type lightweightTableRuntime struct {
 	// datasetRowsPreview marks preview runs, which may read a truncated
 	// sample; formal execution keeps strict no-truncation semantics.
 	datasetRowsPreview bool
+	// joinExpansionLimit caps the intermediate rows one relational join may
+	// materialize (0 = uncapped). Preview runs set the shared
+	// maxLightweightExpandedRows bound because they fully materialize the
+	// join expansion; builds keep their existing output capability.
+	joinExpansionLimit int
 }
 
 type tableRuntimeConfig struct {
@@ -309,6 +314,7 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		"sample_rows":    rowsToMaps(metaRows),
 		"data_rows":      rowsToMaps(rows),
 	}
+	rt.applyTypedOutput(node.Node, table, meta, kind == "output" || len(node.Node.Outputs) > 0)
 	for key, value := range datasetMeta {
 		meta[key] = value
 	}
@@ -322,6 +328,46 @@ func (rt *lightweightTableRuntime) Run(ctx context.Context, node executor.NodeCo
 		OutputContentHash: hashRuntimeRows(node.Node.ID, transformType, rows),
 		Metadata:          meta,
 	}, nil
+}
+
+// Carry logical types that row JSON cannot represent, such as the type of
+// an empty column or a DOUBLE returned as an integral number.
+func (rt *lightweightTableRuntime) applyTypedOutput(node executor.Node, table lightweightTable, meta map[string]any, publish bool) {
+	projecting := false
+	for _, output := range node.Outputs {
+		if len(output.OutputColumns) > 0 {
+			projecting = true
+			break
+		}
+	}
+	if !projecting && (!table.typedLineage || (!publish && len(table.rows) > 0)) {
+		return
+	}
+	schema := rt.tableSchema(node.ID)
+	if !schema.Known {
+		return
+	}
+	if !table.positional {
+		columns := schema.columnNames()
+		sort.Strings(columns)
+		meta["columns"] = columns
+	}
+	if !publish {
+		return
+	}
+	fields := make(map[string]datasetOutputField)
+	for _, field := range schema.Fields {
+		if field.typedOutput || (projecting && len(table.rows) == 0) {
+			kind := strings.ToUpper(field.FieldType)
+			if parsed, ok := parseStrictType(kind); ok {
+				kind = strictTypeName(parsed)
+			}
+			fields[field.Name] = datasetOutputField{Name: field.Name, Type: kind, Nullable: field.Nullable}
+		}
+	}
+	if len(fields) > 0 {
+		meta["cast_output_fields"] = fields
+	}
 }
 
 func parseTableRuntimeConfig(payload json.RawMessage) (tableRuntimeConfig, error) {
@@ -534,21 +580,22 @@ func (rt *lightweightTableRuntime) runDrop(node executor.NodeContext, cfg tableR
 	if err != nil {
 		return nil, err
 	}
-	columns := cfg.DropColumns
-	if len(columns) == 0 {
-		columns = cfg.Columns
+	return applyRuntimeDropBlock(rows, firstStrings(cfg.DropColumns, cfg.Columns), rt.dependencySchema(node).columnNames())
+}
+
+func (rt *lightweightTableRuntime) dependencySchema(node executor.NodeContext) pipelineStrictSchema {
+	if len(node.Node.DependsOn) == 0 {
+		return pipelineStrictSchema{}
 	}
-	drop := map[string]struct{}{}
-	for _, col := range columns {
-		drop[col] = struct{}{}
+	return rt.tableSchema(node.Node.DependsOn[0])
+}
+
+func (block runtimeTransformBlock) shapesColumns() bool {
+	switch strings.ToLower(strings.TrimSpace(block.Kind)) {
+	case "cast", "drop", "normalize":
+		return block.Applied
 	}
-	out := cloneRows(rows)
-	for _, row := range out {
-		for col := range drop {
-			delete(row, col)
-		}
-	}
-	return out, nil
+	return false
 }
 
 func (rt *lightweightTableRuntime) runRename(node executor.NodeContext, cfg tableRuntimeConfig) ([]pipelineexpression.Row, error) {
@@ -623,6 +670,15 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 	if err != nil {
 		return nil, err
 	}
+	// Each block sees the shape produced by its predecessors, including
+	// declared columns that have no values in this batch.
+	var schema pipelineStrictSchema
+	for _, block := range stack.Blocks {
+		if block.shapesColumns() {
+			schema = rt.dependencySchema(node)
+			break
+		}
+	}
 	out := cloneRows(rows)
 	for _, block := range stack.Blocks {
 		if !block.Applied {
@@ -634,7 +690,7 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 		case "select":
 			out = applyRuntimeSelectBlock(out, block.Columns)
 		case "drop":
-			out = applyRuntimeDropBlock(out, block.Columns)
+			out, err = applyRuntimeDropBlock(out, block.Columns, schema.columnNames())
 		case "rename":
 			out = applyRuntimeRenameBlock(out, block.Renames)
 		case "sort":
@@ -642,7 +698,7 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 		case "normalize_units":
 			out, err = applyRuntimeNormalizeUnitsBlock(out, block)
 		case "normalize":
-			out = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters)
+			out, err = applyRuntimeNormalizeBlock(out, block.RemoveSpecialCharacters, schema.columnNames())
 		case "formula", "derive_column":
 			out, err = applyRuntimeFormulaBlock(out, block)
 		case "window_aggregate":
@@ -656,7 +712,7 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 		case "json_extract":
 			out, err = applyRuntimeJSONExtractBlock(out, block)
 		case "cast":
-			out = applyRuntimeCastBlock(out, block)
+			out, err = applyRuntimeCastBlock(out, block, schema.columnNames())
 		case "haversine", "haversine_distance", "geo_distance":
 			out, err = applyRuntimeHaversineBlock(out, block)
 		case "function", "udf", "reusable_function":
@@ -675,6 +731,9 @@ func (rt *lightweightTableRuntime) runTransformStack(ctx context.Context, node e
 		}
 		if err != nil {
 			return nil, err
+		}
+		if schema.Known {
+			schema = validateTransformStack(node.Node.ID, runtimeTransformStack{Blocks: []runtimeTransformBlock{block}}, schema, &pipelineStrictValidationReport{})
 		}
 	}
 	return out, nil
@@ -847,35 +906,73 @@ func (rt *lightweightTableRuntime) runJoin(node executor.NodeContext, draft runt
 		return nil, errors.New("lightweight_join_missing_match_conditions")
 	}
 
-	leftColumns := selectRuntimeColumns(left, draft.LeftColumns, draft.AutoSelectLeft || len(draft.LeftColumns) == 0)
+	leftColumns := rt.selectRuntimeJoinColumns(node.Node.DependsOn[0], draft.LeftColumns, draft.AutoSelectLeft || len(draft.LeftColumns) == 0)
 	if joinType == runtimeJoinLeftAnti {
 		if len(matches) != len(draft.Matches) {
 			return nil, errors.New("left anti join requires both columns in each match condition")
 		}
+		if err := rejectRuntimeJoinColumnCollision(node.Node.ID, leftColumns, nil, ""); err != nil {
+			return nil, err
+		}
 		return joinLeftAnti(left, right, matches, leftColumns)
 	}
-	rightColumns := selectRuntimeColumns(right, draft.RightColumns, draft.AutoSelectRight)
+	rightColumns := rt.selectRuntimeJoinColumns(node.Node.DependsOn[1], draft.RightColumns, draft.AutoSelectRight)
+	if err := rejectRuntimeJoinColumnCollision(node.Node.ID, leftColumns, rightColumns, draft.RightPrefix); err != nil {
+		return nil, err
+	}
+	// A cross join has no key columns, so every row shares the empty tuple.
+	if joinType == "cross" {
+		matches = nil
+	}
+	leftKeys, rightKeys := joinKeyColumns(matches)
+	rightIndex := make(map[string][]int, len(right))
+	for i, row := range right {
+		key, matchable, err := runtimeCompositeKey(row, rightKeys, false)
+		if err != nil {
+			return nil, fmt.Errorf("lightweight join: %w", err)
+		}
+		if matchable {
+			rightIndex[key] = append(rightIndex[key], i)
+		}
+	}
+
 	out := make([]pipelineexpression.Row, 0)
+	appendRow := func(lrow, rrow pipelineexpression.Row) error {
+		if rt.joinExpansionLimit > 0 && len(out) >= rt.joinExpansionLimit {
+			return fmt.Errorf("%w: node %q exceeds %d joined rows", errJoinRowsExceeded, node.Node.ID, rt.joinExpansionLimit)
+		}
+		out = append(out, composeRuntimeJoinRow(lrow, rrow, leftColumns, rightColumns, draft.RightPrefix))
+		return nil
+	}
 	rightMatched := make([]bool, len(right))
 	for _, lrow := range left {
-		matched := false
-		for idx, rrow := range right {
-			if rowsJoinMatch(lrow, rrow, draft.Matches, joinType == "cross") {
-				matched = true
-				rightMatched[idx] = true
-				out = append(out, composeRuntimeJoinRow(lrow, rrow, leftColumns, rightColumns, draft.RightPrefix))
+		key, matchable, err := runtimeCompositeKey(lrow, leftKeys, false)
+		if err != nil {
+			return nil, fmt.Errorf("lightweight join: %w", err)
+		}
+		var hits []int
+		if matchable {
+			hits = rightIndex[key]
+		}
+		for _, i := range hits {
+			rightMatched[i] = true
+			if err := appendRow(lrow, right[i]); err != nil {
+				return nil, err
 			}
 		}
-		if !matched && (joinType == "left" || joinType == "outer") {
-			out = append(out, composeRuntimeJoinRow(lrow, nil, leftColumns, rightColumns, draft.RightPrefix))
+		if len(hits) == 0 && (joinType == "left" || joinType == "outer") {
+			if err := appendRow(lrow, nil); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if joinType == "right" || joinType == "outer" {
-		for idx, rrow := range right {
-			if rightMatched[idx] {
-				continue
+		for i, rrow := range right {
+			if !rightMatched[i] {
+				if err := appendRow(nil, rrow); err != nil {
+					return nil, err
+				}
 			}
-			out = append(out, composeRuntimeJoinRow(nil, rrow, leftColumns, rightColumns, draft.RightPrefix))
 		}
 	}
 	return out, nil
@@ -1005,20 +1102,78 @@ func applyRuntimeFilterBlock(rows []pipelineexpression.Row, block runtimeTransfo
 	return out, nil
 }
 
-func applyRuntimeDropBlock(rows []pipelineexpression.Row, columns []string) []pipelineexpression.Row {
-	drop := map[string]struct{}{}
+// applyRuntimeDropBlock removes the configured columns. A column that does not
+// exist upstream is a hard error — the strict schema validation already reports
+// it as missing_column, so a silent no-op would let a preview pass where the
+// build rejects (or a renamed-away column silently survive). declared lists the
+// dependency's declared schema columns; rows alone may miss sparse ones.
+func applyRuntimeDropBlock(rows []pipelineexpression.Row, columns []string, declared []string) ([]pipelineexpression.Row, error) {
+	drop := make([]string, 0, len(columns))
 	for _, col := range columns {
 		if strings.TrimSpace(col) != "" {
-			drop[col] = struct{}{}
+			drop = append(drop, col)
 		}
+	}
+	if err := requireRuntimeColumns(availableColumnNames(rows, declared), drop); err != nil {
+		return nil, err
+	}
+	remove := map[string]struct{}{}
+	for _, col := range drop {
+		remove[col] = struct{}{}
 	}
 	out := cloneRows(rows)
 	for _, row := range out {
-		for col := range drop {
+		for col := range remove {
 			delete(row, col)
 		}
 	}
-	return out
+	return out, nil
+}
+
+// requireRuntimeColumns reports every requested name the oracle does not know,
+// using the strict validation's missing_column wording so preview failures and
+// build failures read identically.
+func requireRuntimeColumns(oracle, requested []string) error {
+	known := make(map[string]struct{}, len(oracle))
+	for _, col := range oracle {
+		known[col] = struct{}{}
+	}
+	missing := make([]string, 0, len(requested))
+	for _, col := range requested {
+		if _, ok := known[col]; !ok {
+			missing = append(missing, col)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(missing))
+	for _, col := range missing {
+		parts = append(parts, fmt.Sprintf("column %q does not exist in upstream schema", col))
+	}
+	return errors.New(strings.Join(parts, "; "))
+}
+
+// availableColumnNames merges the names observed in rows with the dependency's
+// declared schema so a declared-but-sparse column stays addressable — the same
+// merge the lightweight join uses for its projections.
+func availableColumnNames(rows []pipelineexpression.Row, declared []string) []string {
+	names := deriveRuntimeColumns(rows)
+	if len(declared) == 0 {
+		return names
+	}
+	seen := make(map[string]struct{}, len(names)+len(declared))
+	for _, name := range names {
+		seen[name] = struct{}{}
+	}
+	for _, name := range declared {
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func applyRuntimeSelectBlock(rows []pipelineexpression.Row, columns []string) []pipelineexpression.Row {
@@ -1057,43 +1212,93 @@ func applyRuntimeRenameBlock(rows []pipelineexpression.Row, renames []runtimeRen
 	return out
 }
 
-func applyRuntimeNormalizeBlock(rows []pipelineexpression.Row, removeSpecial bool) []pipelineexpression.Row {
+// applyRuntimeNormalizeBlock renames every column with the shared snake_case
+// rule. Two upstream names that normalize to the same target, or a name that
+// normalizes to empty, are hard errors: keeping whichever source happened to
+// iterate last would drop the other column nondeterministically.
+func applyRuntimeNormalizeBlock(rows []pipelineexpression.Row, removeSpecial bool, declared []string) ([]pipelineexpression.Row, error) {
+	sources := map[string][]string{}
+	for _, name := range availableColumnNames(rows, declared) {
+		target := normalizeRuntimeColumnName(name, removeSpecial)
+		if target == "" {
+			return nil, fmt.Errorf("column %q normalizes to an empty name", name)
+		}
+		sources[target] = append(sources[target], name)
+	}
+	targets := make([]string, 0, len(sources))
+	for target := range sources {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	for _, target := range targets {
+		if clash := sources[target]; len(clash) > 1 {
+			sort.Strings(clash)
+			quoted := make([]string, 0, len(clash))
+			for _, name := range clash {
+				quoted = append(quoted, fmt.Sprintf("%q", name))
+			}
+			return nil, fmt.Errorf("duplicate column name %q (from %s)", target, strings.Join(quoted, ", "))
+		}
+	}
 	out := make([]pipelineexpression.Row, 0, len(rows))
 	for _, row := range rows {
 		next := pipelineexpression.Row{}
 		for col, value := range row {
-			target := normalizeRuntimeColumnName(col, removeSpecial)
-			if target == "" {
-				target = col
-			}
-			next[target] = append(json.RawMessage(nil), value...)
+			next[normalizeRuntimeColumnName(col, removeSpecial)] = append(json.RawMessage(nil), value...)
 		}
 		out = append(out, next)
 	}
-	return out
+	return out, nil
 }
 
-func applyRuntimeCastBlock(rows []pipelineexpression.Row, block runtimeTransformBlock) []pipelineexpression.Row {
+// applyRuntimeCastBlock converts one column to a supported scalar type. Nulls
+// stay null, and a value the target type cannot represent fails the whole
+// transform with the column and row — mirroring the unit-conversion block —
+// instead of silently publishing the original value under a schema that
+// claims the target type.
+func applyRuntimeCastBlock(rows []pipelineexpression.Row, block runtimeTransformBlock, declared []string) ([]pipelineexpression.Row, error) {
 	source := strings.TrimSpace(block.SourceColumn)
 	if source == "" {
-		return cloneRows(rows)
+		return nil, errors.New("cast block requires source_column")
+	}
+	if !validRuntimeCastTarget(block.TargetType) {
+		return nil, fmt.Errorf("cast target %q is not a supported type", block.TargetType)
 	}
 	target := strings.TrimSpace(block.TargetColumn)
 	if target == "" {
 		target = source
 	}
-	out := cloneRows(rows)
-	for _, row := range out {
-		raw, ok := row[source]
-		if !ok {
-			continue
-		}
-		row[target] = castRuntimeJSON(raw, block.TargetType)
-		if target != source {
-			delete(row, source)
+	if err := requireRuntimeColumns(availableColumnNames(rows, declared), []string{source}); err != nil {
+		return nil, err
+	}
+	if target != source {
+		for _, name := range availableColumnNames(rows, declared) {
+			if name == target {
+				return nil, fmt.Errorf("duplicate column name %q", target)
+			}
 		}
 	}
-	return out
+	out := make([]pipelineexpression.Row, 0, len(rows))
+	for index, row := range rows {
+		next := cloneRow(row)
+		raw, ok := row[source]
+		if !ok || isRuntimeNullish(raw, false) {
+			delete(next, source)
+			next[target] = json.RawMessage("null")
+			out = append(out, next)
+			continue
+		}
+		value, err := columnCastValue(raw, block.TargetType)
+		if err != nil {
+			return nil, fmt.Errorf("cast column %q at row %d: %w", source, index+1, err)
+		}
+		if target != source {
+			delete(next, source)
+		}
+		next[target] = value
+		out = append(out, next)
+	}
+	return out, nil
 }
 
 func runtimeConditionMatches(row pipelineexpression.Row, condition runtimeFilterCondition) bool {
@@ -1163,33 +1368,30 @@ func runtimeScalarFloat(raw json.RawMessage) (float64, bool) {
 	return 0, false
 }
 
-func castRuntimeJSON(raw json.RawMessage, targetType string) json.RawMessage {
+// validRuntimeCastTarget reports whether the cast block's target type is one
+// the lightweight runtime can materialize (the catalog's scalar set plus the
+// historical aliases). Anything else fails instead of passing values through.
+func validRuntimeCastTarget(targetType string) bool {
 	switch strings.ToLower(strings.TrimSpace(targetType)) {
-	case "integer", "long", "int", "bigint":
-		if f, ok := runtimeScalarFloat(raw); ok {
-			return mustRuntimeJSON(int64(f))
-		}
-	case "double", "float":
-		if f, ok := runtimeScalarFloat(raw); ok {
-			return mustRuntimeJSON(f)
-		}
-	case "boolean", "bool":
-		if s := strings.ToLower(runtimeScalarString(raw)); s == "true" || s == "1" {
-			return json.RawMessage("true")
-		} else if s == "false" || s == "0" {
-			return json.RawMessage("false")
-		}
-	case "string", "varchar", "date", "timestamp":
-		return mustRuntimeJSON(runtimeScalarString(raw))
+	case "integer", "long", "int", "bigint", "double", "float", "boolean", "bool",
+		"string", "varchar", "date", "timestamp":
+		return true
 	}
-	return append(json.RawMessage(nil), raw...)
+	return false
 }
 
+// normalizeRuntimeColumnName maps one column name onto the snake_case style the
+// transform catalog promises. An underscore appears where a lowercase letter or
+// digit is followed by an uppercase letter (OrderID -> order_id), matching the
+// editor's live preview; runs of spaces and hyphens collapse to one underscore
+// and surrounding underscores trim away. removeSpecial drops every remaining
+// symbol, while unicode letters and digits always survive.
 func normalizeRuntimeColumnName(name string, removeSpecial bool) string {
 	var b strings.Builder
 	var prevUnderscore bool
+	var prev rune
 	for i, r := range name {
-		if unicode.IsUpper(r) && i > 0 && !prevUnderscore {
+		if i > 0 && r >= 'A' && r <= 'Z' && ((prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9')) {
 			b.WriteRune('_')
 			prevUnderscore = true
 		}
@@ -1206,6 +1408,7 @@ func normalizeRuntimeColumnName(name string, removeSpecial bool) string {
 			b.WriteRune(unicode.ToLower(r))
 			prevUnderscore = false
 		}
+		prev = r
 	}
 	return strings.Trim(b.String(), "_")
 }
@@ -1220,16 +1423,12 @@ func validJoinMatches(matches []runtimeJoinMatch) []runtimeJoinMatch {
 	return out
 }
 
-func rowsJoinMatch(left, right pipelineexpression.Row, matches []runtimeJoinMatch, cross bool) bool {
-	if cross {
-		return true
+func joinKeyColumns(matches []runtimeJoinMatch) (left, right []string) {
+	for _, match := range matches {
+		left = append(left, match.LeftColumn)
+		right = append(right, match.RightColumn)
 	}
-	for _, match := range validJoinMatches(matches) {
-		if runtimeScalarString(left[match.LeftColumn]) != runtimeScalarString(right[match.RightColumn]) {
-			return false
-		}
-	}
-	return true
+	return left, right
 }
 
 func selectRuntimeColumns(rows []pipelineexpression.Row, explicit []string, auto bool) []string {
@@ -1237,6 +1436,54 @@ func selectRuntimeColumns(rows []pipelineexpression.Row, explicit []string, auto
 		return append([]string(nil), explicit...)
 	}
 	return deriveRuntimeColumns(rows)
+}
+
+// selectRuntimeJoinColumns picks one join side's projection. Explicit lists
+// win verbatim; auto-selection uses the dependency's table schema (declared
+// types merged with the observed rows), so an empty or sparse input keeps
+// its declared columns — NULL-filled by composeRuntimeJoinRow and still
+// visible to the duplicate-column check — instead of silently dropping them.
+// The geospatial join keeps selectRuntimeColumns.
+func (rt *lightweightTableRuntime) selectRuntimeJoinColumns(dep string, explicit []string, auto bool) []string {
+	if !auto {
+		return append([]string(nil), explicit...)
+	}
+	return rt.tableSchema(dep).columnNames()
+}
+
+// errJoinDuplicateColumn marks a lightweight join whose composed output
+// names one column twice; the wrapped message is the strict validation's
+// own duplicate_column_name text.
+var (
+	errJoinDuplicateColumn = errors.New("lightweight_join_duplicate_column_name")
+	errJoinRowsExceeded    = errors.New("lightweight_join_rows_exceeded")
+)
+
+// rejectRuntimeJoinColumnCollision keeps the lightweight join consistent
+// with the strict build validation: it feeds the composed output names
+// (left selection, then right selection under the same prefixing rule
+// composeRuntimeJoinRow applies) through the shared checkDuplicateNames
+// rule, so an unprefixed right column colliding with a left column, or any
+// duplicate inside an explicit projection — the left anti join's left-only
+// projection included — fails with the same duplicate_column_name message
+// instead of silently letting one side overwrite the other.
+func rejectRuntimeJoinColumnCollision(nodeID string, leftColumns, rightColumns []string, rightPrefix string) error {
+	names := make([]string, 0, len(leftColumns)+len(rightColumns))
+	names = append(names, leftColumns...)
+	prefix := strings.TrimSpace(rightPrefix)
+	for _, column := range rightColumns {
+		target := column
+		if prefix != "" {
+			target = prefix + column
+		}
+		names = append(names, target)
+	}
+	report := pipelineStrictValidationReport{}
+	checkDuplicateNames(nodeID, names, "duplicate_column_name", &report)
+	if len(report.Errors) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", errJoinDuplicateColumn, report.Errors[0].Message)
 }
 
 func composeRuntimeJoinRow(left, right pipelineexpression.Row, leftColumns, rightColumns []string, rightPrefix string) pipelineexpression.Row {

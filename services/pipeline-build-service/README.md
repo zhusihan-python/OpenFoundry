@@ -53,10 +53,32 @@ unsupported IR versions.
 | Iceberg output client (ADR-0041) | 🟡 config-gated by `FOUNDRY_ICEBERG_CATALOG_URL`; boot warning remains intentional |
 | Legacy pipeline authoring CRUD aliases | ✅ mounted through the repository-backed authoring lifecycle when `DATABASE_URL` is configured; otherwise explicit `503` configuration errors |
 
+LLM node previews honor `max_rows`. A build processes the complete input up to 50 rows per node. Larger inputs fail before the first model request. Empty inputs retain their columns and produce zero rows. An independent prompt with no upstream node generates one row. The `boolean` and `double` output types write typed cells. The `json` output type writes validated JSON text to a string column that can feed a JSON extraction step.
+
+AIP generation proposes new nodes for a draft or saved graph. The model connects transforms to existing graph node IDs through `depends_on`. Any explicit dataset ID must already be present in the graph in the same input or output role. PBS validates the proposal and returns a preview or a runtime preview diagnostic. The author chooses whether to apply the nodes.
+
 Use `openfoundry-go/docs/migration/route-parity-audit.md` as the generated
 source of truth for route-shape parity. Productive handlers either execute real
 repository/runtime work or return a machine-readable configuration error that
 names the missing adapter.
+
+## Manual build outputs
+
+A successful MANUAL or FORCE build confirms publication of its selected datasets.
+To publish ontology objects or links, run the graph with
+`POST /api/v1/pipelines/{id}/runs`. During resolution the service checks the
+requested datasets and every output of their selected JobSpecs against the
+pipeline graph. A mixed graph can build its ordinary dataset targets independently.
+
+Resolution checks the declared dataset output projection before reserving outputs.
+For an older resolved build whose saved projection is invalid, execute returns
+409 with `dataset_output_projection_invalid`. Abort that build to release its
+reservations, publish the corrected JobSpec, and create a new build.
+
+Execution uses the published JobSpec RID and output reservations saved with the
+build. This also applies to older pending builds. A historical JobSpec that
+described only a dataset cannot establish whether an earlier graph declared
+additional ontology work. Its completion receipt covers the dataset publication.
 
 ## Build & run
 
@@ -82,7 +104,9 @@ go test ./services/pipeline-build-service/...
 | `OBJECT_DATABASE_SERVICE_BEARER` | unset; forwarded as `Authorization: Bearer` for object output materialization when configured |
 | `WORKFLOW_SERVICE_URL` | `http://localhost:50080` |
 | `AI_SERVICE_URL` | `http://localhost:50127` |
+| `PIPELINE_LLM_PROTOCOL` | `ai-service` by default. Set to `agent-runtime` for LLM nodes and AIP-assisted generation calling the authenticated chat route of the Go agent-runtime-service at `AI_SERVICE_URL`. |
 | `AI_SERVICE_BEARER` | unset; forwarded as `Authorization: Bearer` for LLM nodes and AIP-assisted generation when configured |
+| `PIPELINE_LLM_PURPOSE_JUSTIFICATION` | Explicit business purpose for calls made by this deployment’s PBS service identity to agent-runtime, including generation and LLM rows. Set a purpose appropriate for the workload. The seeded policy requires at least 20 characters and an eligible provider route. Empty by default. |
 | `STORAGE_BACKEND` | `local` |
 | `STORAGE_BUCKET` | unset |
 | `S3_*` | unset |

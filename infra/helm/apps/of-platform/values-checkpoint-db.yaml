@@ -1,0 +1,11 @@
+# New dev clusters using the pg-policy chart's checkpoints_purpose database
+# role. Apply after values-dev.yaml when installing of-platform.
+services:
+  authorization-policy-service:
+    envSecrets:
+      DATABASE_URL:
+        secretName: checkpoints-purpose-db-dsn
+        key: writer_url
+      DATABASE_READ_URL:
+        secretName: checkpoints-purpose-db-dsn
+        key: reader_url

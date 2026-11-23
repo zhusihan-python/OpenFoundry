@@ -60,10 +60,11 @@ type pipelineGraphValidationResponse struct {
 }
 
 type pipelineStrictValidationField struct {
-	Name      string                     `json:"name"`
-	FieldType string                     `json:"field_type"`
-	Nullable  bool                       `json:"nullable"`
-	Metadata  map[string]json.RawMessage `json:"metadata,omitempty"`
+	typedOutput bool                       // retain the logical type in dataset publication
+	Name        string                     `json:"name"`
+	FieldType   string                     `json:"field_type"`
+	Nullable    bool                       `json:"nullable"`
+	Metadata    map[string]json.RawMessage `json:"metadata,omitempty"`
 }
 
 type pipelineStrictSchema struct {
@@ -236,6 +237,9 @@ func validatePipelineIRStrictWithSchemas(pipelineID string, ir models.PipelineIR
 			declared := schemaFromIRSchema(*node.OutputSchema)
 			validateDeclaredOutputSchema(node.ID, schema, declared, &report)
 			if declared.Known {
+				if isLLMTransform(node.TransformType) {
+					declared = llmDeclaredSchema(declared, schema)
+				}
 				schema = declared
 			}
 		}
@@ -261,6 +265,9 @@ func validateStrictNode(node models.PipelineIRNode, deps []pipelineStrictSchema,
 	if err != nil {
 		report.addError(node.ID, nil, "invalid_config_json", err.Error())
 		return firstSchema(deps)
+	}
+	if isLLMTransform(node.TransformType) {
+		return validateLLMSchema(node, deps, report)
 	}
 	kind := normaliseTableTransform(node.TransformType)
 	switch kind {
@@ -641,7 +648,7 @@ func applyCastBlock(nodeID string, schema pipelineStrictSchema, block runtimeTra
 		if targetName == "" {
 			targetName = source
 		}
-		fields[i] = pipelineStrictValidationField{Name: targetName, FieldType: strictTypeName(targetType), Nullable: field.Nullable, Metadata: cloneRawMap(field.Metadata)}
+		fields[i] = pipelineStrictValidationField{typedOutput: true, Name: targetName, FieldType: strictTypeName(targetType), Nullable: field.Nullable, Metadata: cloneRawMap(field.Metadata)}
 		checkSchemaDuplicateFields(nodeID, pipelineStrictSchema{Known: true, Fields: fields}, report)
 		return pipelineStrictSchema{Known: true, Fields: fields}
 	}
@@ -786,7 +793,7 @@ func validateUnionNode(nodeID string, draft runtimeUnionDraft, deps []pipelineSt
 				}
 			}
 		}
-		return base
+		return unionTypedSchema(deps, true)
 	}
 	base := deps[0]
 	for idx, dep := range deps[1:] {
@@ -806,7 +813,33 @@ func validateUnionNode(nodeID string, draft runtimeUnionDraft, deps []pipelineSt
 			}
 		}
 	}
-	return base
+	return unionTypedSchema(deps, false)
+}
+
+// A compatible Union may mix promoted numeric types. Only carry a logical
+// type into publication if it describes every contributing input column.
+func unionTypedSchema(deps []pipelineStrictSchema, positional bool) pipelineStrictSchema {
+	out := deps[0]
+	out.Fields = append([]pipelineStrictValidationField(nil), out.Fields...)
+	for i, base := range out.Fields {
+		hasType := base.typedOutput
+		for _, dep := range deps[1:] {
+			field, ok := dep.field(base.Name)
+			if positional {
+				ok = i < len(dep.Fields)
+				if ok {
+					field = dep.Fields[i]
+				}
+			}
+			if !ok || !fieldType(field).Equal(fieldType(base)) {
+				hasType = false
+				break
+			}
+			hasType = hasType || field.typedOutput
+		}
+		out.Fields[i].typedOutput = hasType
+	}
+	return out
 }
 
 func validateOutputNode(nodeID, transformType string, rawConfig json.RawMessage, schema pipelineStrictSchema, report *pipelineStrictValidationReport) {
@@ -1226,7 +1259,15 @@ func applyNormalizeSchema(nodeID string, schema pipelineStrictSchema, removeSpec
 	}
 	fields := cloneStrictFields(schema.Fields)
 	for i := range fields {
-		fields[i].Name = normalizeRuntimeColumnName(fields[i].Name, removeSpecial)
+		target := normalizeRuntimeColumnName(fields[i].Name, removeSpecial)
+		if target == "" {
+			// The runtime cannot materialize an empty column name; validate
+			// must agree instead of quietly keeping the original name.
+			report.addError(nodeID, strPtr(fields[i].Name), "normalize_column_name_empty",
+				fmt.Sprintf("column %q normalizes to an empty name", fields[i].Name))
+			continue
+		}
+		fields[i].Name = target
 	}
 	out := pipelineStrictSchema{Known: true, Fields: fields}
 	checkSchemaDuplicateFields(nodeID, out, report)

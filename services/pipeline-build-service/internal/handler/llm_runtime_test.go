@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -105,24 +103,6 @@ func TestAIServiceLLMRunnerCallsAIServiceAndAddsOutputColumn(t *testing.T) {
 	require.JSONEq(t, `"Mesa Trail"`, string(rows[0]["trail"]))
 }
 
-func TestAIServiceLLMProviderSmokeGated(t *testing.T) {
-	if os.Getenv("OPENFOUNDRY_PIPELINE_LLM_PROVIDER_SMOKE") != "1" {
-		t.Skip("set OPENFOUNDRY_PIPELINE_LLM_PROVIDER_SMOKE=1 with AI_SERVICE_URL to run provider smoke")
-	}
-	baseURL := strings.TrimSpace(os.Getenv("AI_SERVICE_URL"))
-	require.NotEmpty(t, baseURL, "AI_SERVICE_URL is required for provider smoke")
-	runner := NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: baseURL, BearerToken: os.Getenv("AI_SERVICE_BEARER")})
-	result, err := runner.RunLLMTransform(context.Background(), LLMTransformRequest{
-		Node:          executor.NodeContext{Node: executor.Node{ID: "llm_provider_smoke"}},
-		Payload:       json.RawMessage(`{"prompt":"Return exactly: ok","output_column":"result","max_rows":1,"max_tokens":8}`),
-		TransformType: "llm",
-		InputRows:     []map[string]json.RawMessage{{"trail": mustRuntimeJSON("Mesa")}},
-	})
-	require.NoError(t, err)
-	require.Equal(t, 1, result.Metadata["rows_affected"])
-	require.NotEmpty(t, rowsFromLLMResult(result))
-}
-
 type recordingLLMTransformRunner struct {
 	seen   LLMTransformRequest
 	result executor.NodeResult
@@ -132,4 +112,33 @@ type recordingLLMTransformRunner struct {
 func (r *recordingLLMTransformRunner) RunLLMTransform(_ context.Context, req LLMTransformRequest) (executor.NodeResult, error) {
 	r.seen = req
 	return r.result, r.err
+}
+
+func TestLLMEmptyDependencyDoesNotCreateRowsOrCallModel(t *testing.T) {
+	runner := NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: "http://unused.invalid"})
+	result, err := runner.RunLLMTransform(context.Background(), LLMTransformRequest{
+		Node:    executor.NodeContext{Node: executor.Node{DependsOn: []string{"empty"}}},
+		Payload: json.RawMessage(`{"prompt":"describe the order"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0, result.Metadata["rows_affected"])
+	require.Empty(t, result.Metadata["data_rows"])
+}
+
+func TestAgentRuntimeCompletionTracksServedModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/agent-runtime/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer service", r.Header.Get("Authorization"))
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "Reconcile this week’s order totals", body["purpose_justification"])
+		require.Equal(t, []any{map[string]any{"role": "system", "content": "system"}, map[string]any{"role": "user", "content": "order"}}, body["messages"])
+		writeJSON(w, 200, map[string]any{"model": "served-version", "provider_name": "local", "choices": []any{map[string]any{"message": map[string]string{"content": "ok"}}}, "usage": map[string]int{"total_tokens": 3}})
+	}))
+	defer server.Close()
+	runner := NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: server.URL, AgentRuntime: true, PurposeJustification: "Reconcile this week’s order totals", BearerToken: "service"})
+	response, err := runner.RunLLMTransform(context.Background(), LLMTransformRequest{Payload: json.RawMessage(`{"system_prompt":"system","prompt":"order"}`)})
+	require.NoError(t, err)
+	require.Equal(t, "served-version", response.Metadata["model"])
+	require.Equal(t, "local", response.Metadata["provider_name"])
 }

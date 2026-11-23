@@ -195,6 +195,7 @@ func TestCompleteOpenAICompatibleHappyPath(t *testing.T) {
 		assert.Equal(t, "gpt-fake", sent["model"])
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
+            "model":"served-revision",
             "choices":[{"message":{"content":"hello back"}}],
             "usage":{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11}
         }`))
@@ -209,6 +210,7 @@ func TestCompleteOpenAICompatibleHappyPath(t *testing.T) {
 	got, err := CompleteText(context.Background(), server.Client(), provider, "", "hi", nil, 0.2, 100)
 	require.NoError(t, err)
 	assert.Equal(t, "hello back", got.Text)
+	assert.Equal(t, "served-revision", got.Model)
 	assert.Equal(t, int32(7), got.PromptTokens)
 	assert.Equal(t, int32(4), got.CompletionTokens)
 	assert.Equal(t, int32(11), got.TotalTokens)

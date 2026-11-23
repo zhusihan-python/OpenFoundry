@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 ## [Unreleased]
 
 ### Added
+- Dataset output nodes support ordered column selection for NDJSON previews
+  and publications. Empty results retain their declared columns.
+- Pipeline LLM nodes can use the agent-runtime chat endpoint with a configured
+  OpenAI-compatible model. Set `PIPELINE_LLM_PROTOCOL=agent-runtime`.
 - DVS can publish a group of reserved manual build outputs in one transaction
   and replay the original receipts.
 - Manual batched dataset builds can explicitly publish an `orders.v1` Parquet
@@ -42,9 +46,25 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - _(add entries here)_
 
 ### Fixed
+- Agent-runtime records a purpose decision before chat and copilot inference. Pipeline Builder supplies its configured workload purpose and checks generated transforms against the current graph.
+- Composed LLM previews account for downstream joins, filters, and ordering.
+  A preview that needs more rows than the model preview budget fails before
+  invoking that model. Row-preserving previews infer only the requested prefix.
+- Manual and forced builds reject selected ontology targets before reserving
+  dataset outputs. A mixed pipeline can still publish an independent dataset.
+  Executing a resolved build uses its saved JobSpec even after the graph changes.
+- Geospatial joins and positional unions execute in the declared input order.
+  Short geospatial previews include matches outside the display sample.
+- By-name Union reads its bounded inputs before serving a short preview.
+- Published lightweight NDJSON datasets retain the logical type of whole-column casts after filtering or renaming, including empty results.
 - Manual canonical dataset builds now publish through their own output reservation.
   After publication, retrying a build can reconcile its recorded output without
   creating another dataset version.
+- Lightweight equality joins preserve 64-bit integer keys and leave rows with
+  missing or null keys unmatched.
+  Joins reject duplicate output column names. Join previews read inputs up to
+  the build limits and show the first requested rows of the result. A join
+  that exceeds the preview's output row limit returns an error.
 
 ### Security
 - _(add entries here)_

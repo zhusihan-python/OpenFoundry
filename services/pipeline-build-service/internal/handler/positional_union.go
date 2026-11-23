@@ -14,10 +14,11 @@ import (
 const runtimeDeclaredSchema = "declared_table_schema"
 
 type lightweightTable struct {
-	rows       []pipelineexpression.Row
-	node       *models.PipelineIRNode
-	schema     pipelineStrictSchema
-	positional bool
+	rows         []pipelineexpression.Row
+	node         *models.PipelineIRNode
+	schema       pipelineStrictSchema
+	positional   bool
+	typedLineage bool
 }
 
 func (draft *runtimeUnionDraft) byPosition() bool {
@@ -37,10 +38,32 @@ func declaredTableSchemas(ir models.PipelineIR) map[string]*models.PipelineIRSch
 }
 
 func (rt *lightweightTableRuntime) runtimeTable(node executor.Node, transform, kind string, payload json.RawMessage, cfg tableRuntimeConfig, datasetMeta map[string]any, rows []pipelineexpression.Row) lightweightTable {
-	table := lightweightTable{rows: rows}
+	table := lightweightTable{rows: rows, typedLineage: kind == "llm"}
+	// Preserve logical types the JSON encoding alone cannot distinguish.
+	// Other pipelines keep their existing lazy schema resolution.
+	if cfg.Stack != nil {
+		for _, block := range cfg.Stack.Blocks {
+			if block.Applied && strings.EqualFold(strings.TrimSpace(block.Kind), "cast") {
+				table.typedLineage = true
+				break
+			}
+		}
+	}
+	rt.mu.Lock()
+	for _, dep := range node.DependsOn {
+		table.typedLineage = table.typedLineage || rt.tables[dep].typedLineage
+	}
+	rt.mu.Unlock()
 	if kind == "sql" && cfg.Stack == nil && cfg.Join == nil && cfg.GeoJoin == nil && cfg.Union.byPosition() {
 		// runUnion has already resolved and checked the input layouts.
 		table.schema = rt.tableSchema(node.DependsOn[0])
+		if table.typedLineage {
+			deps := make([]pipelineStrictSchema, len(node.DependsOn))
+			for i, dep := range node.DependsOn {
+				deps[i] = rt.tableSchema(dep)
+			}
+			table.schema = unionTypedSchema(deps, true)
+		}
 		table.positional = true
 		return table
 	}
@@ -82,7 +105,7 @@ func (rt *lightweightTableRuntime) tableSchema(nodeID string) pipelineStrictSche
 	return rt.resolveTableSchema(nodeID)
 }
 
-// resolveTableSchema runs only when a positional union needs the layout.
+// Resolve and cache the layout when a join, union or typed publication needs it.
 // The graph is already executing in dependency order and mu is held.
 func (rt *lightweightTableRuntime) resolveTableSchema(nodeID string) pipelineStrictSchema {
 	table, ok := rt.tables[nodeID]
@@ -103,12 +126,31 @@ func (rt *lightweightTableRuntime) resolveTableSchema(nodeID string) pipelineStr
 	var schema pipelineStrictSchema
 	if table.node.OutputSchema != nil {
 		schema = schemaFromIRSchema(*table.node.OutputSchema)
-	} else if len(table.node.DependsOn) > 0 {
+	}
+	isLLM := isLLMTransform(table.node.TransformType)
+	if (len(table.node.DependsOn) > 0 || isLLM) && (!schema.Known || table.typedLineage) {
 		deps := make([]pipelineStrictSchema, 0, len(table.node.DependsOn))
 		for _, dep := range table.node.DependsOn {
 			deps = append(deps, rt.resolveTableSchema(dep))
 		}
-		schema = validateStrictNode(*table.node, deps, &pipelineStrictValidationReport{})
+		// An empty relation can have no observed input fields. The LLM
+		// still creates its configured output column.
+		if isLLM && len(deps) != 0 {
+			deps[0].Known = true
+		}
+		derived := validateStrictNode(*table.node, deps, &pipelineStrictValidationReport{})
+		if !schema.Known {
+			schema = derived
+		} else {
+			if isLLM {
+				schema = llmDeclaredSchema(schema, derived)
+			}
+			for i, field := range schema.Fields {
+				if computed, exists := derived.field(field.Name); exists && computed.typedOutput && compatibleAssignment(fieldType(computed), fieldType(field)) {
+					schema.Fields[i].typedOutput = true
+				}
+			}
+		}
 	}
 	if !schema.Known {
 		schema = inferred

@@ -34,6 +34,8 @@ type Config struct {
 	WorkflowServiceURL              string
 	AIServiceURL                    string
 	AIServiceBearer                 string
+	PipelineLLMPurposeJustification string
+	PipelineLLMProtocol             string
 
 	StorageBackend   string
 	StorageBucket    string
@@ -190,6 +192,11 @@ func FromEnv() (*Config, error) {
 	c.WorkflowServiceURL = defaultStr(os.Getenv("WORKFLOW_SERVICE_URL"), "http://localhost:50080")
 	c.AIServiceURL = defaultStr(os.Getenv("AI_SERVICE_URL"), "http://localhost:50127")
 	c.AIServiceBearer = os.Getenv("AI_SERVICE_BEARER")
+	c.PipelineLLMPurposeJustification = strings.TrimSpace(os.Getenv("PIPELINE_LLM_PURPOSE_JUSTIFICATION"))
+	c.PipelineLLMProtocol = defaultStr(os.Getenv("PIPELINE_LLM_PROTOCOL"), "ai-service")
+	if c.PipelineLLMProtocol != "ai-service" && c.PipelineLLMProtocol != "agent-runtime" {
+		return nil, errors.New("PIPELINE_LLM_PROTOCOL must be ai-service or agent-runtime")
+	}
 	c.StorageBackend = defaultStr(os.Getenv("STORAGE_BACKEND"), "local")
 	c.StorageBucket = os.Getenv("STORAGE_BUCKET")
 	c.S3Endpoint = os.Getenv("S3_ENDPOINT")

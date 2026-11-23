@@ -83,7 +83,7 @@ func WithPurposeCheckpointTimeout(timeout time.Duration) PurposeCheckpointOption
 func NewPurposeCheckpointClient(baseURL string, opts ...PurposeCheckpointOption) *PurposeCheckpointClient {
 	c := &PurposeCheckpointClient{
 		baseURL:    strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		httpClient: &http.Client{Timeout: defaultPurposeCheckpointTimeout},
+		httpClient: &http.Client{Timeout: defaultPurposeCheckpointTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		timeout:    defaultPurposeCheckpointTimeout,
 	}
 	for _, opt := range opts {
@@ -239,6 +239,9 @@ func (c *PurposeCheckpointClient) Enforce(ctx context.Context, req PurposeCheckp
 	var evaluation PurposeCheckpointEvaluation
 	if err := json.Unmarshal(respBody, &evaluation); err != nil {
 		return &PurposeCheckpointInvalidResponseError{Body: string(respBody), Cause: err}
+	}
+	if evaluation.Approved && (evaluation.RecordID == uuid.Nil || evaluation.Status != "approved") {
+		return &PurposeCheckpointInvalidResponseError{Cause: fmt.Errorf("approved decision requires an approved status and a record ID")}
 	}
 	if !evaluation.Approved {
 		return &PurposeCheckpointDeniedError{Evaluation: evaluation}

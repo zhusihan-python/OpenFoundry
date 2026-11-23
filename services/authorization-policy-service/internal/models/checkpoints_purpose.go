@@ -32,16 +32,17 @@ type SensitiveInteractionConfig struct {
 
 // PurposeTemplate: form scaffold for purpose-of-use justification flows.
 type PurposeTemplate struct {
-	Slug          string          `json:"slug"`
-	Name          string          `json:"name"`
-	Summary       string          `json:"summary"`
-	Prompts       json.RawMessage `json:"prompts"`
-	RequiredTags  json.RawMessage `json:"required_tags"`
+	Slug         string          `json:"slug"`
+	Name         string          `json:"name"`
+	Summary      string          `json:"summary"`
+	Prompts      json.RawMessage `json:"prompts"`
+	RequiredTags json.RawMessage `json:"required_tags"`
 }
 
 // PurposeRecord: the audit ledger row written when a sensitive
 // interaction is justified.
 type PurposeRecord struct {
+	EnforcedBy           *uuid.UUID      `json:"enforced_by,omitempty"`
 	ID                   uuid.UUID       `json:"id"`
 	InteractionType      string          `json:"interaction_type"`
 	ActorID              *uuid.UUID      `json:"actor_id"`

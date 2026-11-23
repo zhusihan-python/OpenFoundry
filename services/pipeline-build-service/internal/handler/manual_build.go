@@ -81,9 +81,25 @@ func runManualBuild(w http.ResponseWriter, r *http.Request, ports ExecutionPorts
 		return
 	}
 	plan, err := store.LoadPlan(ctx, buildID)
-	if err != nil {
-		writeManualBuildError(w, http.StatusInternalServerError, "manual_build_plan_failed", err)
+	if errors.Is(err, errDatasetOutputProjectionInvalid) {
+		writeManualBuildError(w, http.StatusConflict, "dataset_output_projection_invalid", fmt.Errorf("%w. Abort the build to release its reservations and publish a corrected JobSpec", err))
 		return
+	}
+	if err != nil {
+		writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_plan_failed", err)
+		return
+	}
+	// Jobs pin the published JobSpec RID. A later edit of the parent pipeline
+	// cannot change what this build resolved or the meaning of a retry.
+	for _, node := range plan.Nodes {
+		if metadataString(node.Metadata, "logic_kind") == "" {
+			writeManualBuildError(w, http.StatusServiceUnavailable, "manual_build_job_spec_unavailable", fmt.Errorf("missing published JobSpec %s", node.ID))
+			return
+		}
+		if err := checkManualSpecTarget(node.ID, metadataString(node.Metadata, "transform_type"), metadataRaw(node.Metadata, "logic_payload")); err != nil {
+			writeResolutionHTTPError(w, err)
+			return
+		}
 	}
 	outputs, err := store.ListManualBuildOutputs(ctx, buildID)
 	if err != nil {

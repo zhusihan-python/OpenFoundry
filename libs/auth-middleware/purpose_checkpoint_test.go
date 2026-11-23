@@ -107,3 +107,18 @@ func TestPurposeCheckpointClientServiceAndInvalidResponseErrors(t *testing.T) {
 }
 
 func strPtr(value string) *string { return &value }
+
+func TestPurposeCheckpointRequiresDurableApproval(t *testing.T) {
+	for _, decision := range []PurposeCheckpointEvaluation{
+		{Approved: true, Status: "approved"},
+		{RecordID: uuid.New(), Approved: true, Status: "pending_justification"},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(decision)
+		}))
+		err := NewPurposeCheckpointClient(srv.URL).Enforce(t.Context(), PurposeCheckpointRequest{InteractionType: "ai_chat_completion"})
+		srv.Close()
+		var invalid *PurposeCheckpointInvalidResponseError
+		require.ErrorAs(t, err, &invalid)
+	}
+}

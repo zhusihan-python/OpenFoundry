@@ -100,7 +100,7 @@ func (r *Repo) CreatePurposeRecord(ctx context.Context, body *models.CreatePurpo
 
 // ListPurposeRecordsByInteraction returns the most-recent N records
 // for a given interaction_type (default 50, max 500).
-func (r *Repo) ListPurposeRecordsByInteraction(ctx context.Context, interactionType string, limit int) ([]models.PurposeRecord, error) {
+func (r *Repo) ListPurposeRecordsByInteraction(ctx context.Context, interactionType string, limit int, viewer uuid.UUID, readAll bool) ([]models.PurposeRecord, error) {
 	if limit < 1 {
 		limit = 50
 	}
@@ -109,12 +109,12 @@ func (r *Repo) ListPurposeRecordsByInteraction(ctx context.Context, interactionT
 	}
 	rows, err := r.Pool.Query(ctx,
 		`SELECT id, interaction_type, actor_id, purpose_justification,
-		        status, policy_slug, tags, evidence, created_at
+		        status, policy_slug, tags, evidence, created_at, enforced_by
 		   FROM purpose_records
-		  WHERE interaction_type = $1
+		  WHERE interaction_type = $1 AND (enforced_by IS NULL OR actor_id=$3 OR enforced_by=$3 OR $4)
 		  ORDER BY created_at DESC
 		  LIMIT $2`,
-		interactionType, limit)
+		interactionType, limit, viewer, readAll)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +124,7 @@ func (r *Repo) ListPurposeRecordsByInteraction(ctx context.Context, interactionT
 		var v models.PurposeRecord
 		if err := rows.Scan(&v.ID, &v.InteractionType, &v.ActorID,
 			&v.PurposeJustification, &v.Status, &v.PolicySlug,
-			&v.Tags, &v.Evidence, &v.CreatedAt); err != nil {
+			&v.Tags, &v.Evidence, &v.CreatedAt, &v.EnforcedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

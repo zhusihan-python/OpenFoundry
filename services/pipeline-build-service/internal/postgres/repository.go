@@ -112,10 +112,15 @@ func (r *Repository) lookupJobSpecOnBranch(ctx context.Context, pipelineRID, out
 	}
 	var spec models.JobSpec
 	var inputsRaw, jobSpecRaw []byte
+	var publishedPayload json.RawMessage
 	var singleOutput string
-	err := r.db.QueryRow(ctx, `SELECT COALESCE(job_spec_rid, rid), pipeline_rid, branch_name, inputs, output_dataset_rid, job_spec_json, content_hash
+	err := r.db.QueryRow(ctx, `SELECT COALESCE(job_spec_rid, rid), pipeline_rid, branch_name, inputs, output_dataset_rid, job_spec_json, content_hash,
+ (SELECT js.logic_payload FROM job_specs js
+  WHERE js.rid = COALESCE(pipeline_job_specs.job_spec_rid, pipeline_job_specs.rid)
+    AND js.pipeline_rid = pipeline_job_specs.pipeline_rid
+    AND js.tenant_id IS NOT DISTINCT FROM pipeline_job_specs.tenant_id)
 FROM pipeline_job_specs
-WHERE `+where, args...).Scan(&spec.RID, &spec.PipelineRID, &spec.BranchName, &inputsRaw, &singleOutput, &jobSpecRaw, &spec.ContentHash)
+WHERE `+where, args...).Scan(&spec.RID, &spec.PipelineRID, &spec.BranchName, &inputsRaw, &singleOutput, &jobSpecRaw, &spec.ContentHash, &publishedPayload)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -137,6 +142,7 @@ WHERE `+where, args...).Scan(&spec.RID, &spec.PipelineRID, &spec.BranchName, &in
 			return nil, fmt.Errorf("decode job_spec_json: %w", err)
 		}
 	}
+	spec.PublishedLogicPayload = &publishedPayload
 	spec.LogicKind = body.LogicKind
 	spec.LogicPayload = body.LogicPayload
 	spec.OutputDatasetRIDs = body.OutputDatasetRIDs

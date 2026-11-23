@@ -11,7 +11,7 @@
 | `select` | 选择列 | available | 轻量节点和变换栈；节点别名 `project`、`projection` |
 | `drop` | 删除列 | available | 轻量节点和变换栈；节点别名 `drop_columns` |
 | `rename` | 重命名列 | available | 轻量节点和变换栈；节点别名 `rename_columns` |
-| `cast` | 转换列类型 | available | 轻量变换栈；与 WP5.5 的标量 `cast()` 分别验收 |
+| `cast` | 转换列类型 | available | 轻量变换栈。NDJSON 数据集记录整列 cast 的目标类型，保留 Integer、Long、Double 以及日期和时间戳的区别。列更名或筛选为空后仍保留类型。WP5.5 的标量 `cast()` 单独验收 |
 | `filter` | 过滤行 | available | 轻量节点和变换栈；节点别名 `row_filter` |
 | `formula` | 公式列 | available | 轻量变换栈写入或覆盖目标列。与派生列共享表达式求值，覆盖语义不同。见 `838a6aa9`。 |
 | `derive_column` | 派生列 | available | 轻量变换栈追加列，目标列重名时报错。见 `2e793275`。 |
@@ -30,11 +30,25 @@
 | `csv_parse` | 解析 CSV 内容 | available | 轻量变换栈解析 CSV 文本列。数据连接的 CSV 文件摄取有独立配置和验收。见 `b03a187f`。 |
 | `gpx_parse` | 解析 GPX | available | 轻量 GPX 节点；别名 `parse_gpx`、`gpx`、`gpx_parser` |
 | `python_transform` | Python 变换 | requires_python_sidecar | Python 节点依赖 sidecar；与动态 Python UDF 复用入口的计数由产品确认 |
-| `llm_node` | 调用 LLM | requires_ai_service | LLM 节点依赖 AI 服务与实际提供方 |
-| `output_mapping` | 输出映射 | available | 构建器输出配置与发布路径；数据集、对象、链接和目录表单中其他选项需按目标分别核对 |
+| `llm_node` | 调用 LLM | requires_ai_service | Go agent-runtime 的鉴权 chat 接口支持接入实际模型。提供方返回的模型标识和 token 用量可在节点执行记录核对。 |
+| `output_mapping` | 输出映射 | available | 图运行支持数据集、对象和链接发布。数据集字段投影及固定格式边界见下文。 |
 | `function.<name>@<version>` | 可复用函数（动态族） | 表达式可用 / Python 仅声明 | 动态族。注入注册表后追加各函数版本，生产启动当前未接注册表。调用别名和版本共享函数引用语义。 |
 
 [目录与状态](../../services/pipeline-build-service/internal/handler/transform_catalog.go) · [轻量执行与别名](../../services/pipeline-build-service/internal/handler/lightweight_runtime.go) · [地理连接](../../services/pipeline-build-service/internal/handler/geo_join_runtime.go) · [生产接线](../../services/pipeline-build-service/cmd/pipeline-build-service/main.go)
+
+### 轻量通用连接
+
+普通等值连接要求每对连接键都有值。任一侧的键缺失或为 NULL 时，两行无法匹配。两个空字符串可以匹配。连接按所选列和右侧前缀生成输出列名，遇到重名会报错。要保留左右两侧的同名列，可用 `right_prefix` 区分它们。如果只需其中一列，可在投影中选取该列。
+
+含通用连接的轻量预览按构建的输入上限读取数据，再从执行结果中取 `sample_size` 指定的前几行。因此，即使右侧匹配行位于展示行数之外，预览也能显示这次匹配。若连接产生的行数超过预览允许的连接输出上限，即使只请求展示一行，预览也会报错。[预览执行入口](../../services/pipeline-build-service/internal/handler/preview.go)
+
+普通等值连接保留 64 位整数键的精度。字符串与数字按各自的类型匹配；数值键 `1` 和 `1.0` 匹配，两个数值相邻的大整数订单号分别匹配。
+
+数据集输出可在 `_output.columns` 中按顺序指定 NDJSON 字段，例如 `["order_id", "amount"]`。保存预览、草稿预览和发布 schema 沿用该顺序，输入为空时仍保留列和类型。未配置时输出全部结果列。未知或重复的列名、错型配置会使操作失败，原发布版本仍可读取。固定的 `orders.v1` 文件及显式 Parquet 输出沿用各自的 schema，拒绝可变列投影。
+
+对象和链接通过已保存管道的 `POST /api/v1/pipelines/{id}/runs` 发布。MANUAL 和 FORCE 构建支持混合管道中的独立数据集目标。选择了对象或链接目标时，创建构建返回 409。已解析的手动构建按保存的 JobSpec 执行。图运行提交本体时若某一行失败，先前的写入可能已经可见。修复输入后通过 `/runs/{id}/retry` 创建新运行，按对象主键或链接端点更新已有记录。
+
+几何相交、阈值及最近邻连接按管道中声明的左右顺序取表。短预览先读取有界输入，再从匹配结果取前几行，因此样本窗口之外的右侧对象仍可成为最近邻。
 
 ## WP6.3 新增能力
 

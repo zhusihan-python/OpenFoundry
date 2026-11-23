@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
@@ -87,7 +88,8 @@ func (h *Handlers) CreatePurposeRecord(w http.ResponseWriter, r *http.Request) {
 // ListPurposeRecordsByInteraction handles
 // GET /api/v1/purpose-records?interaction_type=X&limit=N.
 func (h *Handlers) ListPurposeRecordsByInteraction(w http.ResponseWriter, r *http.Request) {
-	if _, ok := authmw.FromContext(r.Context()); !ok {
+	caller, ok := authmw.FromContext(r.Context())
+	if !ok {
 		writeJSONErr(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -106,7 +108,7 @@ func (h *Handlers) ListPurposeRecordsByInteraction(w http.ResponseWriter, r *htt
 			limit = n
 		}
 	}
-	items, err := h.Repo.ListPurposeRecordsByInteraction(r.Context(), interactionType, limit)
+	items, err := h.Repo.ListPurposeRecordsByInteraction(r.Context(), interactionType, limit, caller.Sub, slices.Contains(caller.Permissions, "purpose-checkpoint:read"))
 	if err != nil {
 		slog.Error("list purpose records", slog.String("error", err.Error()))
 		writeJSONErr(w, http.StatusInternalServerError, "failed to list records")

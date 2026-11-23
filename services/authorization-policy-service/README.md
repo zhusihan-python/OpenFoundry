@@ -152,3 +152,51 @@ go test -race ./services/authorization-policy-service/...
 go run ./services/authorization-policy-service/cmd/authorization-policy-service
 # → ERROR config load failed error="required environment variable DATABASE_URL is not set"
 ```
+
+### Runtime chat purpose decisions
+
+`POST /api/v1/checkpoints/purpose/enforce` evaluates the configured
+`ai_chat_completion` policy before a runtime provider call. The service JWT
+must carry `auth_methods: ["service"]` and the explicit
+`purpose-checkpoint:enforce` permission. Provision this credential only for
+runtimes trusted to supply the authenticated actor, operation, and selected
+provider's network scope. Migration 0008 registers permission names. The
+operator assigns the credential and permissions.
+
+The seeded `ai-private-network` policy requires a selected private, local or
+hybrid route and a justification of at least 20 Unicode characters. The
+ledger accepts up to 1,024 characters of independent business justification.
+The route accepts chat completions and copilot requests. Missing or
+unsupported policy configuration and storage failures return 503. A completed
+evaluation returns HTTP 200 and a receipt with its approval decision. A
+client must honor the decision before making the provider call.
+
+Each evaluated row has a trusted `enforced_by` service subject and a separate
+`actor_id`. Only these subjects and callers explicitly granted
+`purpose-checkpoint:read` can list those rows. The earlier manual-record API
+continues to create rows with a null enforced subject. The service commits
+its receipt and `purpose_checkpoint.evaluated` audit outbox event in the same
+PostgreSQL transaction. The ledger retains the independent justification.
+The event retains the route, reason, length and digest. Chat messages, model
+replies and credentials are excluded. Shipping outbox events beyond
+PostgreSQL requires a configured CDC consumer.
+
+On an existing Helm `pg-policy` cluster, the outbox owner applies
+`infra/helm/infra/postgres-clusters/files/pg-policy-checkpoint-outbox-grant.sql`
+to the application database before rollout. New clusters apply the same
+grant during initdb. It adds column-level `SELECT (event_id)` to
+`svc_checkpoints_purpose`, whose existing schema `USAGE` and table
+`INSERT, DELETE` grants support enqueue. The service writer DSN must use
+this role or an equivalently scoped producer on the same database.
+Migration 0008 uses the platform-owned ADR-0022 table with replica identity
+`FULL`. On a fresh standalone database, it creates the outbox.
+
+For a fresh dev installation backed by the pg-policy chart, apply
+`infra/helm/apps/of-platform/values-checkpoint-db.yaml` after `values-dev.yaml`
+to the of-platform release. It selects the generated
+`checkpoints-purpose-db-dsn` writer and reader credentials. An existing
+installation using `authorization-policy-db-dsn` should keep its configured
+database and schema and apply the owner grant there. If that database has
+not yet run migration 0007 or installed pgcrypto, its owner must first run
+`CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public`. Switching DSNs
+changes the source of existing policies and audit history.

@@ -17,6 +17,7 @@ import (
 // CompletionResult bundles a model's text reply with token usage.
 // Mirrors Rust struct CompletionResult.
 type CompletionResult struct {
+	Model            string // Identifier returned by the provider for this completion.
 	Text             string
 	PromptTokens     int32
 	CompletionTokens int32
@@ -247,6 +248,7 @@ func completeOpenAICompatible(
 	}
 	return CompletionResult{
 		Text:             text,
+		Model:            valueAsText(parsed["model"]),
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		TotalTokens:      total,
