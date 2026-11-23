@@ -40,7 +40,7 @@
 | DI-03 | Building pipelines ★ | P0 | 1 | 管道=代码已定（d769）；轻量执行链已验收但无聚合/窗口/反连接；管道调度仅源码单测且机制待 T8；非结构化细点（CSV/JSON 推断）为 P2 |
 | DI-04 | Maintaining pipelines | P1 | 1 | 健康检查仅 4 枚举+形态上报，无真实数据求值；「6 类」与官方 5 类映射待定 |
 | DI-05 | Pipeline Builder Expressions ★ | P1 | 1 | 标量签名目录与求值子集并存且不一致；需清单核对，不做官方 338 全量 |
-| DI-06 | Pipeline Builder Transforms | P1 | 1 | 产品口径 25 项待映射：源码静态核对为 24 静态项+动态 UDF，大量 planned；3 个新建变换执行面均无 |
+| DI-06 | Pipeline Builder Transforms | P1 | 1 | 01–24 已完成功能验收，25（UDF）待产品决定；三项新增变换已验轻量路径 |
 | DI-07 | Data Lineage | P1 | 2 | 服务/前端/发布侧写入已有；NodeKind 仅 3 类；nodes/relations 有 PG 表与接线，read-model 默认内存；组织/项目隔离未验收；生产事件接线缺 |
 | DI-08 | Dataset Preview | P1 | 1 | 预览参数仅 limit/offset/format；Time Travel 有 ts/txn 原语未接到预览；CSV 参数固定（本项负责持久化解析配置）；SQL 相关能力的关闭条件待 T9 |
 | DI-09 | SQL in Foundry | P2 | 4 | FlightSQL 真实现+远程 delegate；本地查询引擎仅 literal SELECT；Dataset 与 Ontology 双侧整项目标未动工验收 |
@@ -186,20 +186,13 @@
 
 **优先级/阶段**：P1 / 阶段 1（规模 S，02-05，「补齐」，依赖 DI-03）。官方 89 细点；本期=现有变换核对 + 补 3 项（11-07 判）。
 
-**本期范围**：**目标仍为产品口径的 25 个现有变换**；本仓源码静态核对为 24 个静态目录项+动态 UDF 挂载——需建立 25→24+UDF 的逐项映射表（缺失/别名/重复），不能把验收清单直接缩成 24。新建 3 项：Aggregate on condition（按条件聚合）、Aggregate over window（窗口聚合）、Anti join（反连接）；先查当前代码避免重复实现（源码静态核对：三者在执行面均无实现；其语义依赖表达式求值，见 DI-05）。
+**本期范围与进展**：11 月 7 日的产品资料给出既有 25 项的总数。11 月 23 日用户保留输出映射并授权执行 01–24。24 项均已完成功能验收。第 25 项 UDF 待取得原名单条目或明确的管道原生执行用例后再定。另列的按条件聚合、窗口聚合和反连接已有轻量路径验收。[逐项清单与受测提交](data-integration-wp6-1-transform-inventory.md)
 
-**已有实现与证据**：
-- B：静态目录——[transform_catalog.go:111-135](../../services/pipeline-build-service/internal/handler/transform_catalog.go) 24 项（select/drop/rename/cast/filter/formula/derive_column/normalize_columns/normalize_units/sort/join/union/haversine_distance/geo_intersection_join/geo_distance_join/geo_nearest_join/aggregate/explode/json_extract/csv_parse/gpx_parse/python_transform/llm_node/output_mapping），另有动态 PipelineFunction（UDF）挂载。
-- C：planned 标记——formula/derive_column/normalize_units/sort/aggregate/explode/json_extract/csv_parse 等标 `planned`/`catalog_only`（`:313`/`:325`/`:348`/`:362`/`:530`/`:542`/`:553`/`:566`）——目录声明不等于可执行。
-- C：执行面——lightweight_runtime.go:558 无聚合/窗口、`:727` join 族无反连接。
-- C：分布式路径——[distributed_runtime.go](../../services/pipeline-build-service/internal/handler/distributed_runtime.go) 可把节点的 inline SQL 作为 SparkApplication 提交给 `pipeline-runner-spark`；SQL 由 Spark 执行，表达能力取决于 Spark SQL，但 inline 输出格式只支持 `iceberg`（[PipelineRunner.scala](../../services/pipeline-runner-spark/src/main/scala/com/openfoundry/pipeline/PipelineRunner.scala) `runTransform` 对其他格式抛错），未接 Kubernetes 时返回 `spark_client_not_wired`；未经真实集群验收，不算这三项变换的已有实现。
-- C（关联）：`libs/pipeline-expression/catalog.go` 的 group_by/window/pivot 仅有 TransformSignature，无对应执行（归本项处置，不与 DI-05 标量混计）。
-
-**缺口**：25→24+UDF 映射（可并行盘点）；目录-执行一致性；3 个新建变换的执行实现与端到端验收。
+**运行边界**：静态 Python 用已保存管道和 sidecar 验证，LLM 节点用本地模型验证。动态 UDF 的表达式和 Python 执行边界见 WP6.4；分布式 Spark 路径仍待集群验收。[UDF 目录与执行边界](data-integration-wp6-4-udf-catalog-boundary.md) · [Spark 入口](../../services/pipeline-build-service/internal/handler/distributed_runtime.go)
 
 **前置依赖/协作边界**：依赖 DI-03（执行 runtime 与契约）与 DI-05（聚合/窗口中的表达式语义）。
 
-**验收标准（将来，未勾选）**：
+**原定验收标准**：
 1. 25→静态 24+UDF 逐项映射表落盘（每项标注：同义/别名/缺失/重复/仅目录），经产品确认后作为验收清单基准；planned 项明确「本期补齐或移出目录」处置。
 2. 3 个新建变换各有一条定义→Build→产物逐值比对的端到端验收，**同一样本的预览与正式执行输出逐值一致**，边界含：null 参与聚合、重复 key、反连接零匹配、窗口排序边界。
 3. 动态 UDF 与静态目录的边界（何者可声明何者可执行）成文。
