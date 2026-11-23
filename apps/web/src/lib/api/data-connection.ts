@@ -375,7 +375,7 @@ function listItems<T>(payload: ApiListEnvelope<T> | T[]): T[] {
 
 export const dataConnection = {
   // Catalog ----------------------------------------------------------------
-  getSourceCapabilities(id: string): Promise<{ capabilities: { native_snapshot_sync?: boolean } }> {
+  getSourceCapabilities(id: string): Promise<{ capabilities: { native_snapshot_sync: boolean; supports_discovery: boolean } }> {
     return api.get(`${BASE}/sources/${encodeURIComponent(id)}/capabilities`);
   },
 

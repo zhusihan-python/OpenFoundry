@@ -22,8 +22,14 @@ export function useSourceCatalogEntry(source: Source | null | undefined) {
     enabled: Boolean(source),
   });
   const entry = catalog.find((item) => item.type === source?.connector_type);
-  if (!entry || (!capabilities.isError && capabilities.data?.capabilities.native_snapshot_sync)) {
-    return entry;
-  }
-  return { ...entry, capabilities: entry.capabilities.filter((item) => item !== 'batch_sync') };
+  if (!entry) return undefined;
+  const effective = capabilities.isError ? undefined : capabilities.data?.capabilities;
+  return {
+    ...entry,
+    capabilities: entry.capabilities.filter((item) => {
+      if (item === 'batch_sync') return effective?.native_snapshot_sync;
+      if (item === 'exploration') return effective?.supports_discovery;
+      return true;
+    }),
+  };
 }

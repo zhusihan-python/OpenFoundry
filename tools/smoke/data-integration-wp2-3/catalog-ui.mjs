@@ -18,11 +18,14 @@ await page.waitForFunction(cardsReady, undefined, { timeout: 30000 });
 await page.goto(input.origin + "/data-connection/sources/" + report.source_id);
 await page.waitForFunction(() => [...document.querySelectorAll("button")].some(el => el.textContent.trim().toLowerCase() === "capabilities"));
 await page.evaluate(() => [...document.querySelectorAll("button")].find(el => el.textContent.trim().toLowerCase() === "capabilities").click());
-await page.waitForFunction(() => [...document.querySelectorAll("section span")].some(el => el.textContent === "Batch sync"));
+await page.waitForFunction(() => {
+  const badges = [...document.querySelectorAll("section span")].map(el => el.textContent);
+  return badges.includes("Batch sync") && !badges.includes("Exploration");
+});
 const requests = await page.evaluate(() => performance.getEntriesByType("resource")
   .map(item => new URL(item.name).pathname).filter(path => path.endsWith("/catalog") || path.endsWith("/capabilities")));
 if (!requests.some(path => path.includes(report.source_id))) throw new Error("No source-specific capability request");
 await fs.writeFile(input.state + "/browser-checks.json", JSON.stringify({
   source: report.source_id, requests, real_connector: true, identity_bootstrap: "Vite fixture",
-  gallery_s3_batch: true, gallery_postgres_batch: false, configured_source_batch: true,
+  gallery_s3_batch: true, gallery_postgres_batch: false, configured_source_batch: true, configured_source_exploration: false,
 }, null, 2));
