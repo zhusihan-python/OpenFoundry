@@ -1,10 +1,10 @@
 // Input is supplied by catalog-ui.sh for a fresh synthetic tenant.
 const fs = await import("node:fs/promises");
-const task = await taskSpace("OpenFoundry S3 order acceptance");
+const report = JSON.parse(await fs.readFile(input.state + "/orders-report.json", "utf8"));
+const task = await taskSpace("OpenFoundry order acceptance " + report.source_id);
 const page = task.page("p1");
 await fs.writeFile(input.state + "/browser-space", String(task.spaceId));
 const token = (await fs.readFile(input.state + "/browser.jwt", "utf8")).trim();
-const report = JSON.parse(await fs.readFile(input.state + "/orders-report.json", "utf8"));
 await page.goto(input.origin + "/login");
 await page.evaluate((jwt) => localStorage.setItem("of_access_token", jwt), token);
 await page.goto(input.origin + "/data-connection/new");
@@ -23,6 +23,9 @@ await page.waitForFunction(() => {
   const badges = [...document.querySelectorAll("section span")].map(el => el.textContent);
   return badges.includes("Batch sync") && !badges.includes("Exploration") && !badges.includes("Virtual table");
 });
+await page.waitForFunction((source) => performance.getEntriesByType("resource")
+  .some(entry => new URL(entry.name).pathname.endsWith("/sources/" + source + "/capabilities")),
+  report.source_id, { timeout: 30000 });
 const requests = await page.evaluate(() => performance.getEntriesByType("resource")
   .map(item => new URL(item.name).pathname).filter(path => path.endsWith("/catalog") || path.endsWith("/capabilities")));
 if (!requests.some(path => path.includes(report.source_id))) throw new Error("No source-specific capability request");
