@@ -268,7 +268,36 @@ class Fixture:
         return {**locations, "snapshot_id": data["snapshot_id"], "snapshots": data["snapshot_count"],
                 "parquet_files": len(data["data_files"]), "row_count": len(data["rows"])}
 
-    def verify(self):
+    def wait_failed_sink(self):
+        sink = self.compose("ps", "-aq", "sink")
+        def exit_status():
+            status, code = run("docker", "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", sink).split()
+            return (int(code),) if status == "exited" else None
+        code, = until("audit-sink exit", exit_status)
+        check(code != 0, "sink returned success after writer failure")
+        return code
+
+    def verify_lost_ack(self, first, second):
+        self.stage = "verify replay after a committed append loses its HTTP response"
+        (self.table / "drop-append-response").touch()
+        third, receipt = self.observe(self.submit(False), 2)
+        dropped = self.table / "append-response-dropped"
+        until("lost response after append", dropped.exists)
+        check(json.loads(dropped.read_text()) == [third["event_id"]], "lost response event ID mismatch")
+        code = self.wait_failed_sink()
+        pending_offset = self.offset()
+        check(pending_offset == 2, "consumer advanced after a lost response")
+        committed = self.read_table([first, second, third])
+        self.compose("start", "sink")
+        until("acknowledged replay", lambda: self.offset() == 3)
+        final = self.read_table([first, second, third])
+        check(final == committed, "replay after lost response changed the committed table")
+        check(self.kafka("get-offsets", "--topic", TOPIC, "--time", "latest") == TOPIC + ":0:3",
+              "unexpected additional Kafka records after lost response")
+        return {"event": receipt, "sink_exit": code, "offset_before_restart": pending_offset,
+                "offset_after_restart": self.offset(), "after_lost_response": committed, "after_replay": final}
+
+    def verify(self, lost_ack=False):
         self.start_connector()
         self.stage = "verify allowed decision and first delivery"
         first, first_report = self.observe(self.submit(True), 0)
@@ -284,14 +313,9 @@ class Fixture:
         until("HTTP append rejection", rejected.exists)
         rejected_ids = json.loads(rejected.read_text())
         check(rejected_ids == [second["event_id"]], "failed append event ID mismatch")
-        sink = self.compose("ps", "-aq", "sink")
-        def exit_status():
-            status, code = run("docker", "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", sink).split()
-            return (int(code),) if status == "exited" else None
-        code, = until("audit-sink exit", exit_status)
+        code = self.wait_failed_sink()
         check("HTTP 503 from table-writer adapter" in self.compose("logs", "--no-color", "sink"),
               "sink did not observe the rejected append status")
-        check(code != 0, "sink returned success on failed append")
         check(self.offset() == 1, "Kafka group advanced during the failed append")
         if self.lakekeeper:
             self.compose("start", "lakekeeper")
@@ -315,7 +339,7 @@ class Fixture:
             services.extend(["lakekeeper", "catalog-db", "object-store"])
         for service in services:
             images[service] = run("docker", "inspect", "-f", "{{.Config.Image}}@{{.Image}}", self.compose("ps", "-q", service))
-        return {"events": [first_report, second_report], "topic": TOPIC, "consumer_group": GROUP,
+        report = {"events": [first_report, second_report], "topic": TOPIC, "consumer_group": GROUP,
                 "service_binary_sha256": binary_hashes,
                 "committed_next_offsets": {"before_failure": 1, "after_rejected_append": 1, "after_restart": 2},
                 "connector_streaming_before_first_checkpoint": True,
@@ -327,6 +351,10 @@ class Fixture:
                 "python_packages": json.loads(run(self.python, "-c", "import json,pyiceberg,pyarrow; "
                                                       "print(json.dumps({'pyiceberg':pyiceberg.__version__, "
                                                       "'pyarrow':pyarrow.__version__}))")), "images": images}
+
+        if lost_ack:
+            report["lost_ack"] = self.verify_lost_ack(first, second)
+        return report
 
     def close(self):
         if self.table_process:
@@ -344,6 +372,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True, help="new JSON evidence file outside the checkout")
     parser.add_argument("--table-python", default=Path(sys.executable), type=Path, help="Python executable with requirements.txt installed")
     parser.add_argument("--lakekeeper", action="store_true", help="use an isolated Lakekeeper REST catalog and RustFS S3 warehouse")
+    parser.add_argument("--lost-ack", action="store_true", help="also replay a committed append whose response was lost")
     args = parser.parse_args()
     output = args.output.resolve()
     check(not output.is_relative_to(REPO), "store evidence outside the checkout")
@@ -355,7 +384,7 @@ def main():
             fixture.build()
             fixture.render()
             fixture.start()
-            report.update(fixture.verify())
+            report.update(fixture.verify(lost_ack=args.lost_ack))
         except BaseException:
             report["failed_stage"] = fixture.stage
             raise
