@@ -48,7 +48,7 @@ func kafkaBrokers(t *testing.T) []string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	broker, err := tckafka.Run(ctx, "confluentinc/cp-kafka:7.7.0")
+	broker, err := tckafka.Run(ctx, "confluentinc/cp-kafka:7.7.0", tckafka.WithClusterID("test-cluster"))
 	if broker != nil {
 		t.Cleanup(func() {
 			stop, cancel := context.WithTimeout(context.Background(), 30*time.Second)
