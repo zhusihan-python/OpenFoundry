@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -23,14 +22,11 @@ import (
 )
 
 type kafkaAuditWriter struct {
-	mu      sync.Mutex
 	batches [][]envelope.AuditEnvelope
 	err     error
 }
 
 func (w *kafkaAuditWriter) Append(_ context.Context, batch []envelope.AuditEnvelope) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.err != nil {
 		return w.err
 	}
@@ -41,8 +37,6 @@ func (w *kafkaAuditWriter) Append(_ context.Context, batch []envelope.AuditEnvel
 }
 func (w *kafkaAuditWriter) Close() error { return nil }
 func (w *kafkaAuditWriter) calls() int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	return len(w.batches)
 }
 
@@ -59,12 +53,19 @@ func createKafkaTopic(t *testing.T, brokers []string, topic string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	conn, err := kafka.DialContext(ctx, "tcp", brokers[0])
+	client := &kafka.Client{Addr: kafka.TCP(brokers...)}
+	reply, err := client.CreateTopics(ctx, &kafka.CreateTopicsRequest{
+		Topics: []kafka.TopicConfig{{Topic: topic, NumPartitions: 1, ReplicationFactor: 1}},
+	})
 	if err != nil {
-		t.Fatalf("dial kafka: %v", err)
+		t.Fatalf("create topic: %v", err)
 	}
-	defer conn.Close()
-	_ = conn.CreateTopics(kafka.TopicConfig{Topic: topic, NumPartitions: 1, ReplicationFactor: 1})
+	if topicErr, ok := reply.Errors[topic]; !ok || topicErr != nil {
+		t.Fatalf("topic %s creation response: %v", topic, reply.Errors)
+	}
+	if _, err := kafka.DefaultDialer.LookupLeader(ctx, "tcp", brokers[0], topic, 0); err != nil {
+		t.Fatalf("wait for topic leader: %v", err)
+	}
 }
 
 func produceKafkaMessage(t *testing.T, brokers []string, topic string, value []byte) {
@@ -88,35 +89,38 @@ func newKafkaSubscriber(t *testing.T, brokers []string, topic, group string) *da
 	return sub
 }
 
-func fetchOneKafkaMessage(t *testing.T, brokers []string, topic, group string, timeout time.Duration) (kafka.Message, error) {
+func expectGroupOffset(t *testing.T, brokers []string, topic, group string, want int64) {
 	t.Helper()
-	r := kafka.NewReader(kafka.ReaderConfig{Brokers: brokers, GroupID: group, Topic: topic, CommitInterval: 0, MinBytes: 1, MaxBytes: 10e6, MaxWait: 100 * time.Millisecond})
-	defer r.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return r.FetchMessage(ctx)
-}
-
-func expectKafkaGroupCommitted(t *testing.T, brokers []string, topic, group string) {
-	t.Helper()
-	msg, err := fetchOneKafkaMessage(t, brokers, topic, group, 750*time.Millisecond)
-	if err == nil {
-		t.Fatalf("expected committed group offset for %s/%s, but re-read offset %d value=%s", topic, group, msg.Offset, msg.Value)
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected deadline while checking committed offset, got %v", err)
-	}
-}
-
-func expectKafkaGroupReplays(t *testing.T, brokers []string, topic, group string, want []byte) {
-	t.Helper()
-	msg, err := fetchOneKafkaMessage(t, brokers, topic, group, 5*time.Second)
+	client := &kafka.Client{Addr: kafka.TCP(brokers...)}
+	reply, err := client.OffsetFetch(ctx, &kafka.OffsetFetchRequest{
+		GroupID: group, Topics: map[string][]int{topic: {0}},
+	})
 	if err != nil {
-		t.Fatalf("expected uncommitted message replay, got %v", err)
+		t.Fatalf("fetch group offset: %v", err)
 	}
-	if string(msg.Value) != string(want) {
-		t.Fatalf("replayed value = %s, want %s", msg.Value, want)
+	partitions := reply.Topics[topic]
+	if reply.Error != nil || len(partitions) != 1 || partitions[0].Partition != 0 || partitions[0].Error != nil {
+		t.Fatalf("unexpected group offset response: %+v", reply)
 	}
+	if got := partitions[0].CommittedOffset; got != want {
+		t.Fatalf("group %s partition 0 offset = %d, want %d", group, got, want)
+	}
+}
+
+// End the single-record run only after the broker acknowledges the commit.
+type stopAfterCommit struct {
+	*databus.KafkaSubscriber
+	stop context.CancelFunc
+}
+
+func (s stopAfterCommit) CommitMessages(ctx context.Context, msgs []*databus.DataMessage) error {
+	if err := s.KafkaSubscriber.CommitMessages(ctx, msgs); err != nil {
+		return err
+	}
+	s.stop()
+	return nil
 }
 
 func runAuditSinkOnce(t *testing.T, brokers []string, topic, group string, w *kafkaAuditWriter) error {
@@ -124,9 +128,13 @@ func runAuditSinkOnce(t *testing.T, brokers []string, topic, group string, w *ka
 	sub := newKafkaSubscriber(t, brokers, topic, group)
 	defer sub.Close()
 	cfg := &config.Config{BatchPolicy: config.BatchPolicy{MaxRecords: 1, MaxWait: 100 * time.Millisecond}}
-	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return runtime.Run(ctx, cfg, sub, w, runtime.NewMetrics(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	err := runtime.Run(ctx, cfg, stopAfterCommit{sub, cancel}, w, runtime.NewMetrics(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatal("consumer did not complete within deadline")
+	}
+	return err
 }
 
 func TestRuntimeWithRealKafkaValidMalformedAndRetry(t *testing.T) {
@@ -146,7 +154,7 @@ func TestRuntimeWithRealKafkaValidMalformedAndRetry(t *testing.T) {
 		if w.calls() != 1 {
 			t.Fatalf("writer calls = %d, want 1", w.calls())
 		}
-		expectKafkaGroupCommitted(t, brokers, topic, group)
+		expectGroupOffset(t, brokers, topic, group, 1)
 	})
 
 	t.Run("malformed event commits without writer", func(t *testing.T) {
@@ -163,7 +171,7 @@ func TestRuntimeWithRealKafkaValidMalformedAndRetry(t *testing.T) {
 		if w.calls() != 0 {
 			t.Fatalf("malformed event wrote %d batches", w.calls())
 		}
-		expectKafkaGroupCommitted(t, brokers, topic, group)
+		expectGroupOffset(t, brokers, topic, group, 1)
 	})
 
 	t.Run("writer error leaves offset uncommitted for retry", func(t *testing.T) {
@@ -177,6 +185,19 @@ func TestRuntimeWithRealKafkaValidMalformedAndRetry(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "writer down") {
 			t.Fatalf("expected writer error, got %v", err)
 		}
-		expectKafkaGroupReplays(t, brokers, topic, group, body)
+		expectGroupOffset(t, brokers, topic, group, -1)
+
+		recovered := &kafkaAuditWriter{}
+		if err := runAuditSinkOnce(t, brokers, topic, group, recovered); err != nil {
+			t.Fatalf("Run recovery: %v", err)
+		}
+		want, err := envelope.Decode(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recovered.batches) != 1 || len(recovered.batches[0]) != 1 || recovered.batches[0][0].EventID != want.EventID {
+			t.Fatal("recovered consumer did not write the original event")
+		}
+		expectGroupOffset(t, brokers, topic, group, 1)
 	})
 }
