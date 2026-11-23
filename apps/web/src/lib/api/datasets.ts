@@ -374,6 +374,7 @@ export interface DatasetTransaction {
   dataset_id: string;
   view_id?: string | null;
   operation: string;
+  branch_id?: string;
   branch_name?: string | null;
   status: string;
   summary: string;
@@ -731,7 +732,7 @@ function matchesSnapshot(binding: DatasetSnapshotBinding, snapshot: DatasetSnaps
     && binding.transaction_id === snapshot.id;
 }
 
-function datasetUuid(datasetId: string) {
+export function datasetUuid(datasetId: string) {
   return datasetId.toLowerCase().replace(/^ri\.foundry\.main\.dataset\./, '');
 }
 
@@ -1007,10 +1008,44 @@ export async function listDatasetTransactions(datasetId: string): Promise<Datase
   return transactions.map(normalizeDatasetTransaction);
 }
 
-export async function getDatasetTransaction(datasetId: string, transactionId: string): Promise<DatasetTransaction | null> {
-  const [result] = await api.post<Array<{ status: number; data?: RuntimeDatasetTransaction }>>(
-    `/datasets/${datasetId}/transactions:batchGet`, { ids: [transactionId] },
+export function missingVersionTransactionIds(versions: DatasetVersion[], recent: DatasetTransaction[]) {
+  const seen = new Set(recent.map((transaction) => transaction.id));
+  return versions.flatMap(({ transaction_id: id }) => {
+    if (!id || seen.has(id)) return [];
+    seen.add(id);
+    return [id];
+  });
+}
+
+function fetchTransactionBatch(datasetId: string, ids: string[]) {
+  return api.post<Array<{ id: string; status: number; data?: RuntimeDatasetTransaction }>>(
+    `/datasets/${encodeURIComponent(datasetId)}/transactions:batchGet`, { ids },
   );
+}
+
+export async function getDatasetTransactions(datasetId: string, transactionIds: string[]): Promise<DatasetTransaction[]> {
+  // DVS resolves each ID individually inside a batch. Bound the work per request.
+  const batchSize = 100;
+  const transactions: DatasetTransaction[] = [];
+  for (let start = 0; start < transactionIds.length; start += batchSize) {
+    const ids = transactionIds.slice(start, start + batchSize);
+    const results = await fetchTransactionBatch(datasetId, ids);
+    const pending = new Set(ids);
+    for (const { id, status, data } of results) {
+      if (!pending.delete(id)) throw new Error('Unexpected transaction in dataset history.');
+      if (status === 404) continue;
+      if (status !== 200 || data?.id !== id || data.dataset_id !== datasetUuid(datasetId)) {
+        throw new Error('Transaction did not match the requested dataset history.');
+      }
+      transactions.push(normalizeDatasetTransaction(data));
+    }
+    if (pending.size) throw new Error('Incomplete transaction batch in dataset history.');
+  }
+  return transactions;
+}
+
+export async function getDatasetTransaction(datasetId: string, transactionId: string): Promise<DatasetTransaction | null> {
+  const [result] = await fetchTransactionBatch(datasetId, [transactionId]);
   return result?.status === 200 && result.data ? normalizeDatasetTransaction(result.data) : null;
 }
 

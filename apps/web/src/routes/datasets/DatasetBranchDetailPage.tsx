@@ -9,14 +9,17 @@ import { Tabs } from '@/lib/components/Tabs';
 import {
   committedDatasetSnapshots,
   compareBranches,
+  datasetUuid,
   getBranchMarkings,
   getDataset,
   getDatasetSchemaForBranch,
   getDatasetSnapshotSchema,
+  getDatasetTransactions,
   getVersions,
   listBranches,
   listDatasetFiles,
   listDatasetTransactions,
+  missingVersionTransactionIds,
   restoreBranch,
   updateBranchRetention,
   type BranchCompareResponse,
@@ -136,7 +139,8 @@ function useCompareSide(datasetId: string, selector: CompareSelector, snapshot: 
 }
 
 export function DatasetBranchDetailPage() {
-  const { id = '', branch: branchName = '' } = useParams<{ id: string; branch: string }>();
+  const { id: routeId = '', branch: branchName = '' } = useParams<{ id: string; branch: string }>();
+  const id = datasetUuid(routeId);
   const navigate = useNavigate();
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [branches, setBranches] = useState<DatasetBranch[]>([]);
@@ -158,29 +162,47 @@ export function DatasetBranchDetailPage() {
     enabled: Boolean(id),
   });
   const transactions = transactionsQuery.data ?? EMPTY_TRANSACTIONS;
-  const datasetMatchesRoute = dataset?.id === id || dataset?.rid === id;
-  const canCompare = datasetMatchesRoute && branch?.name === branchName && !loading && tab === 'compare';
+  const canCompare = dataset?.id === id && branch?.dataset_id === id && branch.name === branchName
+    && !loading && tab === 'compare';
   const versionsQuery = useQuery({
     queryKey: ['dataset-versions', id],
     queryFn: () => getVersions(id),
     enabled: canCompare,
   });
-  const historyError = transactionsQuery.error ?? versionsQuery.error;
-  const snapshots = useMemo(
-    () => committedDatasetSnapshots(transactions, versionsQuery.data ?? []),
-    [transactions, versionsQuery.data],
+  const versions = useMemo(
+    () => (versionsQuery.data ?? []).filter((version) => version.dataset_id === id && Number.isInteger(version.version) && version.version > 0),
+    [id, versionsQuery.data],
   );
+  const recent = useMemo(() => transactions.filter((tx) => tx.dataset_id === id), [id, transactions]);
+  const missingIds = useMemo(() => missingVersionTransactionIds(versions, recent), [versions, recent]);
+  const older = useQuery({
+    queryKey: ['dataset-version-transactions', id, missingIds],
+    queryFn: () => getDatasetTransactions(id, missingIds),
+    enabled: canCompare && versionsQuery.isSuccess && transactionsQuery.isSuccess && missingIds.length > 0,
+  });
+  const historyError = transactionsQuery.error ?? versionsQuery.error ?? older.error;
+  const snapshots = useMemo(() => {
+    const activeBranches = new Map(
+      branches.filter((branch) => branch.dataset_id === id && !branch.archived_at).map((branch) => [branch.name, branch.id]),
+    );
+    const candidates = [...recent, ...(older.data ?? [])].filter((tx) => {
+      const branchId = tx.branch_name && activeBranches.get(tx.branch_name);
+      return branchId && (!tx.branch_id || tx.branch_id === branchId);
+    });
+    return committedDatasetSnapshots(candidates, versions);
+  }, [branches, id, recent, older.data, versions]);
   const snapshotA = snapshotForSelector(selectorA, snapshots);
   const snapshotB = snapshotForSelector(selectorB, snapshots);
   const sideA = useCompareSide(id, selectorA, snapshotA, canCompare);
   const sideB = useCompareSide(id, selectorB, snapshotB, canCompare);
   const sidesLoading = sideA.isFetching || sideB.isFetching;
   const twoBranches = selectorA.kind === 'branch' && selectorB.kind === 'branch';
+  const showBranchComparison = canCompare && twoBranches && sideA.isSuccess && sideB.isSuccess
+    && !sidesLoading && selectorA.value !== selectorB.value;
   const branchCompare = useQuery({
     queryKey: ['dataset-branch-comparison', id, selectorA.value, selectorB.value],
     queryFn: () => compareBranches(id, selectorA.value, selectorB.value),
-    enabled: canCompare && twoBranches && sideA.isSuccess && sideB.isSuccess && !sidesLoading
-      && selectorA.value !== selectorB.value,
+    enabled: showBranchComparison,
     staleTime: 0,
     retry: false,
   });
@@ -367,7 +389,7 @@ export function DatasetBranchDetailPage() {
             </div>
           )}
 
-          {tab === 'compare' && (
+          {canCompare && (
             <section style={{ display: 'grid', gap: 12 }}>
               <CompareTab
                 snapshots={snapshots}
@@ -384,7 +406,7 @@ export function DatasetBranchDetailPage() {
                   : branchCompare.error?.message}
                 onChangeSelector={changeSelector}
               />
-              {canCompare && snapshotA && snapshotB && (
+              {snapshotA && snapshotB && (
                 <SnapshotRowComparison
                   key={JSON.stringify([id, snapshotA, snapshotB])}
                   datasetId={id}
@@ -392,7 +414,7 @@ export function DatasetBranchDetailPage() {
                   target={snapshotB}
                 />
               )}
-              {twoBranches && !sidesLoading && !branchCompare.isFetching && branchCompare.isSuccess && (
+              {showBranchComparison && !branchCompare.isFetching && branchCompare.isSuccess && (
                 <BranchCompareSummary comparison={branchCompare.data} />
               )}
             </section>

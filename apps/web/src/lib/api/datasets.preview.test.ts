@@ -4,8 +4,10 @@ import {
   compareDatasetSnapshotRows,
   getDatasetSnapshotSchema,
   getDatasetTransaction,
+  getDatasetTransactions,
   getVersions,
   listDatasetTransactions,
+  missingVersionTransactionIds,
   previewDataset,
 } from './datasets';
 
@@ -31,7 +33,7 @@ describe('dataset history and pinned preview', () => {
       { data: [transaction] },
       { data: [{ version: 2, transaction_id: 'tx-new' }], next_cursor: 'versions/page+2' },
       { data: [{ version: 1, transaction_id: 'tx-old' }] },
-      [{ status: 200, data: transaction }],
+      [{ id: transaction.id, status: 200, data: transaction }],
     );
     expect(await listDatasetTransactions('ds-1')).toMatchObject([
       { id: 'tx-old', operation: 'SNAPSHOT', branch_name: 'release', created_at: transaction.started_at },
@@ -41,6 +43,39 @@ describe('dataset history and pinned preview', () => {
     expect(await getDatasetTransaction('ds-1', 'tx-old')).toMatchObject({ id: 'tx-old', operation: 'SNAPSHOT' });
     expect(fetch).toHaveBeenLastCalledWith('/api/v1/datasets/ds-1/transactions:batchGet',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ ids: ['tx-old'] }) }));
+  });
+
+  it('resolves only older transactions referenced by versions, in bounded batches', async () => {
+    const olderIds = Array.from({ length: 103 }, (_, index) => `old-${index}`);
+    const recent = Array.from({ length: 200 }, (_, index) => ({ id: `recent-${index}` }));
+    const versionIds = ['recent-199', ...olderIds, null, 'old-0'];
+    const transaction = (id: string) => ({
+      id, dataset_id: 'ds', tx_type: 'SNAPSHOT', status: 'COMMITTED', branch_name: 'release',
+    });
+    const responses = olderIds.map((id) => ({ id, status: 200, data: transaction(id) }));
+    const fetch = stubResponses(
+      { data: recent }, { data: versionIds.map((id) => ({ transaction_id: id })) },
+      responses.slice(0, 100).reverse(), [...responses.slice(100, 102), { id: 'old-102', status: 404 }],
+    );
+    const transactions = await listDatasetTransactions('ds');
+    const missing = missingVersionTransactionIds(await getVersions('ds'), transactions);
+    expect(missing).toEqual(olderIds);
+    const result = await getDatasetTransactions('ds', missing);
+    expect(result.map((tx) => tx.id).sort()).toEqual(olderIds.slice(0, 102).sort());
+    expect(result[0]).toMatchObject({ operation: 'SNAPSHOT', branch_name: 'release' });
+    expect(fetch.mock.calls.slice(2).map(([, init]) => JSON.parse(String(init?.body)).ids))
+      .toEqual([olderIds.slice(0, 100), olderIds.slice(100)]);
+  });
+
+  it.each([
+    [],
+    [{ id: 'other', status: 404 }],
+    [{ id: 'old', status: 404 }, { id: 'old', status: 404 }],
+    [{ id: 'old', status: 200, data: { id: 'wrong', dataset_id: 'ds' } }],
+    [{ id: 'old', status: 200, data: { id: 'old', dataset_id: 'foreign' } }],
+  ])('rejects incomplete or mismatched batch results %#', async (...results) => {
+    stubResponses(results);
+    await expect(getDatasetTransactions('ds', ['old'])).rejects.toThrow(/transaction|dataset history/i);
   });
 
   it('preserves opaque cursors and exact integers and supplies the branch for version-only callers', async () => {
