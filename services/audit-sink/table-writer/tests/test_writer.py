@@ -79,6 +79,9 @@ class WriterHTTPTest(unittest.TestCase):
 
     def test_routes_and_content_type(self):
         self.assertEqual(self.request("GET", "/healthz"), (200, b"ok"))
+        status, metrics = self.request("GET", "/metrics")
+        self.assertEqual(status, 200)
+        self.assertIn(b"audit_table_writer_max_batch_bytes 67108864", metrics)
         self.assertEqual(self.request("POST", "/elsewhere")[0], 404)
         self.assertEqual(self.request("GET", PATH)[0], 405)
         self.assertEqual(self.request("POST", PATH, b"{}", **{"Content-Type": "text/plain"})[0], 415)

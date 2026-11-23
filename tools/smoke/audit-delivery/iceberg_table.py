@@ -236,6 +236,7 @@ def read(root):
     print(json.dumps({
         "snapshot_id": snapshot.snapshot_id if snapshot else None,
         "snapshot_count": len(table.snapshots()),
+        "properties": table.properties,
         "metadata_location": table.metadata_location,
         "data_files": files,
         "rows": rows,

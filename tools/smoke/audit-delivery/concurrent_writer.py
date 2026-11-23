@@ -1,5 +1,6 @@
 """Exercise two deployable audit writer containers against the same Iceberg table."""
 import argparse
+import base64
 import hashlib
 import json
 import socket
@@ -131,6 +132,11 @@ def read(f, expected):
     check(sorted(rows, key=key) == sorted(expected, key=key), "independent S3 row readback mismatch")
     check(all(p.startswith("s3://audit-fixture/") for p in [table["metadata_location"], *table["data_files"]]),
           "unexpected storage location")
+    required = {"write.metadata.delete-after-commit.enabled": "false",
+                "write.metadata.previous-versions-max": "999999",
+                "history.expire.max-snapshot-age-ms": "9223372036854775807",
+                "history.expire.min-snapshots-to-keep": "2147483647"}
+    check(required.items() <= table["properties"].items(), "audit retention is not configured")
     return {**table, "row_count": len(rows)}
 
 
@@ -185,7 +191,9 @@ def check_lost_ack(f, endpoints, expected):
         lose_response = True
         second = checkpoint(False, 1)
         code = f.wait_failed_sink()
-        check(f.offset() == 1 and not lose_response, "response loss did not hold the offset")
+        observed_offset = f.offset()
+        check(not lose_response, f"proxy never dropped a 204; writer statuses {[status for _, status in requests]}")
+        check(observed_offset == 1, f"offset after losing a committed append response: {observed_offset!r}")
         committed = read(f, expected)
         target = endpoints[1]
         f.compose("start", "sink")
@@ -220,6 +228,68 @@ def check_catalog_failures(f, race, endpoints, expected):
     return {"outage_http": status, "response_lost_http": first, "replay_http": second, "table": committed}
 
 
+def object_store_request(f, method, target, payload=None):
+    # Credentials come from the disposable fixture, never from the user's AWS config.
+    args = ["curl", "--silent", "--show-error", "--config", "-", "--aws-sigv4", "aws:amz:us-east-1:s3",
+            "--output", "/dev/null", "--write-out", "%{http_code}", "--request", method]
+    if payload is not None:
+        path = f.root / "bucket-policy-body"
+        path.write_bytes(payload)
+        md5 = base64.b64encode(hashlib.md5(payload, usedforsecurity=False).digest()).decode()
+        args.extend(["--header", "Content-MD5: " + md5, "--data-binary", "@" + str(path)])
+    auth = 'user = "' + f.env["FIXTURE_S3_ACCESS"] + ":" + f.env["FIXTURE_S3_SECRET"] + '"'
+    url = "http://127.0.0.1:" + f.env["FIXTURE_S3_PORT"] + "/audit-fixture/" + target
+    return int(run(*args, url, data=auth + "\n"))
+
+
+def check_storage_failure(f, race, endpoints, expected):
+    # Deny only Parquet writes in this disposable bucket. Metadata and already
+    # committed files remain readable throughout, including by the catalog.
+    policy = {"Version": "2012-10-17", "Statement": [{"Effect": "Deny", "Principal": "*",
+              "Action": "s3:PutObject", "Resource": "arn:aws:s3:::audit-fixture/*.parquet"}]}
+    before = read(f, expected)
+    new = row()
+    body, headers = batch([new]), {"Content-Type": "application/json"}
+    check(object_store_request(f, "PUT", "?policy", json.dumps(policy).encode()) in (200, 204),
+          "could not install fixture bucket policy")
+    try:
+        denial = object_store_request(f, "PUT", "denial-probe.parquet", b"probe")
+        check(denial == 403, f"expected S3 write denial, got {denial}")
+        health = request(race.address, "GET", "/health")[0]
+        status = request(endpoints[0], "POST", iceberg.APPEND_PATH, body, headers)[0]
+        check(health == 200 and status == 503, f"unexpected catalog/writer statuses: {health}/{status}")
+        check(read(f, expected) == before, "S3 denial changed the audit table")
+    finally:
+        check(object_store_request(f, "DELETE", "?policy") in (200, 204), "could not restore fixture bucket")
+    replay = request(endpoints[1], "POST", iceberg.APPEND_PATH, body, headers)[0]
+    expected.append(dict(new, payload=json.loads(new["payload"])))
+    after = read(f, expected)
+    check(replay == 204 and after["snapshot_count"] == before["snapshot_count"] + 1, "S3 recovery mismatch")
+    return {"s3_put_http": denial, "catalog_http": health, "writer_http": status,
+            "replay_http": replay, "previous_snapshot": before["snapshot_id"], "table": after}
+
+
+def check_retention_guard(f, writer, endpoint, expected):
+    before = read(f, expected)
+    key = "history.expire.max-snapshot-age-ms"
+
+    def set_age(value):
+        f.compose("exec", "-T", writer, "python", "-c",
+                  "import sys, writer; t = writer.catalog().load_table(writer.TABLE); "
+                  "t.transaction().set_properties({sys.argv[1]:sys.argv[2]}).commit_transaction()", key, value)
+
+    set_age("60000")
+    try:
+        status = request(endpoint, "POST", iceberg.APPEND_PATH, batch([row()]), {"Content-Type": "application/json"})[0]
+        check(status == 409, f"finite retention was accepted: HTTP {status}")
+    finally:
+        set_age(before["properties"][key])
+    after = read(f, expected)
+    check(after["snapshot_id"] == before["snapshot_id"] and after["data_files"] == before["data_files"],
+          "refusing finite retention changed the data snapshot")
+    return {"finite_retention_http": status, "snapshot_unchanged": True}
+
+
 def verify(f, tag):
     race = CatalogRace()
     with proxy(race.forward) as catalog_url:
@@ -246,15 +316,24 @@ def verify(f, tag):
         endpoints = [f.address("object-store", port) for port in ports]
         for endpoint in endpoints:
             until("writer health", lambda: request(endpoint, "GET", "/healthz")[0] == 200)
+        f.stage = "competing catalog commits"
         expected, races = check_races(f, race, endpoints)
-        return {"races": races, "lost_ack": check_lost_ack(f, endpoints, expected),
-                "catalog_failures": check_catalog_failures(f, race, endpoints, expected),
+        f.stage = "Kafka redelivery to second writer"
+        lost_ack = check_lost_ack(f, endpoints, expected)
+        f.stage = "catalog outage and lost catalog acknowledgement"
+        failures = check_catalog_failures(f, race, endpoints, expected)
+        f.stage = "healthy catalog with S3 write denied"
+        storage_failure = check_storage_failure(f, race, endpoints, expected)
+        f.stage = "reject finite audit retention"
+        retention_guard = check_retention_guard(f, writers[0], endpoints[0], expected)
+        return {"races": races, "lost_ack": lost_ack, "retention_guard": retention_guard,
+                "catalog_failures": failures, "storage_failure": storage_failure,
                 "container_ids": [f.compose("ps", "-q", name) for name in writers]}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--image", required=True, help="local image built from services/audit-table-writer")
+    parser.add_argument("--image", required=True, help="local image built from services/audit-sink/table-writer")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     output = args.output.resolve()
@@ -268,11 +347,19 @@ def main():
             f.render()
             report.update(verify(f, args.image))
             report["result"] = "passed"
+        except BaseException as exc:
+            report.update(result="failed", failed_stage=f.stage, error_type=type(exc).__name__)
+            raise
         finally:
-            f.close()
-            report["cleaned_up"] = True
-            json.dump(report, out, indent=2)
-            out.write("\n")
+            try:
+                f.close()
+                report["cleaned_up"] = True
+            except Exception as exc:
+                report.update(result="failed", cleaned_up=False, cleanup_error=type(exc).__name__)
+                raise
+            finally:
+                json.dump(report, out, indent=2)
+                out.write("\n")
 
 
 if __name__ == "__main__":

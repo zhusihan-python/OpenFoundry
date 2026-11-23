@@ -32,6 +32,14 @@ SCHEMA = Schema(
 )
 PARTITION = PartitionSpec(PartitionField(2, 1000, DayTransform(), "at_day"))
 ORDER = SortOrder(SortField(2, IdentityTransform(), SortDirection.ASC, NullOrder.NULLS_FIRST))
+AUDIT_PROPERTIES = {
+    "write.format.default": "parquet",
+    "write.parquet.compression-codec": "zstd",
+    "write.metadata.delete-after-commit.enabled": "false",
+    "write.metadata.previous-versions-max": "999999",
+    "history.expire.max-snapshot-age-ms": "9223372036854775807",
+    "history.expire.min-snapshots-to-keep": "2147483647",
+}
 FIELDS = [dict(id=f.field_id, name=f.name, type=str(f.field_type), required=f.required) for f in SCHEMA.fields]
 REQUIRED = {"event_id", "at", "kind", "payload"}
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -105,6 +113,8 @@ def catalog():
 def check_layout(table):
     if table.schema() != SCHEMA or table.spec() != PARTITION or table.sort_order() != ORDER:
         raise Conflict("incompatible audit table layout")
+    if any(table.properties.get(key) != value for key, value in AUDIT_PROPERTIES.items()):
+        raise Conflict("incompatible audit table retention or storage properties")
 
 
 def missing_events(table, events):
@@ -149,6 +159,12 @@ def handle(env):
     path = env["PATH_INFO"]
     if env["REQUEST_METHOD"] == "GET" and path == "/healthz":
         return HTTPStatus.OK, b"ok"
+    if env["REQUEST_METHOD"] == "GET" and path == "/metrics":
+        body = (f"# TYPE audit_table_writer_max_batch_rows gauge\n"
+                f"audit_table_writer_max_batch_rows {MAX_ROWS}\n"
+                f"# TYPE audit_table_writer_max_batch_bytes gauge\n"
+                f"audit_table_writer_max_batch_bytes {MAX_BYTES}\n")
+        return HTTPStatus.OK, body.encode()
     if path != APPEND_PATH:
         return HTTPStatus.NOT_FOUND, b"unknown route"
     if env["REQUEST_METHOD"] != "POST":
@@ -194,7 +210,7 @@ def handle(env):
 def app(env, start_response):
     status, body = handle(env)
     headers = [] if status == HTTPStatus.NO_CONTENT else [
-        ("Content-Type", "text/plain"), ("Content-Length", str(len(body)))]
+        ("Content-Type", "text/plain; version=0.0.4" if env["PATH_INFO"] == "/metrics" else "text/plain"), ("Content-Length", str(len(body)))]
     start_response(f"{status.value} {status.phrase}", headers)
     return [body]
 
@@ -204,7 +220,8 @@ if __name__ == "__main__":
         try:
             db = catalog()
             db.create_namespace_if_not_exists(TABLE[0])
-            check_layout(db.create_table_if_not_exists(TABLE, SCHEMA, partition_spec=PARTITION, sort_order=ORDER))
+            check_layout(db.create_table_if_not_exists(TABLE, SCHEMA, partition_spec=PARTITION, sort_order=ORDER,
+                                                      properties=AUDIT_PROPERTIES))
         except Exception as exc:
             sys.exit(f"audit table initialization failed ({type(exc).__name__})")
     elif len(sys.argv) == 1:
