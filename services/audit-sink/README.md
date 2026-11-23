@@ -35,7 +35,7 @@ set.
 
 The bundled Go catalog is metadata-only and returns HTTP 503 on valid append
 requests. Configure the sink to reach a durable writer before enabling Iceberg
-delivery. See the [deployment contract](../../docs/migration/audit-sink-iceberg.md).
+delivery. For local Docker deployments, build the [audit-sink table-writer companion](table-writer/README.md). See the [deployment contract](../../docs/migration/audit-sink-iceberg.md).
 
 ## Configuration
 
@@ -49,7 +49,7 @@ single Helm `values.yaml` drives both implementations during cutover.
 | `KAFKA_SASL_PASSWORD`               |          | When unset → PLAINTEXT (dev / docker-compose)            |
 | `KAFKA_SASL_MECHANISM`              |          | Default `SCRAM-SHA-512`                   |
 | `KAFKA_SECURITY_PROTOCOL`           |          | Default `SASL_SSL`                        |
-| `ICEBERG_CATALOG_URL`               | ✅ in Iceberg mode | Lakekeeper REST URL and base URL for the table-writer adapter. Optional only when `AUDIT_SINK_JSONL_PATH` selects explicit JSONL dev mode |
+| `ICEBERG_CATALOG_URL`               | ✅ in Iceberg mode | HTTP base URL of the durable table-writer adapter. Optional only when `AUDIT_SINK_JSONL_PATH` selects explicit JSONL dev mode |
 | `ICEBERG_WAREHOUSE`                 |          | Warehouse location override               |
 | `AUDIT_SINK_BATCH_MAX_RECORDS`      |          | Default 100k                              |
 | `AUDIT_SINK_BATCH_MAX_WAIT_SECONDS` |          | Default 60s                               |

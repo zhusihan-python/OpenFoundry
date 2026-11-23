@@ -34,3 +34,14 @@ This fixture has a single writer and a small disposable table. It compares
 incoming events with committed rows, acknowledges exact retries, and returns
 HTTP 409 for a reused ID with different fields. Multiple independent writers
 need atomic coordination at their own durable write boundary.
+
+## Two Docker writers
+
+Build the service image using the [audit table writer instructions](../../../services/audit-sink/table-writer/README.md). From the repository root, use the same smoke Python environment to run the two-instance test:
+
+```sh
+/tmp/of-audit-venv/bin/python tools/smoke/audit-delivery/concurrent_writer.py \
+  --image openfoundry/audit-table-writer:local --output /tmp/of-two-writer-evidence.json
+```
+
+The two writer containers use the same local Lakekeeper catalog and S3 warehouse. A test proxy holds two catalog commits on the same parent snapshot, then releases both. Independent reads check identical, overlapping and conflicting batches. The Kafka test discards a successful writer response and replays the exact request to the other container. A separate test stops the catalog, restores it, and discards a successful catalog commit response before retrying. The fixture also denies Parquet writes in its disposable S3 bucket while keeping Lakekeeper healthy, verifies an unchanged snapshot, and replays after access is restored. It temporarily shortens the fixture table retention to verify that writes are rejected. The JSON evidence records the HTTP outcomes, Iceberg metadata and Kafka offsets. The runner uses curl with AWS Signature Version 4 support for the S3 bucket policy test.
