@@ -2,6 +2,14 @@
 
 import argparse
 import json
+import os
+import time
+from urllib.request import Request, urlopen
+from urllib.error import URLError
+from urllib.parse import urlsplit
+
+from requests.exceptions import ConnectionError as CatalogConnectionError
+from pyiceberg.serializers import FromInputFile
 import sys
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -33,7 +41,52 @@ APPEND_PATH = "/openfoundry/iceberg/v1/append"
 
 
 def catalog(root):
+    if "FIXTURE_REST_URL" in os.environ:
+        from pyiceberg.catalog.rest import RestCatalog
+        return RestCatalog("audit", uri=os.environ["FIXTURE_REST_URL"] + "/catalog",
+                           warehouse="audit-fixture", **{
+                               "s3.endpoint": s3_url(), "s3.region": "us-east-1",
+                               "s3.access-key-id": os.environ["FIXTURE_S3_ACCESS"],
+                               "s3.secret-access-key": os.environ["FIXTURE_S3_SECRET"],
+                               "header.X-Iceberg-Access-Delegation": "client-managed",
+                           })
     return SqlCatalog("smoke", uri=f"sqlite:///{root / 'catalog.db'}", warehouse=(root / "warehouse").as_uri())
+
+
+def s3_url():
+    return "http://127.0.0.1:" + os.environ["FIXTURE_S3_PORT"]
+
+
+def bootstrap():
+    from pyarrow.fs import S3FileSystem
+    access, secret = os.environ["FIXTURE_S3_ACCESS"], os.environ["FIXTURE_S3_SECRET"]
+    fs = S3FileSystem(access_key=access, secret_key=secret, region="us-east-1",
+                      endpoint_override=s3_url(), scheme="http", allow_bucket_creation=True)
+    base = os.environ["FIXTURE_REST_URL"]
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            with urlopen(base + "/health", timeout=2):
+                fs.create_dir("audit-fixture")
+            break
+        except (URLError, OSError):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(1)
+
+    def post(path, body):
+        request = Request(base + "/management/v1/" + path, data=json.dumps(body).encode(),
+                          headers={"Content-Type": "application/json"})
+        with urlopen(request, timeout=30):
+            pass
+
+    post("bootstrap", {"accept-terms-of-use": True})
+    post("warehouse", {"warehouse-name": "audit-fixture",
+                       "project-id": "00000000-0000-0000-0000-000000000000",
+                       "storage-profile": {"type": "s3", "bucket": "audit-fixture", "endpoint": s3_url(),
+                                           "region": "us-east-1", "path-style-access": True, "sts-enabled": False},
+                       "storage-credential": {"type": "s3", "credential-type": "access-key",
+                                              "access-key-id": access, "secret-access-key": secret}})
 
 
 def batch_rows(request):
@@ -73,6 +126,13 @@ def serve(args):
     db.create_namespace_if_not_exists(TABLE[0])
     table = db.create_table_if_not_exists(TABLE, SCHEMA, partition_spec=PARTITION, sort_order=ORDER)
 
+    def record_rejection(rows):
+        marker = root / "append-rejected"
+        if not marker.exists():
+            pending = marker.with_suffix(".tmp")
+            pending.write_text(json.dumps([str(value) for value in rows["event_id"].to_pylist()]))
+            pending.replace(marker)
+
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             if self.path != APPEND_PATH:
@@ -94,17 +154,18 @@ def serve(args):
                 self.send_error(422, "invalid audit batch")
                 return
             if (root / "reject-append").exists():
-                marker = root / "append-rejected"
-                if not marker.exists():
-                    event_ids = [str(event_id) for event_id in rows["event_id"].to_pylist()]
-                    pending = marker.with_suffix(".tmp")
-                    pending.write_text(json.dumps(event_ids))
-                    pending.replace(marker)
+                record_rejection(rows)
                 self.send_error(503, "append disabled for recovery check")
                 return
             try:
                 table.append(rows)
             except Exception as exc:
+                if isinstance(exc, CatalogConnectionError) and exc.request is not None:
+                    request = exc.request
+                    url = urlsplit(request.url)
+                    if (request.method == "POST" and url.netloc == urlsplit(os.environ.get("FIXTURE_REST_URL", "")).netloc
+                            and url.path.endswith("/namespaces/of_audit/tables/events")):
+                        record_rejection(rows)
                 print(f"Iceberg append failed: {type(exc).__name__}", file=sys.stderr, flush=True)
                 self.send_error(503, "Iceberg append failed")
                 return
@@ -123,6 +184,10 @@ def read(root):
     if table.schema() != SCHEMA or table.spec() != PARTITION or table.sort_order() != ORDER:
         raise ValueError("persisted Iceberg table contract mismatch")
     snapshot = table.current_snapshot()
+    if "FIXTURE_REST_URL" in os.environ:
+        metadata = FromInputFile.table_metadata(table.io.new_input(table.metadata_location))
+        if metadata.current_snapshot_id != snapshot.snapshot_id:
+            raise ValueError("S3 metadata and REST snapshot disagree")
     files = sorted(task.file.file_path for task in table.scan().plan_files())
     for path in files:
         with table.io.new_input(path).open() as source:
@@ -151,10 +216,13 @@ def main():
     server.add_argument("--port", type=int, default=0)
     server.add_argument("--root", type=Path, required=True)
     sub.add_parser("read").add_argument("--root", type=Path, required=True)
+    sub.add_parser("bootstrap").add_argument("--root", type=Path, required=True)
     args = parser.parse_args()
     args.root = args.root.resolve()
     if args.command == "serve":
         serve(args)
+    elif args.command == "bootstrap":
+        bootstrap()
     else:
         read(args.root)
 
