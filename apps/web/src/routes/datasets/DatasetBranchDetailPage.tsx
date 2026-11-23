@@ -36,6 +36,10 @@ import {
 type Tab = 'overview' | 'compare' | 'history' | 'retention' | 'security';
 type Policy = 'INHERITED' | 'FOREVER' | 'TTL_DAYS';
 
+type BranchCompareSelection = CompareSelector & {
+  pin?: { datasetId: string; branchId: string; snapshot: DatasetSnapshot };
+};
+
 const EMPTY_TRANSACTIONS: DatasetTransaction[] = [];
 
 const EMPTY_MARKINGS: BranchMarkingsView = {
@@ -154,8 +158,8 @@ export function DatasetBranchDetailPage() {
   const [error, setError] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  const [selectorA, setSelectorA] = useState<CompareSelector>({ kind: 'branch', value: '' });
-  const [selectorB, setSelectorB] = useState<CompareSelector>({ kind: 'branch', value: '' });
+  const [selectorA, setSelectorA] = useState<BranchCompareSelection>({ kind: 'branch', value: '' });
+  const [selectorB, setSelectorB] = useState<BranchCompareSelection>({ kind: 'branch', value: '' });
   const transactionsQuery = useQuery({
     queryKey: ['dataset-transactions', id],
     queryFn: () => listDatasetTransactions(id),
@@ -180,8 +184,10 @@ export function DatasetBranchDetailPage() {
     queryFn: () => getDatasetTransactions(id, missingIds),
     enabled: canCompare && versionsQuery.isSuccess && transactionsQuery.isSuccess && missingIds.length > 0,
   });
-  const historyError = transactionsQuery.error ?? versionsQuery.error ?? older.error;
+  const historyError = transactionsQuery.failureReason ?? versionsQuery.failureReason ?? older.failureReason
+    ?? transactionsQuery.error ?? versionsQuery.error ?? older.error;
   const snapshots = useMemo(() => {
+    if (historyError) return [];
     const activeBranches = new Map(
       branches.filter((branch) => branch.dataset_id === id && !branch.archived_at).map((branch) => [branch.name, branch.id]),
     );
@@ -189,8 +195,22 @@ export function DatasetBranchDetailPage() {
       const branchId = tx.branch_name && activeBranches.get(tx.branch_name);
       return branchId && (!tx.branch_id || tx.branch_id === branchId);
     });
-    return committedDatasetSnapshots(candidates, versions);
-  }, [branches, id, recent, older.data, versions]);
+    const resolved = committedDatasetSnapshots(candidates, versions);
+    // The recent-transaction window can move while a selected pair is being paged.
+    // Keep only the selected pins that the new batch still needs to resolve.
+    if (older.isPending) {
+      for (const { pin } of [selectorA, selectorB]) {
+        if (!pin || pin.datasetId !== id) continue;
+        const { snapshot } = pin;
+        if (activeBranches.get(snapshot.branch) === pin.branchId && missingIds.includes(snapshot.id)
+          && versions.some((v) => v.version === snapshot.version && v.transaction_id === snapshot.id)
+          && !resolved.some((s) => s.id === snapshot.id)) {
+          resolved.push(snapshot);
+        }
+      }
+    }
+    return resolved;
+  }, [branches, historyError, id, missingIds, older.data, older.isPending, recent, selectorA, selectorB, versions]);
   const snapshotA = snapshotForSelector(selectorA, snapshots);
   const snapshotB = snapshotForSelector(selectorB, snapshots);
   const sideA = useCompareSide(id, selectorA, snapshotA, canCompare);
@@ -254,8 +274,13 @@ export function DatasetBranchDetailPage() {
   }, [id, branchName]);
 
   function changeSelector(which: 'A' | 'B', selector: CompareSelector) {
-    if (which === 'A') setSelectorA(selector);
-    else setSelectorB(selector);
+    const snapshot = snapshotForSelector(selector, snapshots);
+    const selectedBranch = snapshot && branches.find((branch) => branch.dataset_id === id && branch.name === snapshot.branch);
+    const selection = snapshot && selectedBranch
+      ? { ...selector, pin: { datasetId: id, branchId: selectedBranch.id, snapshot } }
+      : selector;
+    if (which === 'A') setSelectorA(selection);
+    else setSelectorB(selection);
   }
 
   async function saveRetention() {
@@ -406,7 +431,7 @@ export function DatasetBranchDetailPage() {
                   : branchCompare.error?.message}
                 onChangeSelector={changeSelector}
               />
-              {snapshotA && snapshotB && (
+              {snapshotA && snapshotB && !sideA.isError && !sideB.isError && (
                 <SnapshotRowComparison
                   key={JSON.stringify([id, snapshotA, snapshotB])}
                   datasetId={id}
