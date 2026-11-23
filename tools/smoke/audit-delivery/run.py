@@ -164,14 +164,17 @@ class Fixture:
         self.overlay.write_text(json.dumps({"services": {"postgres": pg, "debezium-connect": worker,
                                                          "checkpoint-audit-connect-init": init}, "volumes": volumes}))
 
-    def start(self):
-        if self.lakekeeper:
-            self.start_storage()
-        self.stage = "start isolated services"
+    def start_local_writer(self):
         self.table_process = subprocess.Popen([self.python, HERE / "iceberg_table.py", "serve", "--root", self.table],
                                               env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         until("Iceberg table server", lambda: (self.table / "port").exists())
-        self.env["FIXTURE_TABLE_URL"] = "http://host.docker.internal:" + (self.table / "port").read_text()
+        return "http://host.docker.internal:" + (self.table / "port").read_text()
+
+    def start(self, start_writer=None):
+        if self.lakekeeper:
+            self.start_storage()
+        self.stage = "start isolated services"
+        self.env["FIXTURE_TABLE_URL"] = (start_writer or self.start_local_writer)()
         self.compose("up", "-d", "postgres", "kafka", "debezium-connect")
         until("PostgreSQL", lambda: self.sql("SELECT 1;") == "1")
         self.sql("SELECT pg_create_logical_replication_slot('audit_smoke_witness', 'test_decoding');")

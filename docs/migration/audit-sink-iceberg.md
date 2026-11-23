@@ -50,8 +50,11 @@ retains the Kafka offsets on failure.
 Deploy or proxy a durable table writer at `ICEBERG_CATALOG_URL` for audit-sink.
 It must implement the OpenFoundry route, persist the rows, and commit the target
 Iceberg snapshot before returning 2xx. A standalone Iceberg REST catalog needs
-a writer providing that route. The local audit-delivery smoke exercises the
-same HTTP contract with an isolated PyIceberg SQL catalog and filesystem warehouse.
+a writer providing that route. For Docker deployments, build the
+[OpenFoundry audit table writer](../../services/audit-table-writer/README.md).
+Point the sink at the writer service and configure the writer with the real
+catalog and warehouse. The [two-instance acceptance test](../../tools/smoke/audit-delivery/README.md#two-docker-writers)
+exercises concurrent commits against Lakekeeper and an S3-compatible store.
 
 ## Explicit JSONL dev mode
 
