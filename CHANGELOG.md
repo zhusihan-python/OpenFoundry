@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - _(add entries here)_
 
 ### Fixed
+- Composed LLM previews account for downstream joins, filters, and ordering.
+  A preview that needs more rows than the model preview budget fails before
+  invoking that model. Row-preserving previews infer only the requested prefix.
 - Manual and forced builds reject selected ontology targets before reserving
   dataset outputs. A mixed pipeline can still publish an independent dataset.
   Executing a resolved build uses its saved JobSpec even after the graph changes.
