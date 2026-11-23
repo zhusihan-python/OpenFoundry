@@ -720,6 +720,12 @@ changes, deletes and incremental mode-off edits refuse with
 rotation keeps the binding stable via content fingerprints). A stale binding
 has no P25 reset API — recovery is documented as newDef-only.
 
+### MySQL table snapshots
+
+Set `MYSQL_SYNC_ENDPOINT=mysql://host:3306/sales` and allow the source host in the egress policy. Trust the server CA in the connector container. Bind a source-scoped password credential containing a JSON object with `username` and `password`. Grant that account SELECT on the entire source table.
+
+Set the connection config to `{"sync":{"mysql_table":{"schema":"sales","name":"orders"}}}`. The schema must match the configured database. Each batch reads one InnoDB table in a read-only repeatable-read transaction, orders rows by the full primary key, and publishes UTF-8 NDJSON. The limits are 10,000 rows and 8 MiB. A failed read leaves previous versions available. [Docker acceptance](../../tools/smoke/data-integration-wp2-4/README.md)
+
 ### PostgreSQL table snapshots
 
 Set `POSTGRES_SYNC_ENDPOINT=postgresql://host:5432/database` for the operator-owned source database. The native pgx driver always verifies the server certificate and hostname against the service's system roots. For a private CA, install its trust root in the connector container. Apply the connector egress policy and provision a source login with SELECT on its table and USAGE on the schema. Configure the source server to require password authentication.

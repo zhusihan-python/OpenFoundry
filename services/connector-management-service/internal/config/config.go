@@ -47,6 +47,7 @@ type Config struct {
 	NetworkBoundaryServiceURL   string
 	SyncPollIntervalSecs        uint64
 	AllowPrivateNetworkEgress   bool
+	MySQLSyncEndpoint           string
 	PostgresSyncEndpoint        string
 	S3SyncEndpoint              string
 	S3SyncRegion                string
@@ -117,6 +118,12 @@ func FromEnv() (*Config, error) {
 	cfg.S3SyncEndpoint = strings.TrimSpace(os.Getenv("S3_SYNC_ENDPOINT"))
 	cfg.S3SyncRegion = defaultStr(os.Getenv("S3_SYNC_REGION"), "us-east-1")
 	cfg.AllowedEgressHosts = parseList(os.Getenv("ALLOWED_EGRESS_HOSTS"))
+	cfg.MySQLSyncEndpoint = strings.TrimSpace(os.Getenv("MYSQL_SYNC_ENDPOINT"))
+	if cfg.MySQLSyncEndpoint != "" {
+		if _, err := cmruntime.MySQLEndpoint(cfg.MySQLSyncEndpoint, cfg.AllowedEgressHosts, cfg.AllowPrivateNetworkEgress); err != nil {
+			return nil, fmt.Errorf("MYSQL_SYNC_ENDPOINT: %w", err)
+		}
+	}
 	cfg.PostgresSyncEndpoint = strings.TrimSpace(os.Getenv("POSTGRES_SYNC_ENDPOINT"))
 	if cfg.PostgresSyncEndpoint != "" {
 		if _, err := cmruntime.PostgresEndpoint(cfg.PostgresSyncEndpoint, cfg.AllowedEgressHosts, cfg.AllowPrivateNetworkEgress); err != nil {

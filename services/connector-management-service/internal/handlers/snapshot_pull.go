@@ -19,22 +19,22 @@ import (
 // returned operation only resolves credentials and contacts the source after it.
 func (h *Handlers) prepareSnapshotPull(conn *models.Connection, tenant repo.Tenant, lease *repo.LeaseClaim, beforePage func(context.Context) error) (func(context.Context) (*cmruntime.SnapshotResult, error), error) {
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(conn.ConnectorType), "-", "_")) {
-	case "postgresql", "postgres":
-		table, err := models.ParsePostgresSnapshotSource(conn.Config)
+	case "postgresql", "postgres", "mysql":
+		table, endpoint, err := h.tableSource(conn)
 		if err != nil {
 			return nil, err
 		}
 		if table == nil {
 			return nil, fmt.Errorf("sync runtime for connector type %q is not available", conn.ConnectorType)
 		}
-		if h.Config.PostgresSyncEndpoint == "" {
-			return nil, errors.New("PostgreSQL snapshot requires a configured endpoint")
+		if endpoint == "" {
+			return nil, errors.New("table snapshot requires a configured endpoint")
 		}
 		if lease.Run.CPMode != "" || lease.Run.RecoveryProtocol != "" {
-			return nil, errors.New("PostgreSQL table snapshots do not support checkpoint or recovery protocols")
+			return nil, errors.New("table snapshots do not support checkpoint or recovery protocols")
 		}
 		return func(ctx context.Context) (*cmruntime.SnapshotResult, error) {
-			return h.pullPostgresSnapshot(ctx, conn, tenant, table, beforePage)
+			return h.pullTableSnapshot(ctx, conn, tenant, table, beforePage)
 		}, nil
 	case "s3":
 		source, err := models.ParseS3SnapshotSource(conn.Config)
@@ -134,25 +134,39 @@ func (h *Handlers) pullS3Snapshot(ctx context.Context, conn *models.Connection, 
 	})
 }
 
-func (h *Handlers) pullPostgresSnapshot(ctx context.Context, conn *models.Connection, tenant repo.Tenant, table *models.PostgresTable, beforeRead func(context.Context) error) (*cmruntime.SnapshotResult, error) {
-	endpoint, err := cmruntime.PostgresEndpoint(h.Config.PostgresSyncEndpoint, h.Config.AllowedEgressHosts, h.Config.AllowPrivateNetworkEgress)
+func (h *Handlers) pullTableSnapshot(ctx context.Context, conn *models.Connection, tenant repo.Tenant, table *models.SnapshotTable, beforeRead func(context.Context) error) (*cmruntime.SnapshotResult, error) {
+	isMySQL := strings.EqualFold(conn.ConnectorType, "mysql")
+	parse, endpointValue, fetch := cmruntime.PostgresEndpoint, h.Config.PostgresSyncEndpoint, cmruntime.FetchPostgresSnapshot
+	if isMySQL {
+		parse, endpointValue, fetch = cmruntime.MySQLEndpoint, h.Config.MySQLSyncEndpoint, cmruntime.FetchMySQLSnapshot
+	}
+	endpoint, err := parse(endpointValue, h.Config.AllowedEgressHosts, h.Config.AllowPrivateNetworkEgress)
 	if err != nil {
 		return nil, err
 	}
 	ciphertext, err := h.Repo.GetSourceCredentialCiphertext(ctx, conn.ID, tenant, "password")
 	if err != nil || len(ciphertext) == 0 {
-		return nil, errors.New("PostgreSQL source password credential unavailable")
+		return nil, errors.New("table source password credential unavailable")
 	}
 	raw, err := domain.DecryptCredential(h.Config.CredentialKey, ciphertext)
 	if err != nil {
-		return nil, errors.New("PostgreSQL source credential could not be decrypted")
+		return nil, errors.New("table source credential could not be decrypted")
 	}
 	var login struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 	if json.Unmarshal(raw, &login) != nil || login.Username == "" || login.Password == "" {
-		return nil, errors.New("PostgreSQL credential requires username and password")
+		return nil, errors.New("table source credential requires username and password")
 	}
-	return cmruntime.FetchPostgresSnapshot(ctx, cmruntime.PostgresSnapshotOptions{Endpoint: endpoint, Table: *table, AllowPrivateNetworks: h.Config.AllowPrivateNetworkEgress, User: login.Username, Password: login.Password, BeforeRead: beforeRead})
+	return fetch(ctx, cmruntime.TableSnapshotOptions{Endpoint: endpoint, Table: *table, AllowPrivateNetworks: h.Config.AllowPrivateNetworkEgress, User: login.Username, Password: login.Password, BeforeRead: beforeRead})
+}
+
+func (h *Handlers) tableSource(conn *models.Connection) (*models.SnapshotTable, string, error) {
+	if strings.EqualFold(conn.ConnectorType, "mysql") {
+		t, e := models.ParseMySQLSnapshotSource(conn.Config)
+		return t, h.Config.MySQLSyncEndpoint, e
+	}
+	t, e := models.ParsePostgresSnapshotSource(conn.Config)
+	return t, h.Config.PostgresSyncEndpoint, e
 }

@@ -681,25 +681,25 @@ func (h *Handlers) TestConnection(w http.ResponseWriter, r *http.Request) {
 		Message:   fmt.Sprintf("unsupported connector type: %s", c.ConnectorType),
 		LatencyMS: 0,
 	}
-	var table *models.PostgresTable
+	var table *models.SnapshotTable
 	var source *models.S3SnapshotSource
 	var parseErr error
 	if strings.EqualFold(c.ConnectorType, "s3") {
 		source, parseErr = models.ParseS3SnapshotSource(c.Config)
-	} else if strings.EqualFold(c.ConnectorType, "postgresql") || strings.EqualFold(c.ConnectorType, "postgres") {
-		table, parseErr = models.ParsePostgresSnapshotSource(c.Config)
+	} else if strings.EqualFold(c.ConnectorType, "postgresql") || strings.EqualFold(c.ConnectorType, "postgres") || strings.EqualFold(c.ConnectorType, "mysql") {
+		table, _, parseErr = h.tableSource(c)
 	}
 	if parseErr != nil {
 		result.Message = parseErr.Error()
 	} else if table != nil {
 		start := time.Now()
-		_, err := h.pullPostgresSnapshot(r.Context(), c, tenant, table, nil)
+		_, err := h.pullTableSnapshot(r.Context(), c, tenant, table, nil)
 		result.LatencyMS = time.Since(start).Milliseconds()
 		if err != nil {
 			result.Message = err.Error()
 		} else {
 			result.Success = true
-			result.Message = "PostgreSQL snapshot table is readable"
+			result.Message = "snapshot table is readable"
 		}
 	} else if source != nil {
 		start := time.Now()
