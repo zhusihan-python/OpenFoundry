@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/domain"
@@ -18,7 +17,7 @@ import (
 // prepareSnapshotPull validates the source before the destination precheck. The
 // returned operation only resolves credentials and contacts the source after it.
 func (h *Handlers) prepareSnapshotPull(conn *models.Connection, tenant repo.Tenant, lease *repo.LeaseClaim, beforePage func(context.Context) error) (func(context.Context) (*cmruntime.SnapshotResult, error), error) {
-	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(conn.ConnectorType), "-", "_")) {
+	switch connectorTypeKey(conn.ConnectorType) {
 	case "postgresql", "postgres", "mysql":
 		table, endpoint, err := h.tableSource(conn)
 		if err != nil {
@@ -135,7 +134,7 @@ func (h *Handlers) pullS3Snapshot(ctx context.Context, conn *models.Connection, 
 }
 
 func (h *Handlers) pullTableSnapshot(ctx context.Context, conn *models.Connection, tenant repo.Tenant, table *models.SnapshotTable, beforeRead func(context.Context) error) (*cmruntime.SnapshotResult, error) {
-	isMySQL := strings.EqualFold(conn.ConnectorType, "mysql")
+	isMySQL := connectorTypeKey(conn.ConnectorType) == "mysql"
 	parse, endpointValue, fetch := cmruntime.PostgresEndpoint, h.Config.PostgresSyncEndpoint, cmruntime.FetchPostgresSnapshot
 	if isMySQL {
 		parse, endpointValue, fetch = cmruntime.MySQLEndpoint, h.Config.MySQLSyncEndpoint, cmruntime.FetchMySQLSnapshot
@@ -163,7 +162,7 @@ func (h *Handlers) pullTableSnapshot(ctx context.Context, conn *models.Connectio
 }
 
 func (h *Handlers) tableSource(conn *models.Connection) (*models.SnapshotTable, string, error) {
-	if strings.EqualFold(conn.ConnectorType, "mysql") {
+	if connectorTypeKey(conn.ConnectorType) == "mysql" {
 		t, e := models.ParseMySQLSnapshotSource(conn.Config)
 		return t, h.Config.MySQLSyncEndpoint, e
 	}

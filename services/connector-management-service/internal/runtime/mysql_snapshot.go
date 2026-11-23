@@ -96,16 +96,24 @@ func FetchMySQLSnapshot(ctx context.Context, opts TableSnapshotOptions) (*Snapsh
 	if err = probe.Close(); err != nil {
 		return nil, errors.New("MySQL source table probe failed")
 	}
+	var caseMode int
+	if err := tx.QueryRowContext(ctx, "SELECT @@lower_case_table_names").Scan(&caseMode); err != nil {
+		return nil, errors.New("MySQL table name semantics unavailable")
+	}
+	match := "BINARY TABLE_SCHEMA=BINARY ? AND BINARY TABLE_NAME=BINARY ?"
+	if caseMode != 0 {
+		match = "BINARY LOWER(TABLE_SCHEMA)=BINARY LOWER(?) AND BINARY LOWER(TABLE_NAME)=BINARY LOWER(?)"
+	}
 	var engine sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT ENGINE FROM INFORMATION_SCHEMA.TABLES WHERE BINARY TABLE_SCHEMA=? AND BINARY TABLE_NAME=?", database, opts.Table.Name).Scan(&engine)
+	err = tx.QueryRowContext(ctx, "SELECT ENGINE FROM INFORMATION_SCHEMA.TABLES WHERE "+match, database, opts.Table.Name).Scan(&engine)
 	if err != nil || engine.String != "InnoDB" {
 		return nil, errors.New("MySQL snapshot requires an InnoDB base table")
 	}
-	columns, err := mysqlNames(ctx, tx, "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE BINARY TABLE_SCHEMA=? AND BINARY TABLE_NAME=? ORDER BY ORDINAL_POSITION", database, opts.Table.Name)
+	columns, err := mysqlNames(ctx, tx, "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE "+match+" ORDER BY ORDINAL_POSITION", database, opts.Table.Name)
 	if err != nil || len(columns) == 0 {
 		return nil, errors.New("MySQL source columns unavailable")
 	}
-	key, err := mysqlNames(ctx, tx, "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE BINARY TABLE_SCHEMA=? AND BINARY TABLE_NAME=? AND INDEX_NAME='PRIMARY' ORDER BY SEQ_IN_INDEX", database, opts.Table.Name)
+	key, err := mysqlNames(ctx, tx, "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE "+match+" AND INDEX_NAME='PRIMARY' ORDER BY SEQ_IN_INDEX", database, opts.Table.Name)
 	if err != nil || len(key) == 0 {
 		return nil, errors.New("MySQL snapshot requires a primary key")
 	}

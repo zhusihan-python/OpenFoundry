@@ -12,6 +12,8 @@ suite = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(suite)
 CONNECTOR = "mysql"
 TABLE_FIELD = "mysql_table"
+SOURCE_TYPE = " MySQL "
+REGIONAL_TABLE = "Regional_Orders" if os.getenv("WP24_CASE_MODE", "1") == "1" else "regional_orders"
 FAILURES = [
     ("disabled login", "ALTER USER 'orders_reader'@'%' ACCOUNT LOCK", "source connection failed"),
     ("row limit", """ALTER USER 'orders_reader'@'%' ACCOUNT UNLOCK;

@@ -22,7 +22,11 @@ func TestMySQLSnapshotSourceOptIn(t *testing.T) {
 	source, err := ParseMySQLSnapshotSource([]byte(`{"sync":{"mysql_table":{"schema":"sales","name":"订单"}}}`))
 	require.NoError(t, err)
 	require.Equal(t, &SnapshotTable{Schema: "sales", Name: "订单"}, source)
-	for _, raw := range []string{`{"sync":{"mysql_table":null}}`, `{"password":"inline","sync":{"mysql_table":{"schema":"sales","name":"orders"}}}`, `{"sync":{"mysql_table":{"schema":"sales","name":"orders"},"query":"unused"}}`} {
+	for _, raw := range []string{
+		`{"sync":{"mysql_table":{"schema":"sales","name":"orders"},"admission":{"password":"inline"}}}`,
+		`{"Sync":{"mysql_table":{"schema":"sales","name":"orders"},"admission":{"max_inflight_runs":1}}}`,
+		`{"sync":{"mysql_table":{"schema":"sales","name":"orders"},"Admission":{"max_inflight_runs":1}}}`,
+		`{"sync":{"mysql_table":null}}`, `{"password":"inline","sync":{"mysql_table":{"schema":"sales","name":"orders"}}}`, `{"sync":{"mysql_table":{"schema":"sales","name":"orders"},"query":"unused"}}`} {
 		_, err := ParseMySQLSnapshotSource([]byte(raw))
 		require.Error(t, err)
 	}

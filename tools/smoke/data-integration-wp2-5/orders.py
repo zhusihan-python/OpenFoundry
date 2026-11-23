@@ -34,6 +34,8 @@ def sql(statement, user="postgres", *, records=None, denied=False, sslmode="veri
 
 CONNECTOR = "postgresql"
 TABLE_FIELD = "postgres_table"
+SOURCE_TYPE = CONNECTOR
+REGIONAL_TABLE = "regional_orders"
 FAILURES = [
         ("disabled login", "ALTER ROLE orders_reader NOLOGIN", "source connection failed"),
         ("row limit", "ALTER ROLE orders_reader LOGIN; INSERT INTO sales.orders SELECT 'bulk-'||n,1,'bulk' FROM generate_series(1,10001) n", "row or byte limit"),
@@ -80,7 +82,7 @@ def main(state, backend):
         return p1.http("connector", fixture.DC + path, method=method, token=token, payload=body)
 
     def new_sync(token, role, password, dataset, table="orders"):
-        source = api("POST", "/sources", token, {"connector_type": connector, "name": "orders",
+        source = api("POST", "/sources", token, {"connector_type": backend.SOURCE_TYPE, "name": "orders",
                      "config": {"sync": {backend.TABLE_FIELD: {"schema": "sales", "name": table}}}})
         check("created "+connector+" source for "+role, source.status in (200,201))
         source_id = source.body["id"]
@@ -141,7 +143,7 @@ def main(state, backend):
     for label,res in [("source",api("GET",f"/sources/{src}",other)),("sync",api("POST",f"/syncs/{sync}/run",other)),("download",p1.download_file(other,out,file_id))]:
         check("other platform tenant denied "+label,res.status in (403,404))
     regional = p1.create_dataset(owner, "partitioned-orders", "json")["id"]
-    _, part_sync = new_sync(owner, "orders_reader", os.environ["WP25_READER_PASSWORD"], regional, "regional_orders")
+    _, part_sync = new_sync(owner, "orders_reader", os.environ["WP25_READER_PASSWORD"], regional, backend.REGIONAL_TABLE)
     run = p1.run_sync(owner, part_sync)
     check("partitioned table with composite primary key published", run["status"] == "succeeded")
     _, _, data = p1.download_run_artifact(reader, regional, run)

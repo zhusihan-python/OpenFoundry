@@ -65,18 +65,32 @@ func ParseMySQLSnapshotSource(raw json.RawMessage) (*SnapshotTable, error) {
 	if json.Unmarshal(raw, &probe) != nil || len(probe.Sync.Table) == 0 {
 		return nil, nil
 	}
-	var config struct {
-		Sync struct {
-			Table     SnapshotTable   `json:"mysql_table"`
-			Admission json.RawMessage `json:"admission"`
-		} `json:"sync"`
+	// The admission gate reads exact JSON keys. Reject alternate spellings and
+	// unknown nested settings before storing the original source config.
+	var root map[string]json.RawMessage
+	var sync map[string]json.RawMessage
+	if json.Unmarshal(raw, &root) != nil || len(root) != 1 || json.Unmarshal(root["sync"], &sync) != nil || sync["mysql_table"] == nil {
+		return nil, errors.New("expected sync.mysql_table")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
+	for key := range sync {
+		if key != "mysql_table" && key != "admission" {
+			return nil, errors.New("unexpected MySQL snapshot setting")
+		}
+	}
+	if admission, ok := sync["admission"]; ok {
+		var policy SyncAdmissionPolicy
+		decoder := json.NewDecoder(bytes.NewReader(admission))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&policy); err != nil {
+			return nil, errors.New("invalid MySQL snapshot admission setting")
+		}
+	}
+	var table SnapshotTable
+	decoder := json.NewDecoder(bytes.NewReader(sync["mysql_table"]))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&config); err != nil {
-		return nil, errors.New("MySQL snapshot accepts only sync.mysql_table and sync.admission; bind credentials separately")
+	if err := decoder.Decode(&table); err != nil {
+		return nil, errors.New("invalid MySQL snapshot table")
 	}
-	table := config.Sync.Table
 	for _, name := range []string{table.Schema, table.Name} {
 		if strings.TrimSpace(name) == "" || utf8.RuneCountInString(name) > 64 || strings.ContainsRune(name, 0) {
 			return nil, errors.New("invalid MySQL table identifier")

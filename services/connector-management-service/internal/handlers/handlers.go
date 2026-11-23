@@ -327,7 +327,7 @@ func (h *Handlers) GetConnectionCapabilities(w http.ResponseWriter, r *http.Requ
 		writeJSONErr(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	contract, ok := models.ConnectorProfile(connection.ConnectorType)
+	contract, ok := models.ConnectorProfile(connectorTypeKey(connection.ConnectorType))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no connector contract available for " + connection.ConnectorType})
 		return
@@ -372,7 +372,7 @@ func (h *Handlers) connectionEffectiveCapabilities(connection models.Connection,
 		PolicyWarnings:              warnings,
 		FoundryCompute:              models.FoundryCompute{PythonSingleNode: true, PythonSpark: true, PipelineBuilderSingleNode: true, PipelineBuilderSpark: true},
 	}
-	switch strings.ToLower(strings.ReplaceAll(connection.ConnectorType, "-", "_")) {
+	switch connectorTypeKey(connection.ConnectorType) {
 	case "rest_api":
 		source, err := models.ParseRESTAPISourceConfig(connection.Config)
 		effective.NativeSnapshotSync = err == nil && source.Sync != nil
@@ -1176,8 +1176,12 @@ func (h *Handlers) UpdateConnection(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
+func connectorTypeKey(raw string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(raw), "-", "_"))
+}
+
 func normalizeConnectionConfig(connectorType string, raw json.RawMessage) (json.RawMessage, error) {
-	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(connectorType), "-", "_")) {
+	switch connectorTypeKey(connectorType) {
 	case "s3":
 		_, err := models.ParseS3SnapshotSource(raw)
 		return raw, err

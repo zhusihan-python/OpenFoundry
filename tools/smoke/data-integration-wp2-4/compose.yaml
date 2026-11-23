@@ -10,7 +10,7 @@ services:
     command:
       - |
         install -m 0600 -o mysql /fixture-tls/server.key /tmp/orders.key
-        exec docker-entrypoint.sh mysqld --require-secure-transport=ON --ssl-ca=/fixture-tls/server.crt --ssl-cert=/fixture-tls/server.crt --ssl-key=/tmp/orders.key --max-allowed-packet=32M
+        exec docker-entrypoint.sh mysqld --lower-case-table-names=${WP24_CASE_MODE:-1} --require-secure-transport=ON --ssl-ca=/fixture-tls/server.crt --ssl-cert=/fixture-tls/server.crt --ssl-key=/tmp/orders.key --max-allowed-packet=32M
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
       interval: 2s

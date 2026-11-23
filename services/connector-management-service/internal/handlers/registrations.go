@@ -684,9 +684,10 @@ func (h *Handlers) TestConnection(w http.ResponseWriter, r *http.Request) {
 	var table *models.SnapshotTable
 	var source *models.S3SnapshotSource
 	var parseErr error
-	if strings.EqualFold(c.ConnectorType, "s3") {
+	switch connectorTypeKey(c.ConnectorType) {
+	case "s3":
 		source, parseErr = models.ParseS3SnapshotSource(c.Config)
-	} else if strings.EqualFold(c.ConnectorType, "postgresql") || strings.EqualFold(c.ConnectorType, "postgres") || strings.EqualFold(c.ConnectorType, "mysql") {
+	case "postgresql", "postgres", "mysql":
 		table, _, parseErr = h.tableSource(c)
 	}
 	if parseErr != nil {
