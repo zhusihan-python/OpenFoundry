@@ -4,6 +4,8 @@ package actions
 
 import (
 	"context"
+	"encoding/json"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -61,9 +63,13 @@ func TestExecuteInlinePythonActionWithRealSidecar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executePlan: %v", err)
 	}
-	body := string(executed.result)
-	if !strings.Contains(body, "action_status") || !strings.Contains(body, "action stdout") || !strings.Contains(body, "action stderr") {
-		t.Fatalf("action result/stdout/stderr drift: %s", body)
+	// The action exposes the envelope's output, even when the function prints.
+	var result map[string]string
+	if err := json.Unmarshal(executed.result, &result); err != nil {
+		t.Fatalf("decode action result: %v (body %s)", err, executed.result)
+	}
+	if !maps.Equal(result, map[string]string{"action_status": "ok"}) {
+		t.Fatalf("unexpected action result: %s", executed.result)
 	}
 
 	plan = inlinePythonPlan(`raise RuntimeError("ontology action boom")`)

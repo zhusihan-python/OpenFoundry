@@ -73,12 +73,25 @@ func TestExecuteInlinePythonFunctionWithRealSidecar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteInlineFunction: %v", err)
 	}
-	var payload map[string]any
+	type functionResult struct {
+		Status string `json:"status"`
+		Answer int    `json:"answer"`
+	}
+	var payload struct {
+		Result functionResult `json:"result"`
+		Output functionResult `json:"output"`
+		Stdout string         `json:"stdout"`
+		Stderr string         `json:"stderr"`
+	}
 	if err := json.Unmarshal(result, &payload); err != nil {
 		t.Fatalf("result JSON: %v body=%s", err, result)
 	}
-	if !strings.Contains(string(result), "ok") || !strings.Contains(string(result), "ontology stdout") || !strings.Contains(string(result), "ontology stderr") {
-		t.Fatalf("result/stdout/stderr drift: %s", result)
+	want := functionResult{Status: "ok", Answer: 42}
+	if payload.Result != want || payload.Output != want {
+		t.Fatalf("unexpected function result or output: %s", result)
+	}
+	if payload.Stdout != "ontology stdout\n" || payload.Stderr != "ontology stderr\n" {
+		t.Fatalf("unexpected function streams: stdout=%q stderr=%q", payload.Stdout, payload.Stderr)
 	}
 
 	resolved.Config.Python.Source = `raise RuntimeError("ontology function boom")`
