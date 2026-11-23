@@ -61,3 +61,11 @@ pipelineOutbox:
     password: PLACEHOLDER_ROTATE_VIA_EXTERNAL_SECRETS
   dlqTopic: __dlq.outbox-pipeline.v1
   dlqReplicationFactor: "3"
+
+# Connect directly to the policy service's writable PostgreSQL database.
+# See docs/checkpoint-audit.md for the publication and Secret prerequisites.
+checkpointAudit:
+  enabled: false
+  hostname: ""
+  dbname: ""
+  passwordSecretName: ""

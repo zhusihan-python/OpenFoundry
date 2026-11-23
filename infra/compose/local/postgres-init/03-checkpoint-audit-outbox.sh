@@ -1,5 +1,5 @@
 #!/bin/bash
-# Owner-run, repeatable bootstrap for the Compose checkpoint audit relay (PG16).
+# Owner-run, repeatable bootstrap for the checkpoint audit relay (PG16).
 set -euo pipefail
 
 if [[ -z "${CHECKPOINT_AUDIT_CDC_PASSWORD:-}" ]]; then
@@ -7,7 +7,7 @@ if [[ -z "${CHECKPOINT_AUDIT_CDC_PASSWORD:-}" ]]; then
     exit 0
 fi
 
-psql -X -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname openfoundry_auth_service <<'SQL'
+psql -X -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "${CHECKPOINT_AUDIT_DBNAME:-openfoundry_auth_service}" <<'SQL'
 BEGIN;
 DO $$
 BEGIN
@@ -42,7 +42,7 @@ BEGIN
         RAISE EXCEPTION 'Existing checkpoint_audit_cdc role has unexpected privileges';
     END IF;
 END $$;
-GRANT CONNECT ON DATABASE openfoundry_auth_service TO checkpoint_audit_cdc;
+SELECT format('GRANT CONNECT ON DATABASE %I TO checkpoint_audit_cdc', current_database())\gexec
 GRANT USAGE ON SCHEMA outbox TO checkpoint_audit_cdc;
 GRANT SELECT ON outbox.events TO checkpoint_audit_cdc;
 
