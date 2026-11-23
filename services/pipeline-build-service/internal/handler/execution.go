@@ -863,12 +863,13 @@ func upstreamInputDatasetRIDs(nodes []models.PipelineNode, nodeID string) []stri
 }
 
 type runtimeNodeRunner struct {
-	Preview   bool
-	JobRunner runners.JobRunner
-	Python    runtimepkg.TransformExecutor
-	LLM       LLMTransformRunner
-	Table     *lightweightTableRuntime
-	Dist      DistributedTransformRunner
+	CompletePreviewRows bool
+	Preview             bool
+	JobRunner           runners.JobRunner
+	Python              runtimepkg.TransformExecutor
+	LLM                 LLMTransformRunner
+	Table               *lightweightTableRuntime
+	Dist                DistributedTransformRunner
 }
 
 func (r runtimeNodeRunner) Run(ctx context.Context, node executor.NodeContext) (executor.NodeResult, error) {

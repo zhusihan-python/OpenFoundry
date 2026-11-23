@@ -18,12 +18,13 @@ import (
 )
 
 type LLMTransformRequest struct {
-	Node          executor.NodeContext
-	Payload       json.RawMessage
-	TransformType string
-	InputRows     []map[string]json.RawMessage
-	SampleSize    int
-	Preview       bool
+	CompletePreviewRows bool
+	Node                executor.NodeContext
+	Payload             json.RawMessage
+	TransformType       string
+	InputRows           []map[string]json.RawMessage
+	SampleSize          int
+	Preview             bool
 }
 
 type LLMTransformRunner interface {
@@ -75,7 +76,13 @@ func (r *AIServiceLLMRunner) RunLLMTransform(ctx context.Context, req LLMTransfo
 		rows = []map[string]json.RawMessage{{}}
 	}
 	if req.Preview {
-		limit := min(firstPositiveInt(cfg.MaxRows, req.SampleSize, 5), maxModelCalls)
+		limit := min(firstPositiveInt(cfg.MaxRows, maxModelCalls), maxModelCalls)
+		if req.CompletePreviewRows && len(rows) > limit {
+			return executor.NodeResult{}, fmt.Errorf("llm_preview_budget_exceeded: downstream transform requires all %d rows, model preview budget is %d", len(rows), limit)
+		}
+		if !req.CompletePreviewRows {
+			limit = min(limit, firstPositiveInt(req.SampleSize, cfg.MaxRows, 5))
+		}
 		if len(rows) > limit {
 			rows = rows[:limit]
 		}
@@ -366,12 +373,13 @@ func (r runtimeNodeRunner) runLLM(ctx context.Context, node executor.NodeContext
 		inputRows = rowsToMaps(rows)
 	}
 	result, err := r.LLM.RunLLMTransform(ctx, LLMTransformRequest{
-		Node:          node,
-		Payload:       payload,
-		TransformType: metadataString(node.Node.Metadata, "transform_type"),
-		InputRows:     inputRows,
-		SampleSize:    metadataInt(node.Node.Metadata, "sample_size"),
-		Preview:       r.Preview,
+		Node:                node,
+		Payload:             payload,
+		TransformType:       metadataString(node.Node.Metadata, "transform_type"),
+		InputRows:           inputRows,
+		SampleSize:          metadataInt(node.Node.Metadata, "sample_size"),
+		Preview:             r.Preview,
+		CompletePreviewRows: r.CompletePreviewRows,
 	})
 	if err != nil {
 		return executor.NodeResult{}, err

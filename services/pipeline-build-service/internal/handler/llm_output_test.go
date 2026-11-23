@@ -147,3 +147,73 @@ func TestLLMOutputTypesAndOverwrite(t *testing.T) {
 	require.Equal(t, "BOOLEAN", schema.Fields[0].FieldType)
 	require.Equal(t, "STRING", base.Fields[0].FieldType)
 }
+
+func TestComposedLLMPreview(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]string{"reply": "translated"})
+	}))
+	defer server.Close()
+	ports := ExecutionPorts{LLM: NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: server.URL})}
+	join := models.PipelineNode{ID: "join", TransformType: "join", DependsOn: []string{"model", "right"}, Config: json.RawMessage(`{"_join":{"join_type":"inner","matches":[{"left_column":"id","right_column":"target"}],"auto_select_left":true}}`)}
+	sort := models.PipelineNode{ID: "sort", TransformType: "sql", DependsOn: []string{"model"}, Config: json.RawMessage(`{"_stack":{"blocks":[{"kind":"sort","applied":true,"sort_keys":[{"column":"id","direction":"desc"}]}]}}`)}
+	project := models.PipelineNode{ID: "out", TransformType: "output_dataset", DependsOn: []string{"model"}, Config: json.RawMessage(`{"_output":{"columns":["id"]}}`)}
+	for _, tc := range []struct {
+		name                                                   string
+		target                                                 models.PipelineNode
+		input, sample, budget, wantCalls, wantRows, wantLastID int
+		wantErr                                                string
+	}{
+		{"sixth row joins", join, 6, 1, 0, 6, 1, 6, ""},
+		{"sixth row sorts first", sort, 6, 1, 6, 6, 1, 6, ""},
+		{"join exceeds explicit budget", join, 6, 1, 5, 0, 0, 0, "llm_preview_budget_exceeded"},
+		{"sort exceeds hard limit", sort, 51, 1, 0, 0, 0, 0, "llm_preview_budget_exceeded"},
+		{"project six", project, 6, 6, 0, 6, 6, 6, ""},
+		{"project one", project, 6, 1, 6, 1, 1, 1, ""},
+		{"project budget", project, 6, 6, 2, 2, 2, 2, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := make([]map[string]int, tc.input)
+			for i := range rows {
+				rows[i] = map[string]int{"id": i + 1}
+			}
+			nodes := []models.PipelineNode{
+				{ID: "source", TransformType: "dataset_input", Config: mustRuntimeJSON(map[string]any{"rows": rows})},
+				{ID: "right", TransformType: "dataset_input", Config: json.RawMessage(`{"rows":[{"target":6}]}`)},
+				{ID: "model", TransformType: "llm", DependsOn: []string{"source"}, Config: mustRuntimeJSON(map[string]any{"prompt": "translate", "max_rows": tc.budget})},
+				tc.target,
+			}
+			before := calls.Load()
+			preview, err := executeLocalPipelinePreviewWithPorts(t.Context(), uuid.New(), tc.target.ID, nodes, tc.sample, ports)
+			require.EqualValues(t, tc.wantCalls, calls.Load()-before)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, preview.Rows, tc.wantRows)
+			require.Equal(t, mustRuntimeJSON(tc.wantLastID), preview.Rows[len(preview.Rows)-1]["id"])
+		})
+	}
+}
+
+func TestLLMAfterJoinUsesDisplayBudget(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]string{"reply": "ok"})
+	}))
+	defer server.Close()
+	nodes := []models.PipelineNode{
+		{ID: "left", TransformType: "input", Config: json.RawMessage(`{"rows":[{"id":1},{"id":2},{"id":3}]}`)},
+		{ID: "right", TransformType: "input", Config: json.RawMessage(`{"rows":[{"other":4}]}`)},
+		{ID: "join", TransformType: "join", DependsOn: []string{"left", "right"}, Config: json.RawMessage(`{"_join":{"join_type":"cross","auto_select_left":true}}`)},
+		{ID: "model", TransformType: "llm", DependsOn: []string{"join"}, Config: json.RawMessage(`{"prompt":"classify","max_rows":2}`)},
+	}
+	ports := ExecutionPorts{LLM: NewAIServiceLLMRunner(AIServiceLLMConfig{BaseURL: server.URL})}
+	preview, err := executeLocalPipelinePreviewWithPorts(t.Context(), uuid.New(), "model", nodes, 1, ports)
+	require.NoError(t, err)
+	require.Len(t, preview.Rows, 1)
+	require.EqualValues(t, 1, calls.Load())
+}

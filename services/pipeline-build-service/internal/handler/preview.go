@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -167,7 +168,7 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 	// Windows, joins and unions can depend on rows beyond the display
 	// sample. Use the bounded build inputs before limiting the final result.
 	sampleInputs := len(projection) == 0 && !previewChainRequiresBuildInputs(chain)
-	runtime.datasetRowsPreview = sampleInputs
+	completeRows := completeRowsForLLMPreview(chain)
 	runtime.joinExpansionLimit = maxLightweightExpandedRows
 	runner := runtimeNodeRunner{Table: runtime, LLM: ports.LLM, Preview: true}
 	var targetMetadata map[string]any
@@ -191,9 +192,17 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 		if schema := schemas[node.ID]; schema != nil {
 			metadata[runtimeDeclaredSchema] = schema
 		}
-		if sampleInputs {
+		// Pinned snapshots are indivisible. Bound the model calls independently
+		// of the dataset read, even for a one-row preview.
+		sampleNode := sampleInputs && !completeRows[node.ID] && !(completeRows != nil && PayloadDeclaresDatasetSnapshot(node.Config))
+		runtime.datasetRowsPreview = sampleNode
+		if sampleNode {
 			metadata["logic_payload"] = previewConfigWithSampleSize(node.Config, sampleSize)
 			metadata["sample_size"] = sampleSize
+		}
+		if isLLMTransform(transform) {
+			metadata["sample_size"] = sampleSize
+			runner.CompletePreviewRows = completeRows[node.ID]
 		}
 		if PayloadDeclaresDatasetSnapshot(node.Config) {
 			if ids := uuidStrings(node.InputDatasetIDs); len(ids) > 0 {
@@ -222,7 +231,7 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 		if node.ID == nodeID {
 			targetMetadata = result.Metadata
 		}
-		if sampleInputs {
+		if sampleNode {
 			runtime.trimRows(node.ID, sampleSize)
 		}
 	}
@@ -263,6 +272,49 @@ func executeLocalPreviewWithSchemas(ctx context.Context, pipelineID uuid.UUID, n
 		}
 	}
 	return response, nil
+}
+
+// A downstream join, sort or filter can depend on a model result outside
+// the display window. Propagate that need along its actual dependencies.
+// A model downstream of such an operator can still use a prefix.
+func completeRowsForLLMPreview(chain []models.PipelineNode) map[string]bool {
+	if !slices.ContainsFunc(chain, func(node models.PipelineNode) bool { return isLLMTransform(node.TransformType) }) {
+		return nil
+	}
+	complete := make(map[string]bool)
+	for i := len(chain) - 1; i >= 0; i-- {
+		node := chain[i]
+		if complete[node.ID] || previewConsumesWholeRelation(node) {
+			for _, dep := range node.DependsOn {
+				complete[dep] = true
+			}
+		}
+	}
+	return complete
+}
+
+func previewConsumesWholeRelation(node models.PipelineNode) bool {
+	switch normaliseTableTransform(node.TransformType) {
+	case "filter":
+		return true
+	case "sql":
+		cfg, err := parseTableRuntimeConfig(node.Config)
+		if err != nil {
+			return false // The execution path reports invalid configurations.
+		}
+		if cfg.Stack == nil {
+			return cfg.Join != nil || cfg.GeoJoin != nil || cfg.Union != nil || cfg.Predicate != "" || cfg.Expression != ""
+		}
+		for _, block := range cfg.Stack.Blocks {
+			if block.Applied {
+				switch strings.ToLower(strings.TrimSpace(block.Kind)) {
+				case "filter", "sort", "aggregate", "conditional_aggregate", "window_aggregate", "explode", "csv_parse":
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func previewChainRequiresBuildInputs(chain []models.PipelineNode) bool {
