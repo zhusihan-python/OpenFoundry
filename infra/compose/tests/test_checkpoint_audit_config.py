@@ -26,6 +26,13 @@ def services(password=None):
 
 
 class CheckpointAuditConfiguration(unittest.TestCase):
+    def test_all_foundation_dockerfiles_exist(self):
+        builds = {name: svc["build"] for name, svc in services().items() if svc.get("build")}
+        self.assertIn("authorization-policy-service", builds)
+        for name, build in builds.items():
+            with self.subTest(service=name):
+                self.assertTrue((Path(build["context"]) / build["dockerfile"]).is_file())
+
     def test_fresh_default_skips_audit_credentials(self):
         stack = services()
         self.assertFalse(stack["postgres"]["environment"]["CHECKPOINT_AUDIT_CDC_PASSWORD"])
@@ -42,7 +49,6 @@ class CheckpointAuditConfiguration(unittest.TestCase):
         connector = json.loads(Path(mount["source"]).read_text())
         dbname = urlparse(policy["environment"]["DATABASE_URL"]).path.lstrip("/")
 
-        self.assertTrue((Path(policy["build"]["context"]) / policy["build"]["dockerfile"]).is_file())
         self.assertIn(dbname, postgres["environment"]["POSTGRES_MULTIPLE_DATABASES"].split(","))
         self.assertEqual(connector["database.dbname"], dbname)
         self.assertEqual(connector["database.password"], "${env:CHECKPOINT_AUDIT_CDC_PASSWORD}")
@@ -54,6 +60,8 @@ class CheckpointAuditConfiguration(unittest.TestCase):
         self.assertIn("/connectors/checkpoint-audit-outbox/config", registrar["command"][0])
         self.assertIn("wal_level=logical", postgres["command"])
         self.assertEqual(connector["transforms.outbox.route.topic.replacement"], "${routedByValue}")
+        projected = connector["transforms.outbox.table.fields.additional.placement"].split(",")
+        self.assertCountEqual(projected, ["headers:header", "created_at:header"])
         legacy_registration = stack["debezium-connect-init"]["entrypoint"][-1]
         self.assertIn("/connectors/pg-policy-outbox/config", legacy_registration)
         self.assertEqual(legacy_registration.count("${routedByValue}"), 3)

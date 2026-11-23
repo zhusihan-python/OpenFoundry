@@ -46,24 +46,32 @@ GRANT CONNECT ON DATABASE openfoundry_auth_service TO checkpoint_audit_cdc;
 GRANT USAGE ON SCHEMA outbox TO checkpoint_audit_cdc;
 GRANT SELECT ON outbox.events TO checkpoint_audit_cdc;
 
--- INSERT + DELETE in one application transaction emits only the audit INSERT.
--- PostgreSQL's row filter limits which outbox topics reach this connector.
+-- Accept the initial topic-only definition for an owner-run upgrade. Preserve
+-- the publication identity and slot while narrowing the relay to this producer.
 DO $$
+DECLARE
+    current_filter text;
+    checkpoint_filter CONSTANT text := $filter$((topic = 'audit.events.v1'::text) AND ((payload ->> 'kind'::text) = 'purpose_checkpoint.evaluated'::text) AND ((payload ->> 'source_service'::text) = 'authorization-policy-service'::text))$filter$;
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_publication WHERE pubname = 'of_checkpoint_audit_pub') THEN
-        CREATE PUBLICATION of_checkpoint_audit_pub FOR TABLE outbox.events
-            WHERE (topic = 'audit.events.v1') WITH (publish = 'insert');
-    ELSIF NOT EXISTS (
-        SELECT FROM pg_publication p
-        WHERE p.pubname = 'of_checkpoint_audit_pub'
-          AND NOT p.puballtables AND p.pubinsert AND NOT (p.pubdelete OR p.pubupdate OR p.pubtruncate)
-          AND (SELECT count(*) FROM pg_publication_tables t WHERE t.pubname = p.pubname) = 1
-          AND EXISTS (SELECT FROM pg_publication_tables t WHERE t.pubname = p.pubname
-                      AND t.schemaname = 'outbox' AND t.tablename = 'events'
-                      AND t.rowfilter = '(topic = ''audit.events.v1''::text)')
-    ) THEN
-        RAISE EXCEPTION 'Existing of_checkpoint_audit_pub has unexpected settings; inspect it before starting CDC';
+        CREATE PUBLICATION of_checkpoint_audit_pub WITH (publish = 'insert');
+    ELSE
+        SELECT t.rowfilter INTO current_filter
+        FROM pg_publication p JOIN pg_publication_tables t USING (pubname)
+        JOIN pg_publication_rel r ON r.prpubid = p.oid AND r.prrelid = 'outbox.events'::regclass
+        WHERE p.pubname = 'of_checkpoint_audit_pub' AND NOT p.puballtables AND p.pubinsert
+          AND NOT (p.pubdelete OR p.pubupdate OR p.pubtruncate)
+          AND (SELECT count(*) FROM pg_publication_tables WHERE pubname = p.pubname) = 1
+          AND t.schemaname = 'outbox' AND t.tablename = 'events' AND r.prattrs IS NULL;
+        IF current_filter = checkpoint_filter THEN
+            RETURN;
+        ELSIF current_filter IS DISTINCT FROM '(topic = ''audit.events.v1''::text)' THEN
+            RAISE EXCEPTION 'Existing of_checkpoint_audit_pub has unexpected settings; inspect it before starting CDC';
+        END IF;
     END IF;
+    ALTER PUBLICATION of_checkpoint_audit_pub SET TABLE outbox.events WHERE
+        (topic = 'audit.events.v1' AND payload ->> 'kind' = 'purpose_checkpoint.evaluated'
+         AND payload ->> 'source_service' = 'authorization-policy-service');
 END $$;
 COMMIT;
 SQL

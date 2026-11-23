@@ -21,6 +21,7 @@
   "transforms.outbox.table.field.event.id": "event_id",
   "transforms.outbox.table.field.event.key": "aggregate_id",
   "transforms.outbox.table.field.event.payload": "payload",
+  "transforms.outbox.table.fields.additional.placement": "headers:header,created_at:header",
   "transforms.outbox.route.by.field": "topic",
   "transforms.outbox.route.topic.replacement": "${routedByValue}"
 }
