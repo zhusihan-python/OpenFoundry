@@ -13,7 +13,7 @@ type PostgresTable struct {
 	Name   string `json:"name"`
 }
 
-// Only the dedicated postgres_table field opts a legacy connection into native reads.
+// ParsePostgresSnapshotSource opts in only configurations that set sync.postgres_table.
 func ParsePostgresSnapshotSource(raw json.RawMessage) (*PostgresTable, error) {
 	if len(raw) == 0 {
 		return nil, nil

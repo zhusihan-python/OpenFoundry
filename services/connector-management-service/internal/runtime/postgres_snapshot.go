@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/openfoundry/openfoundry-go/services/connector-management-service/internal/domain/http_runtime"
@@ -43,21 +46,42 @@ func PostgresEndpoint(raw string, allowed []string, private bool) (*url.URL, err
 }
 
 type PostgresSnapshotOptions struct {
-	Endpoint       *url.URL
-	Table          models.PostgresTable
-	User, Password string
-	BeforeRead     func(context.Context) error
+	Endpoint             *url.URL
+	Table                models.PostgresTable
+	User, Password       string
+	AllowPrivateNetworks bool
+	BeforeRead           func(context.Context) error
+}
+
+// pgx resolves a host into individual numeric addresses before calling DialFunc.
+func postgresDialAddressAllowed(network, address string, allowPrivate bool) bool {
+	if network != "tcp" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	ip = ip.Unmap()
+	if ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	return allowPrivate || (ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast())
 }
 
 const primaryKeyQuery = `
-SELECT array_agg(a.attname::text ORDER BY k.ord)
+SELECT c.relkind::text, array_agg(a.attname::text ORDER BY k.ord)
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
 JOIN pg_catalog.pg_index i ON i.indrelid=c.oid AND i.indisprimary AND i.indisvalid
 CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
 JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum
 WHERE n.nspname=$1 AND c.relname=$2 AND c.relkind IN ('r','p') AND k.ord<=i.indnkeyatts
-GROUP BY i.indexrelid`
+GROUP BY c.relkind, i.indexrelid`
 
 func FetchPostgresSnapshot(ctx context.Context, opts PostgresSnapshotOptions) (*SnapshotResult, error) {
 	if opts.Endpoint == nil || opts.User == "" || opts.Password == "" {
@@ -82,7 +106,14 @@ func FetchPostgresSnapshot(ctx context.Context, opts PostgresSnapshotOptions) (*
 	cfg.User, cfg.Password = opts.User, opts.Password
 	cfg.TLSConfig = &tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12}
 	cfg.Fallbacks = nil
-	cfg.RuntimeParams = map[string]string{"search_path": "pg_catalog", "timezone": "UTC", "DateStyle": "ISO, YMD"}
+	dial := cfg.DialFunc
+	cfg.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if !postgresDialAddressAllowed(network, address, opts.AllowPrivateNetworks) {
+			return nil, errors.New("PostgreSQL address blocked by egress policy")
+		}
+		return dial(ctx, network, address)
+	}
+	cfg.RuntimeParams = map[string]string{"client_encoding": "UTF8", "search_path": "pg_catalog", "timezone": "UTC", "DateStyle": "ISO, YMD"}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if opts.BeforeRead != nil {
@@ -102,11 +133,12 @@ func FetchPostgresSnapshot(ctx context.Context, opts PostgresSnapshotOptions) (*
 	defer func() { _ = tx.Rollback(ctx) }()
 	table := pgx.Identifier{opts.Table.Schema, opts.Table.Name}.Sanitize()
 	// Hold the relation identity across primary-key discovery and the ordered read.
-	if _, err := tx.Exec(ctx, "LOCK TABLE "+table+" IN ACCESS SHARE MODE"); err != nil {
+	if _, err := tx.Exec(ctx, "LOCK TABLE ONLY "+table+" IN ACCESS SHARE MODE"); err != nil {
 		return nil, errors.New("PostgreSQL source table is unavailable or unreadable")
 	}
+	var kind string
 	var keys []string
-	if err := tx.QueryRow(ctx, primaryKeyQuery, opts.Table.Schema, opts.Table.Name).Scan(&keys); err != nil || len(keys) == 0 {
+	if err := tx.QueryRow(ctx, primaryKeyQuery, opts.Table.Schema, opts.Table.Name).Scan(&kind, &keys); err != nil || len(keys) == 0 {
 		return nil, errors.New("PostgreSQL snapshot requires a table with a primary key")
 	}
 	order := make([]string, len(keys))
@@ -117,7 +149,13 @@ func FetchPostgresSnapshot(ctx context.Context, opts PostgresSnapshotOptions) (*
 	// distinguish oversized tables from a complete snapshot at the limit.
 	const maxRows = 10000
 	const maxBytes = 8 << 20
-	q := fmt.Sprintf("SELECT CASE WHEN octet_length(row_to_json(src.*)::text) < $1 THEN row_to_json(src.*)::text END FROM %s AS src ORDER BY %s LIMIT $2", table, strings.Join(order, ", "))
+	// A traditional inheritance child is a separate source whose keys need not
+	// be unique in the parent. Declarative partitions belong to the logical table.
+	from := table
+	if kind == "r" {
+		from = "ONLY " + table
+	}
+	q := fmt.Sprintf("SELECT CASE WHEN octet_length(row_to_json(src.*)::text) < $1 THEN row_to_json(src.*)::text END FROM %s AS src ORDER BY %s LIMIT $2", from, strings.Join(order, ", "))
 	rows, err := tx.Query(ctx, q, maxBytes, maxRows+1)
 	if err != nil {
 		return nil, errors.New("PostgreSQL snapshot query failed")
@@ -133,6 +171,9 @@ func FetchPostgresSnapshot(ctx context.Context, opts PostgresSnapshotOptions) (*
 		count++
 		if count > maxRows || row == nil {
 			return nil, errors.New("PostgreSQL snapshot exceeds row or byte limit")
+		}
+		if !utf8.ValidString(*row) {
+			return nil, errors.New("invalid UTF-8 in PostgreSQL snapshot row")
 		}
 		if err := json.Compact(&buf, []byte(*row)); err != nil {
 			return nil, errors.New("invalid PostgreSQL JSON row")

@@ -19,3 +19,13 @@ func TestPostgresEndpointAndReadFence(t *testing.T) {
 	require.ErrorIs(t, err, lost)
 	require.Nil(t, result)
 }
+
+func TestPostgresDialChecksResolvedAddress(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:5432", "10.0.0.2:5432", "[::ffff:192.168.1.3]:5432", "[fe80::1]:5432", "[::1]:5432", "[fd00::1]:5432"} {
+		require.False(t, postgresDialAddressAllowed("tcp", address, false))
+		require.True(t, postgresDialAddressAllowed("tcp", address, true))
+	}
+	require.False(t, postgresDialAddressAllowed("tcp", "unresolved.local:5432", true))
+	require.False(t, postgresDialAddressAllowed("tcp", "0.0.0.0:5432", true))
+	require.True(t, postgresDialAddressAllowed("tcp", "203.0.113.1:5432", false))
+}

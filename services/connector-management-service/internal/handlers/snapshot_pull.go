@@ -154,5 +154,5 @@ func (h *Handlers) pullPostgresSnapshot(ctx context.Context, conn *models.Connec
 	if json.Unmarshal(raw, &login) != nil || login.Username == "" || login.Password == "" {
 		return nil, errors.New("PostgreSQL credential requires username and password")
 	}
-	return cmruntime.FetchPostgresSnapshot(ctx, cmruntime.PostgresSnapshotOptions{Endpoint: endpoint, Table: *table, User: login.Username, Password: login.Password, BeforeRead: beforeRead})
+	return cmruntime.FetchPostgresSnapshot(ctx, cmruntime.PostgresSnapshotOptions{Endpoint: endpoint, Table: *table, AllowPrivateNetworks: h.Config.AllowPrivateNetworkEgress, User: login.Username, Password: login.Password, BeforeRead: beforeRead})
 }

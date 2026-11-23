@@ -1,4 +1,5 @@
 """PostgreSQL order snapshots using the same version-pinned consumer as WP2.3."""
+from decimal import Decimal
 import hashlib
 import importlib.util
 import json
@@ -59,9 +60,9 @@ def main(state):
     def api(method, path, token=owner, body=None):
         return p1.http("connector", fixture.DC + path, method=method, token=token, payload=body)
 
-    def new_sync(token, role, password, dataset):
+    def new_sync(token, role, password, dataset, table="orders"):
         source = api("POST", "/sources", token, {"connector_type": "postgresql", "name": "orders",
-                     "config": {"sync": {"postgres_table": {"schema": "sales", "name": "orders"}}}})
+                     "config": {"sync": {"postgres_table": {"schema": "sales", "name": table}}}})
         check("created PostgreSQL source for "+role, source.status in (200,201))
         source_id = source.body["id"]
         credential = api("POST", f"/sources/{source_id}/credentials", token,
@@ -86,7 +87,7 @@ def main(state):
     check("connection test reads the actual empty table", api("POST", f"/sources/{src}/test-connection").body["success"])
 
     for i, records in enumerate(fixture.SAMPLES,1):
-        sql("BEGIN; DELETE FROM sales.orders; INSERT INTO sales.orders SELECT * FROM json_populate_recordset(NULL::sales.orders, :'records'); COMMIT;", records=list(reversed(records)))
+        sql("BEGIN; DELETE FROM ONLY sales.orders; INSERT INTO sales.orders SELECT * FROM json_populate_recordset(NULL::sales.orders, :'records'); COMMIT;", records=list(reversed(records)))
         run = p1.run_sync(owner,sync)
         check(f"snapshot v{i} succeeded",run["status"]=="succeeded")
         txn = run["dataset_version_id"]
@@ -108,18 +109,34 @@ def main(state):
     check("foreign database role cannot publish",denied["status"]=="failed" and not denied.get("dataset_version_id") and graph.list_versions(foreign)==prior and not p1.list_files(other,foreign))
     graph.TOKEN=reader
     before=graph.list_versions(raw)
-    for name,statement in [
-        ("row limit","INSERT INTO sales.orders SELECT 'bulk-'||n,1,'bulk' FROM generate_series(1,10001) n"),
-        ("oversized row","TRUNCATE sales.orders; INSERT INTO sales.orders VALUES ('too-large',1,repeat('x',8388608))"),
-        ("missing table","DROP TABLE sales.orders")
+    for name, statement, expected_error in [
+        ("disabled login", "ALTER ROLE orders_reader NOLOGIN", "source connection failed"),
+        ("row limit", "ALTER ROLE orders_reader LOGIN; INSERT INTO sales.orders SELECT 'bulk-'||n,1,'bulk' FROM generate_series(1,10001) n", "row or byte limit"),
+        ("oversized row", "TRUNCATE ONLY sales.orders; INSERT INTO sales.orders VALUES ('too-large',1,repeat('x',8388608))", "row or byte limit"),
+        ("missing table", "DROP TABLE sales.order_history; DROP TABLE sales.orders", "unavailable or unreadable"),
     ]:
         sql(statement)
-        run=p1.run_sync(owner,sync)
-        check(name+" preserves published versions",run["status"]=="failed" and not run.get("dataset_version_id") and graph.list_versions(raw)==before)
+        run = p1.run_sync(owner, sync)
+        check(name + " preserves published versions",
+              run["status"] == "failed" and expected_error in run.get("error", "") and
+              not run.get("dataset_version_id") and graph.list_versions(raw) == before)
+        check(name + " preserves pinned output bytes",
+              p1.download_file(reader, out, file_id).body == response.body)
     check("v2 readable after source failure",graph.scan_all(raw,second["version"])["rows"]==fixture.SAMPLES[1])
     check("pinned output readable after source failure",graph.scan_all(out,produced["version"])["rows"]==expected and p1.download_file(reader,out,file_id).body==response.body)
     for label,res in [("source",api("GET",f"/sources/{src}",other)),("sync",api("POST",f"/syncs/{sync}/run",other)),("download",p1.download_file(other,out,file_id))]:
         check("other platform tenant denied "+label,res.status in (403,404))
+    regional = p1.create_dataset(owner, "partitioned-orders", "json")["id"]
+    _, part_sync = new_sync(owner, "orders_reader", os.environ["WP25_READER_PASSWORD"], regional, "regional_orders")
+    run = p1.run_sync(owner, part_sync)
+    check("partitioned table with composite primary key published", run["status"] == "succeeded")
+    _, _, data = p1.download_run_artifact(reader, regional, run)
+    regional_rows = [json.loads(line, parse_float=Decimal) for line in data.splitlines()]
+    check("read both partitions in key order with exact decimal, null and UTF-8",
+          regional_rows == [
+              {"region":"east", "order_id":"0007", "exact_total":Decimal("12345678901234567890.01230"), "memo":"订单 · café"},
+              {"region":"west", "order_id":"0011", "exact_total":None, "memo":None},
+          ])
     fixture.verify_browser(state,owner)
 
 
