@@ -27,11 +27,13 @@ package testingx
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gocql/gocql"
+	"github.com/google/uuid"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -176,4 +178,48 @@ func BootCassandra(ctx context.Context, t *testing.T, keyspace string) *Cassandr
 
 	t.Logf("cassandra harness ready at %s (keyspace=%q)", h.ContactPoint, h.Keyspace)
 	return h
+}
+
+// OpenCassandraTestKeyspace creates an isolated keyspace on the CASSANDRA_ADDR
+// cluster. Cleanup closes its session before dropping that keyspace.
+func OpenCassandraTestKeyspace(t *testing.T) (*gocql.Session, string) {
+	t.Helper()
+	var addrs []string
+	for _, addr := range strings.Split(os.Getenv("CASSANDRA_ADDR"), ",") {
+		if addr = strings.TrimSpace(addr); addr != "" {
+			addrs = append(addrs, addr)
+		}
+	}
+	if len(addrs) == 0 {
+		t.Skip("CASSANDRA_ADDR has no contact points; skipping real Cassandra integration test")
+	}
+	cluster := gocql.NewCluster(addrs...)
+	cluster.Timeout = 10 * time.Second
+	cluster.ConnectTimeout = 10 * time.Second
+	cluster.Consistency = gocql.One
+	cluster.DisableInitialHostLookup = true
+	if username := strings.TrimSpace(os.Getenv("CASSANDRA_USERNAME")); username != "" {
+		cluster.Authenticator = gocql.PasswordAuthenticator{Username: username, Password: os.Getenv("CASSANDRA_PASSWORD")}
+	}
+	bootstrap, err := cluster.CreateSession()
+	if err != nil {
+		t.Fatalf("connect Cassandra for keyspace bootstrap: %v", err)
+	}
+	t.Cleanup(bootstrap.Close)
+	keyspace := "of_it_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if err := bootstrap.Query("CREATE KEYSPACE " + keyspace + " WITH replication = {'class':'SimpleStrategy','replication_factor':1}").Exec(); err != nil {
+		t.Fatalf("create keyspace %s: %v", keyspace, err)
+	}
+	t.Cleanup(func() {
+		if err := bootstrap.Query("DROP KEYSPACE " + keyspace).Exec(); err != nil {
+			t.Errorf("drop keyspace %s: %v", keyspace, err)
+		}
+	})
+	cluster.Keyspace = keyspace
+	session, err := cluster.CreateSession()
+	if err != nil {
+		t.Fatalf("connect keyspace %s: %v", keyspace, err)
+	}
+	t.Cleanup(session.Close)
+	return session, keyspace
 }
