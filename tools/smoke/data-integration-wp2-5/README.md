@@ -1,0 +1,5 @@
+# PostgreSQL order snapshots
+
+From a clean checkout, run `tools/smoke/data-integration-wp2-3/run.sh postgresql` with Docker Compose, Bash, OpenSSL and Python 3. The runner builds the services locally and provisions a separate PostgreSQL 16 source with a fixture TLS certificate and two login roles. The platform database remains separate. The source reader has SELECT on the order table, the second login has no table access. Fixture identities sign platform JWTs locally.
+
+The test updates the same orders used by WP2.3, synchronizes both revisions using the connector API, then pins the first input in the real pipeline. A separate platform reader downloads the output and scans the fixed version. Expected rows are order 0007 with 1255 cents and 0011 with zero cents. The fixture exercises source-role and platform-tenant isolation, row/byte limits and an unavailable table. It preserves downloaded bytes and an orders-report.json with the version, build, transaction, and file identifiers in the printed directory. Set WP23_VERIFY_UI=1 with web dependencies and ego-browser installed to exercise the real connector catalog and per-source capability response.

@@ -719,3 +719,9 @@ changes, deletes and incremental mode-off edits refuse with
 (pure name/status/cron/enable edits are unaffected; credential SAME-value
 rotation keeps the binding stable via content fingerprints). A stale binding
 has no P25 reset API — recovery is documented as newDef-only.
+
+### PostgreSQL table snapshots
+
+Set `POSTGRES_SYNC_ENDPOINT=postgresql://host:5432/database` for the operator-owned source database. The native pgx driver always verifies the server certificate and hostname against the service's system roots. For a private CA, install its trust root in the connector container. Apply the connector egress policy and provision a source login with SELECT on its table and USAGE on the schema. Configure the source server to require password authentication.
+
+Create a `postgresql` source with `{"sync":{"postgres_table":{"schema":"sales","name":"orders"}}}` and bind a source credential of kind `password` whose value is a JSON string containing `username` and `password`. Native reads use a bounded, read-only repeatable-read transaction, order by the table's primary key, and publish NDJSON through the existing batch sync API. The source supports a single table with a primary key, up to 10,000 rows and 8 MiB of output. Ordinary tables exclude traditional inheritance children. Declarative partitioned tables include their partitions. The connector sends text to the publisher as UTF-8 and preserves JSON numeric literals. Old catalog-only configurations retain their existing behavior. The source URL, SQL and login secrets are excluded from the source configuration.

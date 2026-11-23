@@ -39,7 +39,7 @@ func TestS3SnapshotSource(t *testing.T) {
 func TestGalleryAdvertisesOnlyImplementedNativeBatchSync(t *testing.T) {
 	for _, configured := range []bool{false, true} {
 		found := map[string]bool{}
-		for _, c := range BuildGalleryCatalog(configured).Connectors {
+		for _, c := range BuildGalleryCatalog(SnapshotRuntimes{S3: configured}).Connectors {
 			for _, capability := range c.Capabilities {
 				if capability == "batch_sync" {
 					found[c.Type] = true

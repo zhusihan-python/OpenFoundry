@@ -9,6 +9,8 @@ if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
   echo "Run acceptance from a clean checkout of the candidate commit." >&2
   exit 1
 fi
+source_type=${1:-s3}
+case "$source_type" in s3|postgresql) ;; *) echo "usage: $0 [s3|postgresql]" >&2; exit 2;; esac
 state=$(mktemp -d "${TMPDIR:-/tmp}/wp23-orders.XXXXXXXX")
 export WP23_DVS_PORT
 WP23_DVS_PORT=${WP23_DVS_PORT:-$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}
@@ -22,6 +24,16 @@ CREDENTIAL_KEY=$(openssl rand -base64 32)
 STORE_ACCESS=$(openssl rand -hex 10)
 STORE_SECRET=$(openssl rand -hex 24)
 compose=(docker compose -p "$project" -f "$here/compose.yaml")
+orders_script="$here/orders.py"
+if [[ "$source_type" == postgresql ]]; then
+  export WP25_ADMIN_PASSWORD WP25_READER_PASSWORD WP25_OTHER_PASSWORD WP25_TLS
+  WP25_ADMIN_PASSWORD=$(openssl rand -hex 24)
+  WP25_READER_PASSWORD=$(openssl rand -hex 24)
+  WP25_OTHER_PASSWORD=$(openssl rand -hex 24)
+  WP25_TLS=$(mktemp -d)
+  compose+=(-f "$here/../data-integration-wp2-5/compose.yaml")
+  orders_script="$here/../data-integration-wp2-5/orders.py"
+fi
 echo "Evidence directory: $state"
 cleanup() {
   result=$?
@@ -31,8 +43,30 @@ cleanup() {
     "${compose[@]}" logs --no-color >"$state/services.log" 2>&1
   fi
   "${compose[@]}" down -v --remove-orphans >/dev/null
+  if [[ "$source_type" == postgresql ]]; then
+    rm -f "$WP25_TLS/server.key" "$WP25_TLS/server.crt" "$WP25_TLS/openssl.cnf"
+    rmdir "$WP25_TLS"
+  fi
 }
 trap cleanup EXIT
+if [[ "$source_type" == postgresql ]]; then
+  cat > "$WP25_TLS/openssl.cnf" <<'CERT'
+[req]
+prompt=no
+distinguished_name=dn
+x509_extensions=extensions
+[dn]
+CN=orders-db
+[extensions]
+subjectAltName=DNS:orders-db
+basicConstraints=critical,CA:TRUE
+extendedKeyUsage=serverAuth
+CERT
+  openssl req -x509 -newkey rsa:2048 -nodes -days 1 -config "$WP25_TLS/openssl.cnf" \
+    -keyout "$WP25_TLS/server.key" -out "$WP25_TLS/server.crt" 2>"$state/cert-create.log"
+  chmod 755 "$WP25_TLS"
+  chmod 644 "$WP25_TLS/server.crt"
+fi
 docker run --rm -v "$root:/src:ro" -v "$BIN_DIR:/out" \
   -v "${WP23_GO_MOD_CACHE:-wp23-go-mod}:/go/pkg/mod" \
   -v "${WP23_GO_BUILD_CACHE:-wp23-go-build}:/root/.cache/go-build" \
@@ -51,6 +85,10 @@ WP23_STORE=$(endpoint store 9000)
 for url in "$WP23_DVS/healthz" "$WP23_PBS/healthz" "$WP23_CONNECTOR/healthz" "$WP23_STORE/health"; do
   curl -fsS --retry 30 --retry-all-errors --retry-delay 1 --max-time 3 "$url" >/dev/null
 done
-python3 -I "$here/orders.py" "$state"
+if [[ "$source_type" == postgresql ]]; then
+  export WP25_DB_CONTAINER
+  WP25_DB_CONTAINER=$("${compose[@]}" ps -q orders-db)
+fi
+python3 -I "$orders_script" "$state"
 test "$(git -C "$root" rev-parse HEAD)" = "$revision"
 test -z "$(git -C "$root" status --porcelain)"
