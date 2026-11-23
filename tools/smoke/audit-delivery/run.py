@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
 import subprocess
 import sys
 import tempfile
@@ -72,7 +73,8 @@ def token(secret, caller):
 
 
 class Fixture:
-    def __init__(self, root, python):
+    def __init__(self, root, python, lakekeeper=False):
+        self.lakekeeper = lakekeeper
         self.root = root
         self.python = python
         self.project = "ofaudit-" + secrets.token_hex(6)
@@ -90,6 +92,20 @@ class Fixture:
                         FIXTURE_TABLE_URL="http://host.docker.internal:1")
         self.compose_base = ["docker", "compose", "--env-file", os.devnull, "-p", self.project,
                              "-f", HERE / "compose.yaml", "-f", self.overlay]
+
+        self.env.pop("FIXTURE_REST_URL", None)
+        if self.lakekeeper:
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                self.env["FIXTURE_S3_PORT"] = str(listener.getsockname()[1])
+            self.env.update(FIXTURE_S3_ACCESS=secrets.token_hex(12), FIXTURE_S3_SECRET=secrets.token_hex(24))
+            self.compose_base.extend(["-f", HERE / "lakekeeper.yaml"])
+
+    def start_storage(self):
+        self.stage = "initialize Lakekeeper and S3"
+        self.compose("up", "-d", "lakekeeper")
+        self.env["FIXTURE_REST_URL"] = self.address("object-store", 8181)
+        run(self.python, HERE / "iceberg_table.py", "bootstrap", "--root", self.table, env=self.env)
 
     def compose(self, *args, **kwargs):
         return run(*self.compose_base, *args, env=self.env, **kwargs)
@@ -150,8 +166,10 @@ class Fixture:
 
     def start(self):
         self.stage = "start isolated services"
+        if self.lakekeeper:
+            self.start_storage()
         self.table_process = subprocess.Popen([self.python, HERE / "iceberg_table.py", "serve", "--root", self.table],
-                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                              env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         until("Iceberg table server", lambda: (self.table / "port").exists())
         self.env["FIXTURE_TABLE_URL"] = "http://host.docker.internal:" + (self.table / "port").read_text()
         self.compose("up", "-d", "postgres", "kafka", "debezium-connect")
@@ -234,7 +252,7 @@ class Fixture:
         return None
 
     def read_table(self, events):
-        data = json.loads(run(self.python, HERE / "iceberg_table.py", "read", "--root", self.table))
+        data = json.loads(run(self.python, HERE / "iceberg_table.py", "read", "--root", self.table, env=self.env))
         expected = [{"event_id": e["event_id"], "at": e["at"], "kind": e["kind"], "payload": e["payload"],
                      "correlation_id": e.get("correlation_id")} for e in events]
         def by_event(row):
@@ -242,7 +260,12 @@ class Fixture:
         check(sorted(data["rows"], key=by_event) == sorted(expected, key=by_event), "independent Iceberg readback mismatch")
         check(data["snapshot_count"] == len(events) and len(data["data_files"]) == len(events),
               "unexpected snapshot or Parquet file count")
-        return {"snapshot_id": data["snapshot_id"], "snapshots": data["snapshot_count"],
+        locations = {}
+        if self.lakekeeper:
+            for path in [data["metadata_location"], *data["data_files"]]:
+                check(urlsplit(path).scheme == "s3" and urlsplit(path).netloc == "audit-fixture", "unexpected S3 location")
+            locations = {"metadata_location": data["metadata_location"], "data_files": data["data_files"]}
+        return {**locations, "snapshot_id": data["snapshot_id"], "snapshots": data["snapshot_count"],
                 "parquet_files": len(data["data_files"]), "row_count": len(data["rows"])}
 
     def verify(self):
@@ -252,7 +275,10 @@ class Fixture:
         until("allow commit at offset 1", lambda: self.offset() == 1)
         before = self.read_table([first])
         self.stage = "deny during failed append"
-        (self.table / "reject-append").touch()
+        if self.lakekeeper:
+            self.compose("stop", "lakekeeper")
+        else:
+            (self.table / "reject-append").touch()
         second, second_report = self.observe(self.submit(False), 1)
         rejected = self.table / "append-rejected"
         until("HTTP append rejection", rejected.exists)
@@ -265,9 +291,13 @@ class Fixture:
         code, = until("audit-sink exit", exit_status)
         check(code != 0, "sink returned success on failed append")
         check(self.offset() == 1, "Kafka group advanced during the failed append")
+        if self.lakekeeper:
+            self.compose("start", "lakekeeper")
+            until("Lakekeeper recovery", lambda: http(self.env["FIXTURE_REST_URL"] + "/health"))
         failed = self.read_table([first])
         check(failed == before, "table advanced during the failed append")
-        (self.table / "reject-append").unlink()
+        if not self.lakekeeper:
+            (self.table / "reject-append").unlink()
         self.stage = "verify recovered writer and replay"
         self.compose("start", "sink")
         until("replayed denial committed at offset 2", lambda: self.offset() == 2)
@@ -278,14 +308,18 @@ class Fixture:
         binary_hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                          for path in sorted((self.root / "bin").iterdir())}
         images = {"go_builder": BUILD_IMAGE + "@" + run("docker", "image", "inspect", "-f", "{{.Id}}", BUILD_IMAGE)}
-        for service in ("kafka", "postgres", "debezium-connect", "policy", "sink"):
+        services = ["kafka", "postgres", "debezium-connect", "policy", "sink"]
+        if self.lakekeeper:
+            services.extend(["lakekeeper", "catalog-db", "object-store"])
+        for service in services:
             images[service] = run("docker", "inspect", "-f", "{{.Config.Image}}@{{.Image}}", self.compose("ps", "-q", service))
         return {"events": [first_report, second_report], "topic": TOPIC, "consumer_group": GROUP,
                 "service_binary_sha256": binary_hashes,
                 "committed_next_offsets": {"before_failure": 1, "after_rejected_append": 1, "after_restart": 2},
                 "connector_streaming_before_first_checkpoint": True,
+                "failure_control": "stopped Lakekeeper during append" if self.lakekeeper else "pre-append rejection",
                 "injected_append_status": 503, "rejected_event_ids": rejected_ids, "failed_sink_exit_code": code,
-                "table": {"name": "of_audit.events", "catalog": "local SQLite PyIceberg", "before": before,
+                "table": {"name": "of_audit.events", "catalog": "Lakekeeper REST / RustFS S3" if self.lakekeeper else "local SQLite PyIceberg", "before": before,
                           "after_rejected_append": failed, "after_replay": after},
                 "postgres_version": self.sql("SHOW server_version;"), "kafka_connect": http(self.connect + "/")["version"],
                 "python_packages": json.loads(run(self.python, "-c", "import json,pyiceberg,pyarrow; "
@@ -307,13 +341,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="new JSON evidence file outside the checkout")
     parser.add_argument("--table-python", default=Path(sys.executable), type=Path, help="Python executable with requirements.txt installed")
+    parser.add_argument("--lakekeeper", action="store_true", help="use an isolated Lakekeeper REST catalog and RustFS S3 warehouse")
     args = parser.parse_args()
     output = args.output.resolve()
     check(not output.is_relative_to(REPO), "store evidence outside the checkout")
     with output.open("x") as evidence, tempfile.TemporaryDirectory(prefix="ofaudit-") as temp:
         report = {"revision": run("git", "rev-parse", "HEAD"), "dirty": bool(run("git", "status", "--porcelain")),
                   "result": "failed"}
-        fixture = Fixture(Path(temp).resolve(), args.table_python.absolute())
+        fixture = Fixture(Path(temp).resolve(), args.table_python.absolute(), args.lakekeeper)
         try:
             fixture.build()
             fixture.render()

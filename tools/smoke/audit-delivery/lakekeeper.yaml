@@ -1,0 +1,41 @@
+x-lakekeeper: &lakekeeper
+  image: quay.io/lakekeeper/catalog:v0.12.0
+  environment:
+    LAKEKEEPER__PG_ENCRYPTION_KEY: ${FIXTURE_PG_PASSWORD:?}
+    LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://postgres:${FIXTURE_PG_PASSWORD:?}@catalog-db:5432/postgres
+    LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://postgres:${FIXTURE_PG_PASSWORD:?}@catalog-db:5432/postgres
+
+services:
+  catalog-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: ${FIXTURE_PG_PASSWORD:?}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  catalog-migrate:
+    <<: *lakekeeper
+    command: ["migrate"]
+    depends_on:
+      catalog-db:
+        condition: service_healthy
+  object-store:
+    image: rustfs/rustfs:1.0.6
+    environment:
+      RUSTFS_ADDRESS: 0.0.0.0:${FIXTURE_S3_PORT:?}
+      RUSTFS_ACCESS_KEY: ${FIXTURE_S3_ACCESS:?}
+      RUSTFS_SECRET_KEY: ${FIXTURE_S3_SECRET:?}
+    ports:
+      - "127.0.0.1:${FIXTURE_S3_PORT:?}:${FIXTURE_S3_PORT:?}"
+      - "127.0.0.1::8181"
+  lakekeeper:
+    <<: *lakekeeper
+    command: ["serve"]
+    # The REST catalog returns the S3 endpoint to host-side readers. A shared
+    # network namespace gives both catalog and readers the same loopback URL.
+    network_mode: service:object-store
+    depends_on:
+      catalog-migrate:
+        condition: service_completed_successfully
