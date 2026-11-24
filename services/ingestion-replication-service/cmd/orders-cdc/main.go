@@ -4,7 +4,6 @@ package main
 import (
 	"bytes"
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,17 +12,16 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/openfoundry/openfoundry-go/services/ingestion-replication-service/internal/repo/orderscdc"
 	"github.com/segmentio/kafka-go"
 )
-
-//go:embed checkpoint.sql
-var schema string
 
 type worker struct {
 	dataset                                      uuid.UUID
@@ -32,15 +30,25 @@ type worker struct {
 	client                                       *http.Client
 }
 
-func (w *worker) publish(ctx context.Context, event string, c change, offset int64, rows []byte) error {
+func (w *worker) publish(ctx context.Context, event, orderID string, c change, offset int64, rows []byte) error {
 	key := "wp15:" + digest([]byte(w.topic+"\x00"+event))
 	if rows == nil {
 		rows = []byte{}
 	}
 	body, err := json.Marshal(map[string]any{
-		"idempotency_key": key, "branch": "main", "transaction_type": "SNAPSHOT", "format": "json", "summary": "PostgreSQL order change",
-		"metadata": map[string]any{"topic": w.topic, "partition": 0, "offset": offset, "lsn": c.Source.LSN, "op": c.Op},
-		"files":    []any{map[string]any{"logical_path": "orders.ndjson", "content_base64": rows, "content_type": "application/x-ndjson", "size_bytes": len(rows), "operation": "ADD"}},
+		"idempotency_key":  key,
+		"branch":           "main",
+		"transaction_type": "SNAPSHOT",
+		"format":           "json",
+		"summary":          "PostgreSQL order change",
+		"metadata": map[string]any{
+			"topic": w.topic, "partition": 0, "offset": strconv.FormatInt(offset, 10), "lsn": strconv.FormatInt(c.Source.LSN, 10),
+			"op": c.Op, "order_id": orderID, "source_event_id": event,
+		},
+		"files": []map[string]any{{
+			"logical_path": "orders.ndjson", "operation": "ADD",
+			"content_type": "application/x-ndjson", "size_bytes": len(rows), "content_base64": rows,
+		}},
 	})
 	if err != nil {
 		return err
@@ -59,7 +67,7 @@ func (w *worker) publish(ctx context.Context, event string, c change, offset int
 	if err != nil {
 		return errors.New("dataset publish unavailable")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 && resp.StatusCode != 201 {
 		return fmt.Errorf("dataset publish returned HTTP %d", resp.StatusCode)
 	}
@@ -98,10 +106,10 @@ func (w *worker) process(ctx context.Context, m kafka.Message) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var complete bool
-	var last int64
+	var last, snapshotLSN, lastLSN int64
 	var data []byte
 	var binding string
-	err = tx.QueryRow(ctx, "SELECT last_offset,rows,source_binding,bootstrap_complete FROM orders_cdc_checkpoint WHERE dataset_id=$1 FOR UPDATE", w.dataset).Scan(&last, &data, &binding, &complete)
+	err = tx.QueryRow(ctx, "SELECT last_offset,rows,source_binding,bootstrap_complete,bootstrap_lsn,last_source_lsn FROM orders_cdc_checkpoint WHERE dataset_id=$1 FOR UPDATE", w.dataset).Scan(&last, &data, &binding, &complete, &snapshotLSN, &lastLSN)
 	if err != nil {
 		return err
 	}
@@ -126,6 +134,18 @@ func (w *worker) process(ctx context.Context, m kafka.Message) error {
 		if err = json.Unmarshal(data, &orders); err != nil {
 			return err
 		}
+		// A restarted initial snapshot has a new consistent point. Discard
+		// unpublished rows collected at the abandoned point, including rows
+		// that were deleted before the new snapshot began.
+		if c.Op == "r" && c.Source.LSN != snapshotLSN {
+			if c.Source.LSN < lastLSN {
+				return errors.New("unexpected snapshot generation")
+			}
+			orders = make(map[string]order)
+			snapshotLSN = c.Source.LSN
+			complete = false
+		}
+		lastLSN = max(lastLSN, c.Source.LSN)
 		output, err := apply(orders, key, c)
 		if err != nil {
 			return err
@@ -139,7 +159,7 @@ func (w *worker) process(ctx context.Context, m kafka.Message) error {
 			return err
 		}
 		if complete {
-			if err = w.publish(ctx, event, c, m.Offset, output); err != nil {
+			if err = w.publish(ctx, event, key, c, m.Offset, output); err != nil {
 				return err
 			}
 		}
@@ -150,7 +170,7 @@ func (w *worker) process(ctx context.Context, m kafka.Message) error {
 		return err
 	}
 	if m.Offset > last {
-		if _, err = tx.Exec(ctx, "UPDATE orders_cdc_checkpoint SET last_offset=$2,rows=$3,bootstrap_complete=$4 WHERE dataset_id=$1", w.dataset, m.Offset, data, complete); err != nil {
+		if _, err = tx.Exec(ctx, "UPDATE orders_cdc_checkpoint SET last_offset=$2,rows=$3,bootstrap_complete=$4,bootstrap_lsn=$5,last_source_lsn=$6 WHERE dataset_id=$1", w.dataset, m.Offset, data, complete, snapshotLSN, lastLSN); err != nil {
 			return err
 		}
 	}
@@ -175,13 +195,18 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return errors.New("cannot connect to checkpoint database")
 	}
-	defer db.Close(ctx)
-	if _, err = db.Exec(ctx, schema); err != nil {
+	defer func() { _ = db.Close(ctx) }()
+	if err = orderscdc.Migrate(ctx, db); err != nil {
 		return err
 	}
 	prefix := os.Getenv("CDC_SOURCE_PREFIX")
 	topic := prefix + ".sales.orders"
-	w := worker{dataset: id, db: db, prefix: prefix, database: os.Getenv("CDC_SOURCE_DATABASE"), topic: topic, endpoint: strings.TrimRight(endpoint.String(), "/"), tokenFile: os.Getenv("CDC_TOKEN_FILE"), client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	w := worker{
+		dataset: id, db: db, prefix: prefix, topic: topic,
+		database: os.Getenv("CDC_SOURCE_DATABASE"), tokenFile: os.Getenv("CDC_TOKEN_FILE"),
+		endpoint: strings.TrimRight(endpoint.String(), "/"),
+		client:   &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+	}
 	if _, err = db.Exec(ctx, "INSERT INTO orders_cdc_checkpoint(dataset_id,source_binding) VALUES ($1,$2) ON CONFLICT DO NOTHING", id, topic+"/"+w.database); err != nil {
 		return err
 	}
@@ -196,8 +221,12 @@ func run(ctx context.Context) error {
 	if err != nil || len(parts) != 1 || parts[0].ID != 0 {
 		return errors.New("expected an existing single-partition order topic")
 	}
-	r := kafka.NewReader(kafka.ReaderConfig{Brokers: []string{broker}, GroupID: "orders-cdc-" + id.String(), Topic: topic, StartOffset: kafka.FirstOffset, MaxWait: time.Second, MaxBytes: 4 << 20})
-	defer r.Close()
+	r := kafka.NewReader(kafka.ReaderConfig{
+		Brokers: []string{broker}, GroupID: "orders-cdc-" + id.String(), Topic: topic,
+		StartOffset: kafka.FirstOffset, MaxWait: time.Second, MaxBytes: 4 << 20,
+		WatchPartitionChanges: true, PartitionWatchInterval: 5 * time.Second,
+	})
+	defer func() { _ = r.Close() }()
 	for {
 		msg, err := r.FetchMessage(ctx)
 		if err != nil {
@@ -211,6 +240,7 @@ func run(ctx context.Context) error {
 		}
 	}
 }
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

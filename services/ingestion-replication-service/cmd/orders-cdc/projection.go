@@ -48,7 +48,7 @@ func (o *order) UnmarshalJSON(raw []byte) error {
 	if err := json.Unmarshal(raw, (*plain)(o)); err != nil {
 		return err
 	}
-	if o.ID == "" || (o.Batch != nil && *o.Batch == "__debezium_unavailable_value") {
+	if bytes.Equal(fields["order_id"], []byte("null")) || (o.Batch != nil && *o.Batch == "__debezium_unavailable_value") {
 		return errors.New("incomplete order")
 	}
 	return nil
@@ -57,15 +57,15 @@ func (o *order) UnmarshalJSON(raw []byte) error {
 func parseChange(key, value []byte, prefix, database string) (change, string, string, error) {
 	var c change
 	var k struct {
-		ID string `json:"order_id"`
+		ID *string `json:"order_id"`
 	}
-	if json.Unmarshal(key, &k) != nil || k.ID == "" || json.Unmarshal(value, &c) != nil {
+	if json.Unmarshal(key, &k) != nil || k.ID == nil || json.Unmarshal(value, &c) != nil {
 		return c, "", "", errors.New("invalid order change or key")
 	}
 	if c.Source.Connector != "postgresql" || c.Source.Name != prefix || c.Source.Database != database || c.Source.Schema != "sales" || c.Source.Table != "orders" || c.Source.LSN <= 0 {
 		return c, "", "", errors.New("unexpected CDC source or position")
 	}
-	if (c.Before != nil && c.Before.ID != k.ID) || (c.After != nil && c.After.ID != k.ID) {
+	if (c.Before != nil && c.Before.ID != *k.ID) || (c.After != nil && c.After.ID != *k.ID) {
 		return c, "", "", errors.New("order key mismatch")
 	}
 	switch c.Op {
@@ -85,12 +85,12 @@ func parseChange(key, value []byte, prefix, database string) (change, string, st
 		return c, "", "", errors.New("unsupported CDC operation")
 	}
 	if c.Op == "r" {
-		return c, k.ID, fmt.Sprintf("snapshot:%d:%s", c.Source.LSN, k.ID), nil
+		return c, *k.ID, fmt.Sprintf("snapshot:%d:%s", c.Source.LSN, *k.ID), nil
 	}
 	if c.Transaction == nil || c.Transaction.ID == "" || c.Transaction.Order < 1 {
 		return c, "", "", errors.New("missing Debezium transaction metadata")
 	}
-	return c, k.ID, fmt.Sprintf("tx:%s:%d", c.Transaction.ID, c.Transaction.Order), nil
+	return c, *k.ID, fmt.Sprintf("tx:%s:%d", c.Transaction.ID, c.Transaction.Order), nil
 }
 
 func matches(a, b order) bool {
