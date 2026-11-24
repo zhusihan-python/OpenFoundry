@@ -1,0 +1,17 @@
+# PostgreSQL order change capture
+
+From a clean checkout run `tools/smoke/data-integration-wp1-5/run.sh` with Docker Compose, Python 3, Bash and OpenSSL. The runner builds `orders-cdc` and the dataset versioning service, creates an isolated project and prints the evidence directory. Its public outputs are `orders-report.json`, `orders-v*.ndjson` and `images.json`. The test provisions its own databases and local credentials.
+
+The starting table is `sales.orders(order_id text PRIMARY KEY, amount_cents bigint, batch text)`. PostgreSQL 16 uses pgoutput, a table-scoped publication and REPLICA IDENTITY FULL. Debezium 2.7.2.Final emits an initial snapshot followed by row changes with transaction metadata to one Kafka partition. Key and value converters emit JSON without a schema wrapper. Configure delete tombstones off and `skipped.operations=none` so an unsupported truncate stops processing. [Debezium 2.7 PostgreSQL connector](https://debezium.io/documentation/reference/2.7/connectors/postgresql.html)
+
+## Independent downstream acceptance
+
+Read the report's dataset, version, transaction and file IDs. With a reader in the same organization, scan `GET /v1/datasets/{dataset}/files/rows:scan?branch=main&version={version}&all_files=true` or download `GET /v1/datasets/{dataset}/files/{file_id}/download`. The initial version contains 0007 at 1255 cents and 0011 at zero. The final version contains 0007 at 1742 cents and 0023 at 9321 cents. Check each downloaded file against the SHA-256 recorded for its transaction. Identities and IDs are regenerated on each run.
+
+The suite pauses the worker's checkpoint update after DVS commits an order update and kills the process. On restart DVS returns the existing keyed receipt and the worker can advance its checkpoint. The suite also redelivers the original update at a later Kafka offset and checks the visible version, Kafka group position, immutable initial file, and cross-organization denial.
+
+## Worker deployment scope
+
+Build the existing ingestion image with `docker build -f services/ingestion-replication-service/Dockerfile --build-arg SERVICE_COMMAND=orders-cdc .`, or compile `./services/ingestion-replication-service/cmd/orders-cdc`. The worker environment in compose.yaml names the broker, source prefix and database, a dedicated target dataset on main, the checkpoint database, the DVS URL and a mounted writer-token file. The DVS token is reread for each publish. Keep the target dedicated to this feed and the checkpoint database durable. Use a fresh topic, group, target and state for a new source history. This Docker configuration uses an isolated plaintext Kafka listener.
+
+The worker stores the materialized rows, last Kafka offset and applied event identities in PostgreSQL. It locks the checkpoint for one destination while publishing a deterministic, primary-key-sorted NDJSON snapshot through the DVS keyed commit API. Initial rows become visible together on Debezium's final snapshot marker. After bootstrap, each supported row change publishes one version, including individual changes belonging to the same source transaction. An initially empty table produces its first version when its first order arrives. Each projection is limited to 10,000 rows and 1 MiB of NDJSON. The applied-event history grows with the number of distinct changes. A source gap, unexpected schema, mismatched before image, unsupported change or failed publish leaves the checkpoint available for diagnosis and retry.

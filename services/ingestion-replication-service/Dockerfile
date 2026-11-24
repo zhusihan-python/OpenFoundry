@@ -58,6 +58,7 @@ RUN --mount=type=cache,id=of-go-mod,target=/go/pkg/mod,sharing=locked \
 FROM modules AS builder
 
 ARG SERVICE_NAME=ingestion-replication-service
+ARG SERVICE_COMMAND=${SERVICE_NAME}
 ARG VERSION=dev
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
@@ -71,7 +72,7 @@ RUN --mount=type=bind,source=.,target=/workspace,rw \
             -ldflags "-s -w -buildid= -extldflags=-static -X main.version=${VERSION}" \
             -tags "osusergo,netgo,static_build" \
             -o /out/service \
-            ./services/${SERVICE_NAME}/cmd/${SERVICE_NAME}
+            ./services/${SERVICE_NAME}/cmd/${SERVICE_COMMAND}
 
 ############################################################
 # Stage 3 — runtime: minimal, immutable, nonroot.
