@@ -69,7 +69,7 @@ export function SnapshotRowComparison({ datasetId, base, target }: SnapshotRowCo
       <div>
         <h2 id={headingId} style={{ margin: 0, fontSize: 18 }}>Compare rows by key</h2>
         <p className="of-text-muted" style={{ margin: '4px 0 0', fontSize: 13 }}>
-          Key values must be present and unique in each snapshot. Compare up to 8,192 rows per orders.v1 Parquet snapshot.
+          Key values must be present and unique in each snapshot. Compare up to 8,192 rows per orders.v1 Parquet or noon order-line NDJSON snapshot.
         </p>
       </div>
       <form onSubmit={compare} style={{ display: 'flex', alignItems: 'end', flexWrap: 'wrap', gap: 8 }}>

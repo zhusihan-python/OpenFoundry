@@ -12,27 +12,35 @@ fi
 source_type=${1:-s3}
 orders_script="$here/orders.py"
 table_fixture=""
+gateway=0
 case "$source_type" in
   s3) ;;
   noon) orders_script="$here/../data-integration-wp2-8/noon/smoke.py" ;;
+  noon-preview) orders_script="$here/../data-integration-wp2-8/noon/preview.py"; gateway=1 ;;
   amazon) orders_script="$here/../data-integration-wp2-8/amazon/smoke.py" ;;
   lingxing) orders_script="$here/../data-integration-wp2-8/smoke.py" ;;
   postgresql) table_fixture="$here/../data-integration-wp2-5" ;;
   mysql) table_fixture="$here/../data-integration-wp2-4" ;;
-  *) echo "usage: $0 [s3|postgresql|mysql|lingxing|noon|amazon]" >&2; exit 2 ;;
+  *) echo "usage: $0 [s3|postgresql|mysql|lingxing|noon|amazon|noon-preview]" >&2; exit 2 ;;
 esac
+if (( gateway )); then
+  command -v ego-browser >/dev/null || { echo "noon-preview needs ego-browser on PATH" >&2; exit 2; }
+  [[ -f "$root/apps/web/node_modules/vite/bin/vite.js" ]] ||
+    { echo "noon-preview needs the installed web workspace: pnpm install --frozen-lockfile" >&2; exit 2; }
+fi
 state=$(mktemp -d "${TMPDIR:-/tmp}/wp23-orders.XXXXXXXX")
 export WP23_DVS_PORT
 WP23_DVS_PORT=${WP23_DVS_PORT:-$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}
 export BIN_DIR="$state/bin"
 mkdir -p "$BIN_DIR"
 project="wp23-$(openssl rand -hex 6)"
-export DB_PASSWORD JWT_SECRET CREDENTIAL_KEY STORE_ACCESS STORE_SECRET
+export DB_PASSWORD JWT_SECRET CREDENTIAL_KEY STORE_ACCESS STORE_SECRET WP23_GATEWAY_CONTAINER
 DB_PASSWORD=$(openssl rand -hex 20)
 JWT_SECRET=$(openssl rand -hex 32)
 CREDENTIAL_KEY=$(openssl rand -base64 32)
 STORE_ACCESS=$(openssl rand -hex 10)
 STORE_SECRET=$(openssl rand -hex 24)
+WP23_GATEWAY_CONTAINER="$project-gateway"
 compose=(docker compose -p "$project" -f "$here/compose.yaml")
 if [[ -n "$table_fixture" ]]; then
   export WP25_ADMIN_PASSWORD WP25_READER_PASSWORD WP25_OTHER_PASSWORD WP25_TLS
@@ -51,6 +59,7 @@ cleanup() {
     # Keep logs private in the run directory, separate from the handoff.
     "${compose[@]}" logs --no-color >"$state/services.log" 2>&1
   fi
+  if (( gateway )); then docker rm -f "$WP23_GATEWAY_CONTAINER" >/dev/null 2>&1 || true; fi
   "${compose[@]}" down -v --remove-orphans >/dev/null
   if [[ -n "$table_fixture" ]]; then
     rm -f "$WP25_TLS/server.key" "$WP25_TLS/server.crt" "$WP25_TLS/openssl.cnf"
@@ -76,12 +85,13 @@ CERT
   chmod 755 "$WP25_TLS"
   chmod 644 "$WP25_TLS/server.crt"
 fi
+build=(./services/{dataset-versioning-service,pipeline-build-service,connector-management-service}/cmd/...)
+if (( gateway )); then build+=(./services/edge-gateway-service/cmd/edge-gateway-service); fi
 docker run --rm -v "$root:/src:ro" -v "$BIN_DIR:/out" \
   -v "${WP23_GO_MOD_CACHE:-wp23-go-mod}:/go/pkg/mod" \
   -v "${WP23_GO_BUILD_CACHE:-wp23-go-build}:/root/.cache/go-build" \
   -w /src -e GOTOOLCHAIN=local -e GOFLAGS=-mod=readonly -e CGO_ENABLED=0 golang:1.26.3 \
-  go build -trimpath -buildvcs=false -tags osusergo,netgo,static_build -ldflags '-s -w -buildid=' -o /out/ \
-  ./services/{dataset-versioning-service,pipeline-build-service,connector-management-service}/cmd/...
+  go build -trimpath -buildvcs=false -tags osusergo,netgo,static_build -ldflags '-s -w -buildid=' -o /out/ "${build[@]}"
 "${compose[@]}" up -d
 "${compose[@]}" images --format json >"$state/images.json"
 (cd "$BIN_DIR" && shasum -a 256 *-service) >"$state/services.sha256"
@@ -97,6 +107,18 @@ done
 if [[ -n "$table_fixture" ]]; then
   export WP25_DB_CONTAINER
   WP25_DB_CONTAINER=$("${compose[@]}" ps -q orders-db)
+fi
+if (( gateway )); then
+  # The real edge gateway of the web page, forwarding /api to this stack's dataset service.
+  export WP23_GATEWAY WP23_GATEWAY_PORT
+  WP23_GATEWAY_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  docker run -d --name "$WP23_GATEWAY_CONTAINER" --network "${project}_default" \
+    -v "$BIN_DIR:/binaries:ro" -p "127.0.0.1:$WP23_GATEWAY_PORT:8080" \
+    -e OF_SERVER__PORT=8080 -e OF_JWT__SECRET="$JWT_SECRET" \
+    -e OF_UPSTREAM__DATASET_VERSIONING_SERVICE_URL=http://dataset:50078 \
+    --entrypoint /binaries/edge-gateway-service golang:1.26.3 >/dev/null
+  WP23_GATEWAY="http://127.0.0.1:$WP23_GATEWAY_PORT"
+  curl -fsS --retry 30 --retry-all-errors --retry-delay 1 --max-time 3 "$WP23_GATEWAY/healthz" >/dev/null
 fi
 python3 -I "$orders_script" "$state"
 test "$(git -C "$root" rev-parse HEAD)" = "$revision"

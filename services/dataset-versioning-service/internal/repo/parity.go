@@ -855,13 +855,16 @@ func (r *Repo) GetTransactionStagedFile(ctx context.Context, transactionID uuid.
 // TransactionStagedFileFormats checks the whole pinned registry without
 // downloading paths or opening objects. The caller has authorized the
 // transaction. Legacy formats are still checked by the existing NDJSON scan.
-func (r *Repo) TransactionStagedFileFormats(ctx context.Context, transactionID uuid.UUID) (hasParquet, hasOther, allDelimited bool, err error) {
+// allNDJSON holds only when the registry has files and every one of them is
+// an .ndjson or .jsonl record file.
+func (r *Repo) TransactionStagedFileFormats(ctx context.Context, transactionID uuid.UUID) (hasParquet, hasOther, allDelimited, allNDJSON bool, err error) {
 	err = r.Pool.QueryRow(ctx, `SELECT
 		COALESCE(bool_or(logical_path LIKE '%.parquet'), false),
 		COALESCE(bool_or(logical_path NOT LIKE '%.parquet'), false),
-		COALESCE(bool_and(lower(logical_path) LIKE '%.csv' OR lower(logical_path) LIKE '%.tsv'), false)
-		FROM dataset_transaction_files WHERE transaction_id = $1`, transactionID).Scan(&hasParquet, &hasOther, &allDelimited)
-	return hasParquet, hasOther, allDelimited, err
+		COALESCE(bool_and(lower(logical_path) LIKE '%.csv' OR lower(logical_path) LIKE '%.tsv'), false),
+		count(*) > 0 AND COALESCE(bool_and(lower(logical_path) LIKE '%.ndjson' OR lower(logical_path) LIKE '%.jsonl'), false)
+		FROM dataset_transaction_files WHERE transaction_id = $1`, transactionID).Scan(&hasParquet, &hasOther, &allDelimited, &allNDJSON)
+	return hasParquet, hasOther, allDelimited, allNDJSON, err
 }
 
 // ListTransactionStagedFilesFrom returns up to limit staged files of the

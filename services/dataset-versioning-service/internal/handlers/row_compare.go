@@ -75,8 +75,9 @@ type rowCompareResponse struct {
 	NextCursor       string             `json:"next_cursor,omitempty"`
 }
 
-// CompareDatasetRows compares two complete, bounded orders.v1 snapshots by a
-// single explicitly chosen unique, non-null column.
+// CompareDatasetRows compares two complete, bounded snapshots by a single
+// explicitly chosen unique, non-null column. Each snapshot is read under its
+// own sealed profile: orders.v1 Parquet or noon order-line NDJSON.
 func (h *Handlers) CompareDatasetRows(w http.ResponseWriter, r *http.Request) {
 	datasetID, ok := h.resolveDatasetForCatalog(w, r)
 	if !ok || !h.requireDatasetRead(w, r, datasetID) {
@@ -169,15 +170,8 @@ func parseRowCompareRequest(rawQuery string) (rowCompareRequest, error) {
 		}
 	}
 	request.key = query.Get("key")
-	matched := false
-	for _, field := range parquetOrdersSchema().Fields {
-		if field.Name == request.key {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		return request, fmt.Errorf("dataset_row_compare_key_invalid: select an orders.v1 column as the key")
+	if !isOrdersV1Key(request.key) && !isNoonOrderLineKey(request.key) {
+		return request, fmt.Errorf("dataset_row_compare_key_invalid: select an orders.v1 or noon order-line column as the key")
 	}
 	request.base, err = parseRowComparePin(query, "base")
 	if err != nil {
@@ -215,14 +209,26 @@ func (h *Handlers) resolveRowComparePin(w http.ResponseWriter, r *http.Request, 
 }
 
 func (h *Handlers) indexRowCompareSnapshot(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, pin rowComparePin, target *scanTarget, key, name string, limits rowCompareScanLimits) (map[string]json.RawMessage, bool) {
-	parquet, other, _, err := h.Repo.TransactionStagedFileFormats(r.Context(), target.txn.ID)
+	parquet, other, _, allNDJSON, err := h.Repo.TransactionStagedFileFormats(r.Context(), target.txn.ID)
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "failed to load staged file formats")
 		return nil, false
 	}
-	if !parquet || other {
+	// A snapshot is read only under the profile of its own staged files, chosen
+	// by the key: orders.v1 Parquet, or noon order lines when every registered
+	// file is an NDJSON record file. Any other file set, an empty registry, or
+	// a key from the other profile is rejected before a byte is read.
+	noon, profile := allNDJSON && isNoonOrderLineKey(key), "orders.v1"
+	switch {
+	case noon:
+		profile = "noon order-line"
+	case other, !parquet:
 		writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity,
-			"dataset_row_compare_format_unsupported: %s snapshot must contain orders.v1 Parquet files", name))
+			"dataset_row_compare_format_unsupported: %s snapshot must contain orders.v1 Parquet or noon order-line NDJSON files", name))
+		return nil, false
+	case !isOrdersV1Key(key):
+		writeDatasetRowsError(w, datasetRowsErr(http.StatusBadRequest,
+			"dataset_row_compare_key_invalid: select an orders.v1 column as the key of a Parquet snapshot"))
 		return nil, false
 	}
 	rows := make(map[string]json.RawMessage)
@@ -233,23 +239,23 @@ func (h *Handlers) indexRowCompareSnapshot(w http.ResponseWriter, r *http.Reques
 			writeDatasetRowsError(w, datasetRowsErr(http.StatusGatewayTimeout, "dataset_row_compare_interrupted: comparison request ended"))
 			return nil, false
 		}
-		page, ok := h.scanParquetAllFilesPage(w, r, datasetID, pin.Branch, target.branch, target.txn, pin.Version, limits.pageRows, nil, cursor)
+		page, ok := h.scanRowComparePage(w, r, datasetID, pin, target, noon, limits, cursor)
 		if !ok {
 			return nil, false
 		}
 		if len(page.Rows) > limits.maxRows-len(rows) {
 			break
 		}
-		// The strict Parquet scanner emits compact records. Normalization quotes
-		// the LONG column and may escape text, so the raw row lengths are a
-		// lower bound on the retained bytes.
+		// Both scanners emit compact records. Normalization quotes the Parquet
+		// LONG column or re-encodes an NDJSON record and may escape text, so the
+		// raw row lengths are a lower bound on the retained bytes.
 		if page.PageBytes-int64(len(page.Rows)) > int64(limits.maxBytes-bytesRetained) {
 			break
 		}
-		_, normalized, err := pinnedPreviewRows(page)
+		normalized, err := rowCompareRows(page, noon)
 		if err != nil {
 			writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity,
-				"dataset_row_compare_invalid_rows: %s snapshot has invalid orders.v1 rows", name))
+				"dataset_row_compare_invalid_rows: %s snapshot has invalid %s rows", name, profile))
 			return nil, false
 		}
 		if err := indexCompareRows(rows, normalized, key, name, &bytesRetained, limits); err != nil {

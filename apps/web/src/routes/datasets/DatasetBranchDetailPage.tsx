@@ -21,6 +21,7 @@ import {
   listDatasetTransactions,
   missingVersionTransactionIds,
   restoreBranch,
+  schemaFormatUnsupported,
   updateBranchRetention,
   type BranchCompareResponse,
   type BranchMarkingsView,
@@ -216,6 +217,14 @@ export function DatasetBranchDetailPage() {
   const sideA = useCompareSide(id, selectorA, snapshotA, canCompare);
   const sideB = useCompareSide(id, selectorB, snapshotB, canCompare);
   const sidesLoading = sideA.isFetching || sideB.isFetching;
+  // The versioned schema exists for Parquet snapshots only. Another format has
+  // no schema to diff, while its versions stay selected and their rows compare.
+  const schemaNote = (side: typeof sideA): { error?: string; notice?: string } => !side.isError ? {}
+    : schemaFormatUnsupported(side.error)
+      ? { notice: 'This file format has no schema preview for the selected version.' }
+      : { error: side.error?.message };
+  const sideANote = schemaNote(sideA);
+  const sideBNote = schemaNote(sideB);
   const twoBranches = selectorA.kind === 'branch' && selectorB.kind === 'branch';
   const showBranchComparison = canCompare && twoBranches && sideA.isSuccess && sideB.isSuccess
     && !sidesLoading && selectorA.value !== selectorB.value;
@@ -421,8 +430,10 @@ export function DatasetBranchDetailPage() {
                 branches={branches}
                 sideA={sideA.data ?? null}
                 sideB={sideB.data ?? null}
-                sideAError={sideA.error?.message}
-                sideBError={sideB.error?.message}
+                sideAError={sideANote.error}
+                sideBError={sideBNote.error}
+                sideANotice={sideANote.notice}
+                sideBNotice={sideBNote.notice}
                 selectorA={selectorA}
                 selectorB={selectorB}
                 loading={sidesLoading}
@@ -431,7 +442,8 @@ export function DatasetBranchDetailPage() {
                   : branchCompare.error?.message}
                 onChangeSelector={changeSelector}
               />
-              {snapshotA && snapshotB && !sideA.isError && !sideB.isError && (
+              {/* Rows compare by key without a schema to diff, which only Parquet snapshots serve. */}
+              {snapshotA && snapshotB && !sideANote.error && !sideBNote.error && (
                 <SnapshotRowComparison
                   key={JSON.stringify([id, snapshotA, snapshotB])}
                   datasetId={id}
