@@ -74,8 +74,10 @@ files and the no-data record.
 
 ## Known limits
 
-- The dataset service checks the length of inline content but not its hash. The handoff refuses a
-  hash mismatch and the reader confirms the hash; the service alone would not.
+- The dataset service refused a wrong declared length in this run (HTTP 400). It does not check
+  the hash of inline content: its commit handler compares `sha256` for staged files only. That is
+  read from the handler and is not asserted here. The handoff refuses a hash mismatch and the
+  reader confirms the hash.
 - Downloads are served as `application/octet-stream`. The content type is read from the head file
   index, which is why it is asserted when a registration is the head.
 - The file id in a commit receipt and in the file index is not accepted by downloads. Downloads
