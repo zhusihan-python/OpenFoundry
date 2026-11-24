@@ -20,4 +20,13 @@ The batch split and price change are local scenarios. A real S3 Connector ingest
 The harness reads its committed raw transaction, overlays that delta on the selected prior output
 version, and publishes a complete snapshot. Redelivery starts at the same committed raw transaction
 and prior version. The output report records the store, input and output identifiers, checksums and tests.
+
+One pipeline then builds a downstream projection of the published order lines.
+Its input node pins a published version of that dataset, a select node keeps the store, market, order number, item number, unit price and currency,
+and its output node publishes to a new dataset. The same pipeline runs three times: v1, then v2, then v1 again while v2 is still the head.
+Before each run the harness reads the saved input binding. The input node result must report the same dataset, branch, version and transaction.
+After the last run the independent reader maps each output version to its transaction, rescans it and downloads the file bound to that transaction.
+The replay of v1 must match the original bytes and differ from v2. The report's `pipeline` section records the pipeline ID,
+the three run IDs, input and output transactions, versions, file IDs, rows and checksums.
+The `pipeline-*-input-v*.ndjson` files are the downloaded outputs.
 This run exercises the handoff using local Docker services. Live noon extraction and production scheduling are outside its scope.

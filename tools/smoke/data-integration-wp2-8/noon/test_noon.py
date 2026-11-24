@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from smoke import HERE, expected, materialize
+from smoke import COLUMNS, HERE, expected, materialize, projection
 
 
 class OrderLiveReplay(unittest.TestCase):
@@ -19,6 +19,15 @@ class OrderLiveReplay(unittest.TestCase):
         result = materialize([], [self.rows[0], second])
         self.assertEqual([row["order_nr"] for row in result], ["NRPL0001", "NRPL0001"])
         self.assertEqual(len({row["item_nr"] for row in result}), 2)
+
+    def test_projection(self):
+        for version, count, price in ((1, 3, "49"), (2, 5, "49.25")):
+            rows = projection(version)
+            self.assertEqual(list(rows[0]), COLUMNS)
+            self.assertEqual(len({(row["store"], row["market"], row["item_nr"]) for row in rows}), count)
+            self.assertEqual((rows[0]["item_nr"], rows[0]["currency"], rows[0]["unit_price"]),
+                             ("NRPL0001-1", "AED", price))
+            self.assertTrue(all(isinstance(row["unit_price"], str) for row in rows))
 
     def test_invalid_batch(self):
         for delta in ([self.rows[0], self.rows[0]], [dict(self.rows[0], currency_code="")],
