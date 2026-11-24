@@ -10,7 +10,7 @@ if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
   exit 1
 fi
 source_type=${1:-s3}
-case "$source_type" in s3|postgresql|mysql) ;; *) echo "usage: $0 [s3|postgresql|mysql]" >&2; exit 2;; esac
+case "$source_type" in s3|postgresql|mysql|lingxing) ;; *) echo "usage: $0 [s3|postgresql|mysql|lingxing]" >&2; exit 2;; esac
 state=$(mktemp -d "${TMPDIR:-/tmp}/wp23-orders.XXXXXXXX")
 export WP23_DVS_PORT
 WP23_DVS_PORT=${WP23_DVS_PORT:-$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}
@@ -25,14 +25,18 @@ STORE_ACCESS=$(openssl rand -hex 10)
 STORE_SECRET=$(openssl rand -hex 24)
 compose=(docker compose -p "$project" -f "$here/compose.yaml")
 orders_script="$here/orders.py"
-if [[ "$source_type" != s3 ]]; then
+table_fixture=""
+case "$source_type" in
+  lingxing) orders_script="$here/../data-integration-wp2-8/smoke.py" ;;
+  postgresql) table_fixture="$here/../data-integration-wp2-5" ;;
+  mysql) table_fixture="$here/../data-integration-wp2-4" ;;
+esac
+if [[ -n "$table_fixture" ]]; then
   export WP25_ADMIN_PASSWORD WP25_READER_PASSWORD WP25_OTHER_PASSWORD WP25_TLS
   WP25_ADMIN_PASSWORD=$(openssl rand -hex 24)
   WP25_READER_PASSWORD=$(openssl rand -hex 24)
   WP25_OTHER_PASSWORD=$(openssl rand -hex 24)
   WP25_TLS=$(mktemp -d)
-  table_fixture="$here/../data-integration-wp2-5"
-  if [[ "$source_type" == mysql ]]; then table_fixture="$here/../data-integration-wp2-4"; fi
   compose+=(-f "$table_fixture/compose.yaml")
   orders_script="$table_fixture/orders.py"
 fi
@@ -45,13 +49,13 @@ cleanup() {
     "${compose[@]}" logs --no-color >"$state/services.log" 2>&1
   fi
   "${compose[@]}" down -v --remove-orphans >/dev/null
-  if [[ "$source_type" != s3 ]]; then
+  if [[ -n "$table_fixture" ]]; then
     rm -f "$WP25_TLS/server.key" "$WP25_TLS/server.crt" "$WP25_TLS/openssl.cnf"
     rmdir "$WP25_TLS"
   fi
 }
 trap cleanup EXIT
-if [[ "$source_type" != s3 ]]; then
+if [[ -n "$table_fixture" ]]; then
   cat > "$WP25_TLS/openssl.cnf" <<'CERT'
 [req]
 prompt=no
@@ -87,7 +91,7 @@ WP23_STORE=$(endpoint store 9000)
 for url in "$WP23_DVS/healthz" "$WP23_PBS/healthz" "$WP23_CONNECTOR/healthz" "$WP23_STORE/health"; do
   curl -fsS --retry 30 --retry-all-errors --retry-delay 1 --max-time 3 "$url" >/dev/null
 done
-if [[ "$source_type" != s3 ]]; then
+if [[ -n "$table_fixture" ]]; then
   export WP25_DB_CONTAINER
   WP25_DB_CONTAINER=$("${compose[@]}" ps -q orders-db)
 fi
