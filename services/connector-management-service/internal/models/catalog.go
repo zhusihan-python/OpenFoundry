@@ -136,7 +136,7 @@ func CertificationSummary() ConnectorCertificationSummary {
 	return ConnectorCertificationSummary{CertifiedConnectors: certified, AdvancedConnectors: advanced, ConnectorsNeedingHardening: len(profiles) - certified - advanced, TemplateFamilies: families}
 }
 
-type SnapshotRuntimes struct{ S3, Postgres bool }
+type SnapshotRuntimes struct{ S3, Postgres, MySQL bool }
 
 func BuildGalleryCatalog(enabled SnapshotRuntimes) GalleryCatalog {
 	profiles := ConnectorProfiles()
@@ -154,7 +154,7 @@ func ToGalleryConnector(profile ConnectorContractProfile, enabled SnapshotRuntim
 		case "batch", "incremental":
 			// This badge advertises the native sync endpoint. Other profiles
 			// may describe upstream agent features or catalog-only adapters.
-			if profile.ConnectorType == "rest_api" || (profile.ConnectorType == "s3" && enabled.S3) || ((profile.ConnectorType == "postgresql" || profile.ConnectorType == "postgres") && enabled.Postgres) {
+			if (profile.ConnectorType == "mysql" && enabled.MySQL) || profile.ConnectorType == "rest_api" || (profile.ConnectorType == "s3" && enabled.S3) || ((profile.ConnectorType == "postgresql" || profile.ConnectorType == "postgres") && enabled.Postgres) {
 				capabilities = append(capabilities, "batch_sync")
 			}
 		case "streaming":

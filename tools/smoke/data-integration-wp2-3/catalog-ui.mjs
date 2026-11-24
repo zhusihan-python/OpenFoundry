@@ -9,13 +9,13 @@ await page.goto(input.origin + "/login");
 await page.evaluate((jwt) => localStorage.setItem("of_access_token", jwt), token);
 await page.goto(input.origin + "/data-connection/new");
 const postgres = report.connector === "postgresql";
-const cardsReady = (pgEnabled) => {
+const cardsReady = (connector) => {
   const cards = [...document.querySelectorAll("li button")];
   const matching = (name) => cards.filter(el => el.querySelector("strong")?.textContent === name);
   return matching("Amazon S3").some(el => el.textContent.includes("Batch sync")) &&
-    matching("PostgreSQL").length > 0 && matching("PostgreSQL").every(el => el.textContent.includes("Batch sync") === pgEnabled);
+    ["PostgreSQL","MySQL"].every(name => matching(name).length > 0 && matching(name).every(el => el.textContent.includes("Batch sync") === (name.toLowerCase() === connector)));
 };
-await page.waitForFunction(cardsReady, postgres, { timeout: 30000 });
+await page.waitForFunction(cardsReady, report.connector, { timeout: 30000 });
 await page.goto(input.origin + "/data-connection/sources/" + report.source_id);
 await page.waitForFunction(() => [...document.querySelectorAll("button")].some(el => el.textContent.trim().toLowerCase() === "capabilities"));
 await page.evaluate(() => [...document.querySelectorAll("button")].find(el => el.textContent.trim().toLowerCase() === "capabilities").click());
@@ -31,5 +31,5 @@ const requests = await page.evaluate(() => performance.getEntriesByType("resourc
 if (!requests.some(path => path.includes(report.source_id))) throw new Error("No source-specific capability request");
 await fs.writeFile(input.state + "/browser-checks.json", JSON.stringify({
   source: report.source_id, requests, real_connector: true, identity_bootstrap: "Vite fixture",
-  gallery_s3_batch: true, gallery_postgres_batch: postgres, configured_source_batch: true, configured_source_exploration: false,
+  gallery_s3_batch: true, gallery_postgres_batch: postgres, gallery_mysql_batch: report.connector === "mysql", configured_source_batch: true, configured_source_exploration: false,
 }, null, 2));

@@ -101,6 +101,7 @@ type RuntimeConfig struct {
 	NetworkBoundaryServiceURL    string
 	SyncPollIntervalSecs         uint64
 	AllowPrivateNetworkEgress    bool
+	MySQLSyncEndpoint            string
 	PostgresSyncEndpoint         string
 	S3SyncEndpoint               string
 	S3SyncRegion                 string
@@ -287,7 +288,7 @@ func (h *Handlers) notImplemented(w http.ResponseWriter, r *http.Request, code s
 }
 
 func (h *Handlers) GetConnectorCatalog(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, models.BuildGalleryCatalog(models.SnapshotRuntimes{S3: h.Config.S3SyncEndpoint != "", Postgres: h.Config.PostgresSyncEndpoint != ""}))
+	writeJSON(w, http.StatusOK, models.BuildGalleryCatalog(models.SnapshotRuntimes{MySQL: h.Config.MySQLSyncEndpoint != "", S3: h.Config.S3SyncEndpoint != "", Postgres: h.Config.PostgresSyncEndpoint != ""}))
 }
 
 func (h *Handlers) GetConnectorContracts(w http.ResponseWriter, r *http.Request) {
@@ -326,7 +327,7 @@ func (h *Handlers) GetConnectionCapabilities(w http.ResponseWriter, r *http.Requ
 		writeJSONErr(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	contract, ok := models.ConnectorProfile(connection.ConnectorType)
+	contract, ok := models.ConnectorProfile(connectorTypeKey(connection.ConnectorType))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no connector contract available for " + connection.ConnectorType})
 		return
@@ -371,7 +372,7 @@ func (h *Handlers) connectionEffectiveCapabilities(connection models.Connection,
 		PolicyWarnings:              warnings,
 		FoundryCompute:              models.FoundryCompute{PythonSingleNode: true, PythonSpark: true, PipelineBuilderSingleNode: true, PipelineBuilderSpark: true},
 	}
-	switch strings.ToLower(strings.ReplaceAll(connection.ConnectorType, "-", "_")) {
+	switch connectorTypeKey(connection.ConnectorType) {
 	case "rest_api":
 		source, err := models.ParseRESTAPISourceConfig(connection.Config)
 		effective.NativeSnapshotSync = err == nil && source.Sync != nil
@@ -380,10 +381,10 @@ func (h *Handlers) connectionEffectiveCapabilities(connection models.Connection,
 		if err == nil && source != nil {
 			setTableSnapshotCapabilities(&effective, h.Config.S3SyncEndpoint != "")
 		}
-	case "postgresql", "postgres":
-		source, err := models.ParsePostgresSnapshotSource(connection.Config)
+	case "postgresql", "postgres", "mysql":
+		source, endpoint, err := h.tableSource(&connection)
 		if err == nil && source != nil {
-			setTableSnapshotCapabilities(&effective, h.Config.PostgresSyncEndpoint != "")
+			setTableSnapshotCapabilities(&effective, endpoint != "")
 		}
 	}
 	return effective
@@ -1175,10 +1176,17 @@ func (h *Handlers) UpdateConnection(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
+func connectorTypeKey(raw string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(raw), "-", "_"))
+}
+
 func normalizeConnectionConfig(connectorType string, raw json.RawMessage) (json.RawMessage, error) {
-	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(connectorType), "-", "_")) {
+	switch connectorTypeKey(connectorType) {
 	case "s3":
 		_, err := models.ParseS3SnapshotSource(raw)
+		return raw, err
+	case "mysql":
+		_, err := models.ParseMySQLSnapshotSource(raw)
 		return raw, err
 	case "postgresql", "postgres":
 		_, err := models.ParsePostgresSnapshotSource(raw)

@@ -24,18 +24,26 @@ import (
 // PostgresEndpoint accepts a single operator-owned TCP destination. Client credentials,
 // pgx options, alternate hosts and local sockets cannot be supplied through this URL.
 func PostgresEndpoint(raw string, allowed []string, private bool) (*url.URL, error) {
+	return databaseEndpoint(raw, "postgresql", allowed, private)
+}
+
+func MySQLEndpoint(raw string, allowed []string, private bool) (*url.URL, error) {
+	return databaseEndpoint(raw, "mysql", allowed, private)
+}
+
+func databaseEndpoint(raw, scheme string, allowed []string, private bool) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, errors.New("invalid PostgreSQL endpoint")
+		return nil, errors.New("invalid database endpoint")
 	}
 	database := strings.TrimPrefix(u.Path, "/")
-	if u.Scheme != "postgresql" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(u.Host, ",%/\\") || database == "" || strings.ContainsAny(database, "/\x00") || strings.HasSuffix(u.Host, ":") {
-		return nil, errors.New("expected PostgreSQL endpoint postgresql://host[:port]/database")
+	if u.Scheme != scheme || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(u.Host, ",%/\\") || database == "" || strings.ContainsAny(database, "/\x00") || strings.HasSuffix(u.Host, ":") {
+		return nil, fmt.Errorf("expected %s://host[:port]/database", scheme)
 	}
 	if port := u.Port(); port != "" {
 		n, err := strconv.ParseUint(port, 10, 16)
 		if err != nil || n == 0 {
-			return nil, errors.New("invalid PostgreSQL port")
+			return nil, errors.New("invalid database port")
 		}
 	}
 	policy := http_runtime.EgressPolicy{AllowedHosts: allowed, AllowPrivateNetworks: private}
@@ -45,16 +53,16 @@ func PostgresEndpoint(raw string, allowed []string, private bool) (*url.URL, err
 	return u, nil
 }
 
-type PostgresSnapshotOptions struct {
+type TableSnapshotOptions struct {
 	Endpoint             *url.URL
-	Table                models.PostgresTable
+	Table                models.SnapshotTable
 	User, Password       string
 	AllowPrivateNetworks bool
 	BeforeRead           func(context.Context) error
 }
 
 // pgx resolves a host into individual numeric addresses before calling DialFunc.
-func postgresDialAddressAllowed(network, address string, allowPrivate bool) bool {
+func databaseDialAddressAllowed(network, address string, allowPrivate bool) bool {
 	if network != "tcp" {
 		return false
 	}
@@ -83,7 +91,7 @@ JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum
 WHERE n.nspname=$1 AND c.relname=$2 AND c.relkind IN ('r','p') AND k.ord<=i.indnkeyatts
 GROUP BY c.relkind, i.indexrelid`
 
-func FetchPostgresSnapshot(ctx context.Context, opts PostgresSnapshotOptions) (*SnapshotResult, error) {
+func FetchPostgresSnapshot(ctx context.Context, opts TableSnapshotOptions) (*SnapshotResult, error) {
 	if opts.Endpoint == nil || opts.User == "" || opts.Password == "" {
 		return nil, errors.New("missing PostgreSQL endpoint or source credential")
 	}
@@ -98,7 +106,7 @@ func FetchPostgresSnapshot(ctx context.Context, opts PostgresSnapshotOptions) (*
 	if port := u.Port(); port != "" {
 		p, err := strconv.ParseUint(port, 10, 16)
 		if err != nil {
-			return nil, errors.New("invalid PostgreSQL port")
+			return nil, errors.New("invalid database port")
 		}
 		cfg.Port = uint16(p)
 	}
@@ -108,7 +116,7 @@ func FetchPostgresSnapshot(ctx context.Context, opts PostgresSnapshotOptions) (*
 	cfg.Fallbacks = nil
 	dial := cfg.DialFunc
 	cfg.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-		if !postgresDialAddressAllowed(network, address, opts.AllowPrivateNetworks) {
+		if !databaseDialAddressAllowed(network, address, opts.AllowPrivateNetworks) {
 			return nil, errors.New("PostgreSQL address blocked by egress policy")
 		}
 		return dial(ctx, network, address)

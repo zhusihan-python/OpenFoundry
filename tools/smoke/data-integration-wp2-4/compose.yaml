@@ -1,0 +1,28 @@
+services:
+  orders-db:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: sales
+      MYSQL_ROOT_PASSWORD: ${WP25_ADMIN_PASSWORD:?}
+    volumes:
+      - ${WP25_TLS:?}:/fixture-tls:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        install -m 0600 -o mysql /fixture-tls/server.key /tmp/orders.key
+        exec docker-entrypoint.sh mysqld --lower-case-table-names=${WP24_CASE_MODE:-1} --require-secure-transport=ON --ssl-ca=/fixture-tls/server.crt --ssl-cert=/fixture-tls/server.crt --ssl-key=/tmp/orders.key --max-allowed-packet=32M
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+  connector:
+    environment:
+      MYSQL_SYNC_ENDPOINT: mysql://orders-db:3306/sales
+      ALLOWED_EGRESS_HOSTS: store,orders-db
+      SSL_CERT_FILE: /fixture-ca/orders.crt
+    volumes:
+      - ${WP25_TLS:?}/server.crt:/fixture-ca/orders.crt:ro
+    depends_on:
+      orders-db:
+        condition: service_healthy
