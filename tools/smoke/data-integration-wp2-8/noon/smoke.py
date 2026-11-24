@@ -1,4 +1,4 @@
-"""Single-store noon order_live replay through S3 Connector and versioned Dataset APIs."""
+"""Single-store noon order_live replay through S3 Connector, versioned Dataset APIs and a pinned Pipeline."""
 import base64
 from decimal import Decimal
 import hashlib
@@ -18,6 +18,7 @@ spec.loader.exec_module(s3)
 STORE = "RPL01-NAE"
 BUCKET = "noon-order-live"
 KEY = "exports/order-lines.ndjson"
+COLUMNS = ["store", "market", "order_nr", "item_nr", "unit_price", "currency"]
 
 
 def encode(rows):
@@ -53,14 +54,28 @@ def expected(version):
             for i in range(1, (3 if version == 1 else 5) + 1)]
 
 
+def projection(version):
+    # Downstream order lines keep their key, currency and unit price.
+    return [{column: row[column] for column in COLUMNS} for row in expected(version)]
+
+
+def line_price_nodes(graph, source, out, published):
+    nodes = graph.graph_nodes(source, published["version"], published["transaction"], out)
+    nodes.insert(1, {"id": "project-lines", "label": "Publish order line prices", "depends_on": ["input"],
+                     "transform_type": "select", "config": {"columns": COLUMNS}})
+    nodes[-1]["depends_on"] = ["project-lines"]
+    return nodes
+
+
 def main(state):
     p1 = s3.module("noon_p1", SMOKE / "business-platform-p1/smoke/smoke.py")
-    p1.BASES.update(dataset=os.environ["WP23_DVS"], connector=os.environ["WP23_CONNECTOR"])
+    p1.BASES.update(dataset=os.environ["WP23_DVS"], pipeline=os.environ["WP23_PBS"], connector=os.environ["WP23_CONNECTOR"])
     p1.SECRET_BYTES = os.environ["JWT_SECRET"].encode()
     ids = p1.build_identities()
     owner = ids["user_a"].token
     reader = p1.mint_token(org=ids["org_a"], permissions=[])
-    os.environ.update(WP34_TOKEN=reader, WP34_DVS=p1.BASES["dataset"], WP34_EVIDENCE=str(state), WP34_PROJECT="noon")
+    os.environ.update(WP34_TOKEN=reader, WP34_DVS=p1.BASES["dataset"], WP34_PBS=p1.BASES["pipeline"],
+                      WP34_EVIDENCE=str(state), WP34_PROJECT="noon")
     graph = s3.module("noon_graph", SMOKE / "data-integration-wp3-4/harness34.py")
     raw = p1.create_dataset(owner, "noon incoming batches", "json")["id"]
     target = p1.create_dataset(owner, "noon AE order lines", "json")["id"]
@@ -149,6 +164,76 @@ def main(state):
         (state / f"published-v{v}.ndjson").write_bytes(response.body)
         batch["sha256"] = hashlib.sha256(response.body).hexdigest()
         check(f"other tenant cannot download v{v}", p1.download_file(ids["user_b"].token, target, batch["file"]).status in (403,404))
+
+    # One pipeline reads the published order lines, not the raw batches: v1, then v2, then v1 again.
+    down = p1.create_dataset(owner, "noon AE order line prices", "json")["id"]
+    pipeline = report["pipeline"] = dict(pipeline_id=None, output_dataset=down, columns=COLUMNS, builds=[])
+    known = {v["transaction_id"] for v in graph.list_versions(down)}
+    for ordinal, batch in enumerate((report["batches"][0], report["batches"][1], report["batches"][0]), 1):
+        rows = projection(batch["version"])
+        nodes = line_price_nodes(graph, target, down, batch)
+        graph.TOKEN = owner
+        try:
+            if pipeline["pipeline_id"] is None:
+                pipeline["pipeline_id"] = graph.create_pipeline("noon-line-prices", nodes)
+            else:
+                graph.http("PATCH", f"{graph.PBS}/api/v1/pipelines/{pipeline['pipeline_id']}", {"nodes": nodes})
+            _, saved = graph.http("GET", f"{graph.PBS}/api/v1/pipelines/{pipeline['pipeline_id']}")
+            config = next(n["config"] for n in saved["dag"]["nodes"] if n["id"] == "input")
+            run = graph.run_pipeline(pipeline["pipeline_id"])
+        finally:
+            graph.TOKEN = reader
+        if run["status"] != "succeeded":
+            print(json.dumps(run, indent=2), file=sys.stderr)
+        pid = pipeline["pipeline_id"]
+        check(f"pipeline run {ordinal} succeeded", run["status"] == "succeeded")
+        observed = next(n["output"] for n in run["node_results"] if n["node_id"] == "input")
+        check(f"pipeline run {ordinal} bound published v{batch['version']} in its saved input and node result",
+              run["pipeline_id"] == pid and run["id"] == run["run_id"]
+              and config["dataset_id"] == target and config["dataset_snapshot"] == nodes[0]["config"]["dataset_snapshot"]
+              and observed["dataset_rid"].removeprefix("ri.foundry.main.dataset.") == target
+              and observed["dataset_branch"] == "main"
+              and observed["dataset_version"] == batch["version"]
+              and observed["dataset_transaction_id"] == "ri.foundry.main.transaction." + batch["transaction"])
+        produced, = [v for v in graph.list_versions(down) if v["transaction_id"] not in known]
+        known.add(produced["transaction_id"])
+        resource, = next(n for n in run["node_results"] if n["node_id"] == "output")["output_resources"]
+        metadata = graph.get_output_transaction(down, produced["transaction_id"])["metadata"]
+        check(f"pipeline run {ordinal} committed the projection as output v{produced['version']}",
+              resource["status"] == "committed" and resource["rid"].removeprefix("ri.foundry.main.dataset.") == down
+              and metadata["pipeline_rid"] == pid and metadata["transaction_rid"] == resource["transaction_rid"])
+        file, = [f for f in p1.list_files(reader, down) if f.get("transaction_id") == produced["transaction_id"]]
+        response = p1.download_file(reader, down, file["id"])
+        check(f"pipeline run {ordinal} published the {len(rows)} expected order lines of published v{batch['version']}",
+              response.status == 200 and response.body == encode(rows)
+              and graph.scan_all(down, produced["version"])["rows"] == rows)
+        artifact = f"pipeline-{ordinal}-input-v{batch['version']}.ndjson"
+        (state / artifact).write_bytes(response.body)
+        pipeline["builds"].append(dict(pipeline_run_id=run["id"], input_branch=observed["dataset_branch"],
+                                       input_dataset=target, input_version=observed["dataset_version"],
+                                       input_transaction=batch["transaction"], output_version=produced["version"],
+                                       output_transaction=produced["transaction_id"],
+                                       pipeline_output_transaction_rid=resource["transaction_rid"],
+                                       output_file_id=file["id"], artifact=artifact, rows=rows,
+                                       row_count=len(rows), sha256=hashlib.sha256(response.body).hexdigest()))
+
+    first, latest, replay = pipeline["builds"]
+    versions = {v["version"]: v["transaction_id"] for v in graph.list_versions(down)}
+    for build in pipeline["builds"]:
+        wanted = projection(build["input_version"])
+        response = p1.download_file(reader, down, build["output_file_id"])
+        check(f"independent reader scans and downloads exact pipeline output v{build['output_version']}",
+              versions[build["output_version"]] == build["output_transaction"] and response.status == 200
+              and response.body == encode(wanted) and graph.scan_all(down, build["output_version"])["rows"] == wanted)
+    check("three pipeline runs published distinct output versions and transactions",
+          [b["input_version"] for b in pipeline["builds"]] == [1, 2, 1] and sorted(versions) == [1, 2, 3]
+          and all(len({b[field] for b in pipeline["builds"]}) == 3
+                  for field in ("pipeline_run_id", "output_version", "output_transaction", "output_file_id")))
+    check("v1 replay matches the first v1 bytes and differs from v2",
+          first["input_transaction"] == replay["input_transaction"] != latest["input_transaction"]
+          and first["sha256"] == replay["sha256"] != latest["sha256"]
+          and (state / first["artifact"]).read_bytes() == (state / replay["artifact"]).read_bytes()
+          and (state / first["artifact"]).read_bytes() != (state / latest["artifact"]).read_bytes())
     s3.write_json(state / "noon-report.json", report)
 
 
