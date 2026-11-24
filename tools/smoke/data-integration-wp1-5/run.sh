@@ -24,8 +24,10 @@ cleanup(){
   rmdir "$CDC_SECRETS"
 }
 trap cleanup EXIT
-docker run --rm -v "$root:/src:ro" -v "$BIN_DIR:/out" -v "${WP23_GO_MOD_CACHE:-wp23-go-mod}:/go/pkg/mod" -v "${WP23_GO_BUILD_CACHE:-wp23-go-build}:/root/.cache/go-build" -w /src -e CGO_ENABLED=0 -e GOTOOLCHAIN=local golang:1.25.14 go build -mod=readonly -trimpath -buildvcs=false -o /out/ ./services/ingestion-replication-service/cmd/orders-cdc ./services/dataset-versioning-service/cmd/dataset-versioning-service
-(cd "$BIN_DIR" && shasum -a 256 orders-cdc dataset-versioning-service) >"$state/services.sha256"
+docker run --rm -v "$root:/src:ro" -v "$BIN_DIR:/out" -v "${WP23_GO_MOD_CACHE:-wp23-go-mod}:/go/pkg/mod" -v "${WP23_GO_BUILD_CACHE:-wp23-go-build}:/root/.cache/go-build" -w /src -e CGO_ENABLED=0 -e GOTOOLCHAIN=local golang:1.25.14 go build -mod=readonly -trimpath -buildvcs=false -o /out/ ./services/ingestion-replication-service/cmd/orders-cdc ./services/dataset-versioning-service/cmd/dataset-versioning-service ./services/pipeline-build-service/cmd/pipeline-build-service
+(cd "$BIN_DIR" && shasum -a 256 orders-cdc dataset-versioning-service pipeline-build-service) >"$state/services.sha256"
 docker compose up -d --wait source postgres kafka connect dataset
+docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U openfoundry -d datasets -c "CREATE DATABASE pipelines"
+docker compose up -d --wait pipeline
 docker compose images --format json >"$state/images.json"
 python3 -I "$here/orders.py" "$state"

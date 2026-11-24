@@ -68,12 +68,17 @@ def s3_request(method, path, body=None, signed=True, credentials=None):
     return int(subprocess.check_output(cmd, input=config.encode(), timeout=15))
 
 
-def verify_pinned_output(state, p1, graph, downstream, raw, out, first, check, report):
-    # Construct the pinned pipeline AFTER v2 exists. Reading the head would give wrong amounts.
-    nodes = graph.graph_nodes(raw, first["version"], first["transaction"], out)
+def order_amount_nodes(graph, raw, out, snapshot):
+    nodes = graph.graph_nodes(raw, snapshot["version"], snapshot["transaction"], out)
     nodes.insert(1, {"id": "project-orders", "label": "Publish order amounts", "depends_on": ["input"],
                      "transform_type": "select", "config": {"columns": ["order_id", "amount_cents"]}})
     nodes[-1]["depends_on"] = ["project-orders"]
+    return nodes
+
+
+def verify_pinned_output(state, p1, graph, downstream, raw, out, first, check, report):
+    # Construct the pinned pipeline AFTER v2 exists. Reading the head would give wrong amounts.
+    nodes = order_amount_nodes(graph, raw, out, first)
     pid = graph.create_pipeline("order-amounts", nodes)
     built = graph.run_pipeline(pid)
     check(f"pinned pipeline succeeded ({built.get('status')} / {built.get('error_message') or ''})",
