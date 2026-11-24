@@ -1,4 +1,5 @@
 """Real pgoutput -> Kafka -> DVS, including process loss after a durable publish."""
+from functools import partial
 import hashlib
 import importlib.util
 import json
@@ -54,6 +55,12 @@ def main():
     dataset=p1.create_dataset(owner,"CDC orders","json")["id"]
     os.environ.update(CDC_DATASET_ID=dataset,WP34_PROJECT="wp15",WP34_TOKEN=reader,WP34_DVS=dvs,WP34_EVIDENCE=str(STATE))
     graph=fixture.module("wp15_graph",HERE.parent/"data-integration-wp3-4/harness34.py")
+    graph.PBS="http://"+compose("port","pipeline","50081").strip()
+    wait("Pipeline Build ready",lambda:urlopen(graph.PBS+"/healthz",timeout=3).status==200)
+    pinned_builds=fixture.module("wp15_pinned",HERE/"pinned_builds.py")
+    handoff={"input_dataset":dataset,"output_dataset":p1.create_dataset(owner,"CDC order amounts","json")["id"],
+             "builds":[]}
+    build_orders = partial(pinned_builds.build, STATE, fixture, p1, graph, handoff, owner, reader)
     (Path(os.environ["CDC_SECRETS"])/"writer").write_text(owner)
     report={"revision":subprocess.check_output(["git","-C",str(HERE),"rev-parse","HEAD"],text=True).strip(),
             "dirty":bool(subprocess.check_output(["git","-C",str(HERE),"status","--porcelain"])),
@@ -138,6 +145,7 @@ def main():
     first,second=fixture.SAMPLES
     check("initial snapshot published as one complete version",len(versions())==1)
     pinned=read("independent reader sees both initial orders",first)
+    build_orders(report["versions"][0],first)
     source("INSERT INTO sales.orders VALUES ('0023',9321,'second')")
     wait("insert applied",lambda:position()==base+1)
     read("insert visible at a new version",first+[second[1]])
@@ -163,6 +171,9 @@ def main():
     source("DELETE FROM sales.orders WHERE order_id='0011'")
     wait("delete applied",lambda:position()==base+3)
     final=read("delete removed only the intended order",second)
+    build_orders(report["versions"][-1],second)
+    build_orders(report["versions"][0],first)
+    pinned_builds.verify_replay(STATE,p1,graph,reader,handoff,report["revision"])
     check("pinned initial version survives changes and restart",graph.scan_all(dataset,pinned)["rows"]==first)
     path=f"/v1/datasets/{dataset}/files/rows:scan?branch=main&version={final}&all_files=true"
     check("foreign tenant cannot scan CDC output",p1.http("dataset",path,token=foreign).status in (403,404))
