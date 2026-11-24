@@ -10,7 +10,16 @@ if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
   exit 1
 fi
 source_type=${1:-s3}
-case "$source_type" in s3|postgresql|mysql|lingxing) ;; *) echo "usage: $0 [s3|postgresql|mysql|lingxing]" >&2; exit 2;; esac
+orders_script="$here/orders.py"
+table_fixture=""
+case "$source_type" in
+  s3) ;;
+  noon) orders_script="$here/../data-integration-wp2-8/noon/smoke.py" ;;
+  lingxing) orders_script="$here/../data-integration-wp2-8/smoke.py" ;;
+  postgresql) table_fixture="$here/../data-integration-wp2-5" ;;
+  mysql) table_fixture="$here/../data-integration-wp2-4" ;;
+  *) echo "usage: $0 [s3|postgresql|mysql|lingxing|noon]" >&2; exit 2 ;;
+esac
 state=$(mktemp -d "${TMPDIR:-/tmp}/wp23-orders.XXXXXXXX")
 export WP23_DVS_PORT
 WP23_DVS_PORT=${WP23_DVS_PORT:-$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}
@@ -24,13 +33,6 @@ CREDENTIAL_KEY=$(openssl rand -base64 32)
 STORE_ACCESS=$(openssl rand -hex 10)
 STORE_SECRET=$(openssl rand -hex 24)
 compose=(docker compose -p "$project" -f "$here/compose.yaml")
-orders_script="$here/orders.py"
-table_fixture=""
-case "$source_type" in
-  lingxing) orders_script="$here/../data-integration-wp2-8/smoke.py" ;;
-  postgresql) table_fixture="$here/../data-integration-wp2-5" ;;
-  mysql) table_fixture="$here/../data-integration-wp2-4" ;;
-esac
 if [[ -n "$table_fixture" ]]; then
   export WP25_ADMIN_PASSWORD WP25_READER_PASSWORD WP25_OTHER_PASSWORD WP25_TLS
   WP25_ADMIN_PASSWORD=$(openssl rand -hex 24)
