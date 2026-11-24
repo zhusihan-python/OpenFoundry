@@ -32,3 +32,7 @@ A MySQL 8.4 source can publish successive InnoDB order snapshots. A downstream r
 ## PostgreSQL order snapshots
 
 PostgreSQL table snapshots can publish two versions of the same order table and feed a version-pinned downstream pipeline. The connector reads one primary-keyed table using a source-scoped login and verified TLS. [Reproducible PostgreSQL acceptance](../../tools/smoke/data-integration-wp2-5/README.md)
+
+## PostgreSQL order CDC
+
+A single-partition Debezium feed can publish an initial order snapshot and subsequent insert, update and delete versions through the dataset service. A reader can pin any published version, compare its order rows and download the transaction's file. [Docker acceptance and worker scope](../../tools/smoke/data-integration-wp1-5/README.md)
