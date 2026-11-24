@@ -1,0 +1,4 @@
+﻿"All amounts in USD"
+date/time,settlement id,type,order id,sku,description,quantity,marketplace,account type,fulfillment,order city,order state,order postal,tax collection model,product sales,product sales tax,shipping credits,shipping credits tax,gift wrap credits,giftwrap credits tax,regulatory fee,tax on regulatory fee,promotional rebates,promotional rebates tax,marketplace withheld tax,selling fees,fba fees,other transaction fees,other,total
+"Oct 18, 2026 03:10:00 AM PDT",1000000013,FBA Inventory Fee,,,FBA inventory storage fee,,amazon.com,Regular,AFN,Demo City,CA,00000,MarketplaceFacilitator,0,0,0,0,0,0,0,0,0,0,0,0,-9.85,0,0,-9.85
+"Oct 30, 2026 05:55:00 PM PDT",1000000014,Order,000-0000000-0000005,DEMO-SKU-E5,Sample item E,1,amazon.com,Regular,AFN,Demo City,CA,00000,MarketplaceFacilitator,9.99,0,0,0,0,0,0,0,0,0,0,-1.50,0,0,0,8.49

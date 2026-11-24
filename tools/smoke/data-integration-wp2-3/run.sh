@@ -15,10 +15,11 @@ table_fixture=""
 case "$source_type" in
   s3) ;;
   noon) orders_script="$here/../data-integration-wp2-8/noon/smoke.py" ;;
+  amazon) orders_script="$here/../data-integration-wp2-8/amazon/smoke.py" ;;
   lingxing) orders_script="$here/../data-integration-wp2-8/smoke.py" ;;
   postgresql) table_fixture="$here/../data-integration-wp2-5" ;;
   mysql) table_fixture="$here/../data-integration-wp2-4" ;;
-  *) echo "usage: $0 [s3|postgresql|mysql|lingxing|noon]" >&2; exit 2 ;;
+  *) echo "usage: $0 [s3|postgresql|mysql|lingxing|noon|amazon]" >&2; exit 2 ;;
 esac
 state=$(mktemp -d "${TMPDIR:-/tmp}/wp23-orders.XXXXXXXX")
 export WP23_DVS_PORT

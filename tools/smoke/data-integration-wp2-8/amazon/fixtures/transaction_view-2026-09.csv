@@ -1,0 +1,6 @@
+﻿"All amounts in USD"
+date/time,settlement id,type,order id,sku,description,quantity,marketplace,account type,fulfillment,order city,order state,order postal,tax collection model,product sales,product sales tax,shipping credits,shipping credits tax,gift wrap credits,giftwrap credits tax,regulatory fee,tax on regulatory fee,promotional rebates,promotional rebates tax,marketplace withheld tax,selling fees,fba fees,other transaction fees,other,total
+"Sep 3, 2026 10:15:00 AM PDT",1000000001,Order,000-0000000-0000001,DEMO-SKU-A1,Sample item A,2,amazon.com,Regular,AFN,Demo City,CA,00000,MarketplaceFacilitator,39.98,3.20,5.99,0,0,0,0,0,0,0,0,-6.50,0,0,0,42.67
+"Sep 8, 2026 02:30:00 PM PDT",1000000001,Refund,000-0000000-0000001,DEMO-SKU-A1,Sample item A,-1,amazon.com,Regular,AFN,Demo City,CA,00000,MarketplaceFacilitator,-19.99,-1.60,0,0,0,0,0,0,0,0,0,3.25,0,0,0,-18.34
+"Sep 15, 2026 12:00:00 AM PDT",1000000002,FBA Inventory Fee,,,FBA inventory storage fee,,amazon.com,Regular,AFN,Demo City,CA,00000,MarketplaceFacilitator,0,0,0,0,0,0,0,0,0,0,0,0,-12.40,0,0,-12.40
+"Sep 28, 2026 09:45:00 PM PDT",1000000003,Order,000-0000000-0000002,DEMO-SKU-B2,Sample item B,1,amazon.com,Regular,AFN,Demo City,CA,00000,MarketplaceFacilitator,25.00,0,0,0,0,0,0,0,-5.00,0,0,-3.75,0,0,0.50,16.75
