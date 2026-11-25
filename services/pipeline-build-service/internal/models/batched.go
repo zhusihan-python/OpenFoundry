@@ -71,20 +71,21 @@ type BatchedBuildConfig struct {
 
 	// Frozen configuration (CreateBuild-time, from the real preflight
 	// specs of that request).
-	TransformType      string `json:"transform_type"`
-	InputDatasetRID    string `json:"input_dataset_rid"`
-	InputBranch        string `json:"input_branch"`
-	InputVersion       int32  `json:"input_version"`
-	InputPath          string `json:"input_path,omitempty"` // "" = all_files
-	AllFiles           bool   `json:"all_files"`
-	Predicate          string `json:"predicate,omitempty"`
-	OutputDatasetRID   string `json:"output_dataset_rid"`
-	OutputBranch       string `json:"output_branch"`
-	LogicalPath        string `json:"logical_path"`
-	JobSpecRID         string `json:"job_spec_rid"`
-	JobSpecContentHash string `json:"job_spec_content_hash"`
-	ActorSubject       uuid.UUID
-	ReservationRID     string `json:"reservation_rid,omitempty"`
+	TransformType           string `json:"transform_type"`
+	InputDatasetRID         string `json:"input_dataset_rid"`
+	InputBranch             string `json:"input_branch"`
+	InputVersion            int32  `json:"input_version"`
+	InputPath               string `json:"input_path,omitempty"` // "" = all_files
+	ExpectedInputSchemaHash string `json:"expected_input_schema_hash,omitempty"`
+	AllFiles                bool   `json:"all_files"`
+	Predicate               string `json:"predicate,omitempty"`
+	OutputDatasetRID        string `json:"output_dataset_rid"`
+	OutputBranch            string `json:"output_branch"`
+	LogicalPath             string `json:"logical_path"`
+	JobSpecRID              string `json:"job_spec_rid"`
+	JobSpecContentHash      string `json:"job_spec_content_hash"`
+	ActorSubject            uuid.UUID
+	ReservationRID          string `json:"reservation_rid,omitempty"`
 
 	// Execution state (mutable, lease-fenced where noted).
 	Stage          string     `json:"stage"`

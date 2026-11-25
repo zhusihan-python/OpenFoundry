@@ -2,6 +2,9 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,8 +34,18 @@ type historicalSchemaResponse struct {
 	Branch        string                  `json:"branch"`
 	Version       int32                   `json:"version"`
 	TransactionID uuid.UUID               `json:"transaction_id"`
+	ContentHash   string                  `json:"content_hash"`
 	Fields        []historicalSchemaField `json:"fields"`
 }
+
+const (
+	expectedHistoricalSchemaHash  = "expected_content_hash"
+	historicalSchemaTransactionID = "transaction_id"
+	// Both mismatch answers keep the long-standing "<code>: <text>" error
+	// text and add the bare machine code for callers that match on it.
+	schemaHashMismatchCode        = "dataset_schema_content_hash_mismatch"
+	schemaTransactionMismatchCode = "dataset_schema_transaction_mismatch"
+)
 
 func (h *Handlers) getHistoricalSchema(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, query url.Values) {
 	if !h.requireDatasetRead(w, r, datasetID) {
@@ -40,12 +53,42 @@ func (h *Handlers) getHistoricalSchema(w http.ResponseWriter, r *http.Request, d
 	}
 	branch := strings.TrimSpace(query.Get("branch"))
 	version, err := strconv.ParseInt(strings.TrimSpace(query.Get("version")), 10, 32)
-	if len(query) != 2 || len(query["branch"]) != 1 || len(query["version"]) != 1 || branch == "" || err != nil || version < 1 {
+	maxParams := 2
+	expected, conditional := query[expectedHistoricalSchemaHash]
+	if conditional {
+		maxParams++
+		if len(expected) != 1 || !validHistoricalSchemaHash(expected[0]) {
+			writeJSONErr(w, http.StatusBadRequest, "expected_content_hash must be a single lowercase hexadecimal SHA-256 digest")
+			return
+		}
+	}
+	// A caller that holds a (version, transaction_id) pair, such as a
+	// dataset_snapshot pin, can cross-check it: the version must have been
+	// cut by exactly that transaction.
+	var pinnedTxn uuid.UUID
+	if requested, present := query[historicalSchemaTransactionID]; present {
+		maxParams++
+		parsed, parseErr := uuid.Parse(strings.TrimSpace(query.Get(historicalSchemaTransactionID)))
+		if len(requested) != 1 || parseErr != nil || parsed == uuid.Nil {
+			writeJSONErr(w, http.StatusBadRequest, "transaction_id must be a single transaction UUID")
+			return
+		}
+		pinnedTxn = parsed
+	}
+	if len(query) != maxParams || len(query["branch"]) != 1 || len(query["version"]) != 1 || branch == "" || err != nil || version < 1 {
 		writeJSONErr(w, http.StatusBadRequest, "versioned schema requires exactly one branch and positive integer version")
 		return
 	}
 	target, ok := h.resolveScanTarget(w, r, datasetID, branch, int32(version))
 	if !ok {
+		return
+	}
+	if pinnedTxn != uuid.Nil && target.txn.ID != pinnedTxn {
+		writeJSON(w, http.StatusConflict, models.ErrorEnvelope{
+			Error: fmt.Sprintf("%s: version %d was cut by transaction %s, not %s",
+				schemaTransactionMismatchCode, version, target.txn.ID, pinnedTxn),
+			Code: strPtr(schemaTransactionMismatchCode),
+		})
 		return
 	}
 	ctx := r.Context()
@@ -87,10 +130,33 @@ func (h *Handlers) getHistoricalSchema(w http.ResponseWriter, r *http.Request, d
 		}
 		fields = current
 	}
+	// Hash only the ordered public field list, so changing row values or
+	// republishing the same schema in another transaction preserves the digest.
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, "failed to encode versioned schema")
+		return
+	}
+	digest := sha256.Sum256(encoded)
+	hash := hex.EncodeToString(digest[:])
+	if conditional && expected[0] != hash {
+		writeJSON(w, http.StatusPreconditionFailed, models.ErrorEnvelope{
+			Error: schemaHashMismatchCode + ": the committed schema does not match expected_content_hash",
+			Code:  strPtr(schemaHashMismatchCode),
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, historicalSchemaResponse{
 		DatasetID: datasetID, Branch: branch, Version: int32(version),
-		TransactionID: target.txn.ID, Fields: fields,
+		TransactionID: target.txn.ID, ContentHash: hash, Fields: fields,
 	})
+}
+
+func validHistoricalSchemaHash(value string) bool {
+	return len(value) == hex.EncodedLen(sha256.Size) &&
+		strings.IndexFunc(value, func(r rune) bool {
+			return (r < '0' || r > '9') && (r < 'a' || r > 'f')
+		}) == -1
 }
 
 func readHistoricalParquetFields(ctx context.Context, opener localObjectOpener, file models.StageTransactionFile) ([]historicalSchemaField, error) {

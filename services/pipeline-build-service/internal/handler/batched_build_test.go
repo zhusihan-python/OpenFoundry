@@ -27,6 +27,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	authmw "github.com/openfoundry/openfoundry-go/libs/auth-middleware"
@@ -64,7 +65,9 @@ type fakeDatasetService struct {
 	// Input fixture served by rows:scan (ndjson records, no newlines).
 	scanRecords [][]byte
 	// scanBehavior overrides the scan response when set (negative controls).
-	scanBehavior func(r *http.Request) (int, []byte)
+	scanBehavior   func(r *http.Request) (int, []byte)
+	schemaBehavior http.HandlerFunc
+	schemaCalls    int
 
 	// Stage side.
 	stageEarlyReject *struct {
@@ -104,6 +107,13 @@ func newFakeBatchedDVS(t *testing.T, records [][]byte) *fakeDatasetService {
 	mux.HandleFunc("/v1/datasets/", func(w http.ResponseWriter, r *http.Request) {
 		require.NotEqual(t, "", strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), "batched calls never run without the caller JWT")
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/schema"):
+			f.schemaCalls++
+			if f.schemaBehavior != nil {
+				f.schemaBehavior(w, r)
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+			}
 		case strings.HasSuffix(r.URL.Path, "/files/rows:scan"):
 			f.handleScan(w, r)
 		case strings.HasSuffix(r.URL.Path, "/outputs:stage"):
@@ -721,11 +731,21 @@ type batchedStubVersioning struct {
 	openedForBuild map[string]map[string]any // txn RID -> providence
 	openLegacy     int
 	schema         json.RawMessage
+	schemaCheck    func(context.Context, string, string, int32, string) (uuid.UUID, error)
 	abortedTargets []string // dataset|branch|txn RID of precise cancels
 }
 
 func newBatchedStubVersioning(active string) *batchedStubVersioning {
 	return &batchedStubVersioning{activeBranch: active, openedForBuild: map[string]map[string]any{}, schema: json.RawMessage(`{}`)}
+}
+
+// VerifyInputSchema forwards the preflight schema read to the test's
+// configured checker (the real HTTP adapter by default).
+func (v *batchedStubVersioning) VerifyInputSchema(ctx context.Context, datasetRID, branch string, version int32, expectedHash string) (uuid.UUID, error) {
+	if v.schemaCheck == nil {
+		return uuid.Nil, errors.New("unexpected input schema check")
+	}
+	return v.schemaCheck(ctx, datasetRID, branch, version, expectedHash)
 }
 
 func (v *batchedStubVersioning) ListBranches(_ context.Context, _ string) ([]models.BranchSnapshot, error) {
@@ -862,6 +882,15 @@ func TestParseBatchedSpecMatrix(t *testing.T) {
 		{name: "neither path nor all files", mutdb: func(p *batchedPayload) { p.Input.AllFiles = false }},
 		{name: "non canonical path", mutdb: func(p *batchedPayload) { p.Input.AllFiles = false; p.Input.Path = "../escape.ndjson" }},
 		{name: "blank predicate", mutdb: func(p *batchedPayload) { p.Input.Predicate = "   " }},
+		{name: "null schema hash", mutdb: func(p *batchedPayload) { p.Input.ExpectedSchemaHash = json.RawMessage("null") }},
+		{name: "invalid schema hash", mutdb: func(p *batchedPayload) {
+			p.Input.ExpectedSchemaHash = json.RawMessage(jsonString(strings.Repeat("g", 64)))
+		}},
+		{name: "NDJSON with schema hash", mutdb: func(p *batchedPayload) {
+			p.Input.AllFiles = false
+			p.Input.Path = "a.ndjson"
+			p.Input.ExpectedSchemaHash = json.RawMessage(jsonString(strings.Repeat("a", 64)))
+		}},
 		{name: "overlong predicate", mutdb: func(p *batchedPayload) { p.Input.Predicate = strings.Repeat("x", 257) }},
 		{name: "logical path suffix", mutdb: func(p *batchedPayload) { p.Output.LogicalPath = "part.csv" }},
 		{name: "reserved transactions subtree", mutdb: func(p *batchedPayload) { p.Output.LogicalPath = "transactions/abc/out.ndjson" }},
@@ -945,6 +974,7 @@ func newBatchedHarness(t *testing.T, records [][]byte) *batchedHarness {
 		outputRID:   "ri.foundry.main.dataset." + uuid.NewString(),
 		pipelineRID: "ri.foundry.main.pipeline." + uuid.NewString(),
 	}
+	h.versioning.schemaCheck = DatasetHTTPVersioning{BaseURL: h.dvs.server.URL}.VerifyInputSchema
 	spec := batchedGrammarSpec(t, nil, h.inputRID, h.outputRID)
 	h.specRepo = &countingSpecRepo{specs: []models.JobSpec{spec}}
 	h.restore = append(h.restore,
@@ -1118,6 +1148,223 @@ func TestBatchedBareUUIDSpecOutputCompatibility(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Exact-byte replay (ACK loss) — the核心 recovery protocol.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// WP3.6 expected input schema hash: proven at CreateBuild before the build
+// row exists, and again at execution before the first scan page.
+// ---------------------------------------------------------------------------
+
+const (
+	schemaVerifiedTxn  = "11111111-1111-1111-1111-111111111111" // what rows:scan reports
+	schemaOtherTxn     = "22222222-2222-2222-2222-222222222222"
+	schemaMismatchBody = `{"error":"dataset_schema_content_hash_mismatch: the committed schema does not match expected_content_hash",` +
+		`"code":"dataset_schema_content_hash_mismatch"}`
+)
+
+// boundBatchedHarness pins the expected input schema hash on the JobSpec;
+// every schema read must carry exactly the frozen binding.
+func boundBatchedHarness(t *testing.T, hash string, answer http.HandlerFunc) *batchedHarness {
+	t.Helper()
+	h := newBatchedHarness(t, batchedFixture(3))
+	h.specRepo.specs[0] = batchedGrammarSpec(t, func(p *batchedPayload) {
+		p.Input.ExpectedSchemaHash = json.RawMessage(jsonString(hash))
+	}, h.inputRID, h.outputRID)
+	h.dvs.schemaBehavior = func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, map[string][]string{"branch": {"main"}, "version": {"3"}, "expected_content_hash": {hash}},
+			map[string][]string(r.URL.Query()))
+		answer(w, r)
+	}
+	return h
+}
+
+func schemaAnswer(txn, hash string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"dataset_id": bareDatasetUUID(r.URL.Path, "/schema"), "branch": "main", "version": 3,
+			"transaction_id": txn, "content_hash": hash,
+		})
+	}
+}
+
+func refuseScan(t *testing.T) func(*http.Request) (int, []byte) {
+	return func(*http.Request) (int, []byte) {
+		t.Error("rows:scan reached despite the schema precondition")
+		return http.StatusInternalServerError, nil
+	}
+}
+
+func TestBatchedExpectedInputSchema(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	h := boundBatchedHarness(t, hash, schemaAnswer(schemaVerifiedTxn, hash))
+	build, _ := h.createBuild()
+	cfg, err := h.store.GetBatchedConfig(context.Background(), build.String())
+	require.NoError(t, err)
+	require.Equal(t, hash, cfg.ExpectedInputSchemaHash)
+	require.Equal(t, 1, h.dvs.schemaCalls)
+	// The constraint is frozen on the build: a JobSpec republished without
+	// the hash does not relax execution.
+	h.specRepo.specs[0] = batchedGrammarSpec(t, nil, h.inputRID, h.outputRID)
+	response := h.execute(build, h.actor)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Len(t, h.dvs.commits, 1)
+	require.Equal(t, 2, h.dvs.schemaCalls)
+}
+
+// Unbound builds keep their legacy shape: no schema read at creation or
+// execution.
+func TestBatchedUnboundBuildNeverReadsTheInputSchema(t *testing.T) {
+	h := newBatchedHarness(t, batchedFixture(3))
+	h.dvs.schemaBehavior = func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("an unbound build read the input schema")
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+	build, _ := h.createBuild()
+	response := h.execute(build, h.actor)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Zero(t, h.dvs.schemaCalls)
+}
+
+func TestBatchedExpectedInputSchemaRejectsMismatchBeforeBuildRow(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	h := boundBatchedHarness(t, hash, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusPreconditionFailed)
+		_, _ = io.WriteString(w, schemaMismatchBody)
+	})
+	h.dvs.scanBehavior = refuseScan(t)
+	body := `{"pipeline_rid":"` + h.pipelineRID + `","build_branch":"main","output_dataset_rids":["` + h.outputRID + `"]}`
+	rr := httptest.NewRecorder()
+	CreateBuild(rr, h.request(http.MethodPost, "/api/v1/builds", body, h.actor))
+	require.Equal(t, http.StatusPreconditionFailed, rr.Code, rr.Body.String())
+	var answer map[string]string
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &answer))
+	require.Equal(t, "batched_input_schema_mismatch", answer["error"])
+	require.Contains(t, answer["detail"], "dataset_schema_content_hash_mismatch")
+	require.Contains(t, answer["detail"], "input version 3 on branch \"main\"")
+	require.Contains(t, answer["detail"], hash)
+	// Nothing was opened: no build row, no reservation, no scan or upload.
+	require.Empty(t, h.store.configs)
+	require.Empty(t, h.versioning.openedForBuild)
+	require.Zero(t, h.dvs.stageCalls)
+	require.Empty(t, h.dvs.commits)
+	require.Equal(t, 1, h.dvs.schemaCalls)
+}
+
+// A build row frozen without passing the preflight (or a dataset answer
+// that changed under it) is still stopped at execution before any scan
+// page or upload, and a retry cannot get past it either.
+func TestBatchedExpectedInputSchemaStillEnforcedAtExecute(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	answer := schemaAnswer(schemaVerifiedTxn, hash)
+	h := boundBatchedHarness(t, hash, func(w http.ResponseWriter, r *http.Request) { answer(w, r) })
+	build, _ := h.createBuild()
+	answer = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusPreconditionFailed)
+		_, _ = io.WriteString(w, schemaMismatchBody)
+	}
+	h.dvs.scanBehavior = refuseScan(t)
+	response := h.execute(build, h.actor)
+	require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+	var failure map[string]any
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failure))
+	require.Equal(t, "batched_stage_failed", failure["error"])
+	require.Contains(t, failure["detail"], "dataset_schema_content_hash_mismatch")
+	require.Equal(t, "BUILD_FAILED", failure["state"])
+	require.Equal(t, build.String(), failure["build_id"])
+	require.Zero(t, h.dvs.stageCalls)
+	require.Empty(t, h.dvs.commits)
+	require.Equal(t, 2, h.dvs.schemaCalls)
+
+	retry := h.execute(build, h.actor)
+	require.Equal(t, http.StatusConflict, retry.Code, retry.Body.String())
+	require.Contains(t, retry.Body.String(), "batched_build_terminal")
+	require.Zero(t, h.dvs.stageCalls)
+	require.Equal(t, 2, h.dvs.schemaCalls)
+}
+
+// The verified transaction pins the scan: a page cut by another
+// transaction is refused even though the schema precondition passed.
+func TestBatchedExpectedInputSchemaBindsScanToVerifiedTransaction(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	h := boundBatchedHarness(t, hash, schemaAnswer(schemaOtherTxn, hash))
+	build, _ := h.createBuild()
+	response := h.execute(build, h.actor)
+	require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "batched_scan_binding_invalid")
+	require.Empty(t, h.dvs.commits)
+}
+
+// Only the dataset service's structured 412 code is reported as a schema
+// mismatch; other answers keep their own status and text.
+func TestBatchedExpectedInputSchemaKeepsOtherDatasetAnswers(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		name   string
+		answer http.HandlerFunc
+		status int
+		error  string
+		detail string
+	}{
+		{"missing version", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":"dataset version not found"}`)
+		}, http.StatusNotFound, "dataset_error", "dataset version not found"},
+		{"unreadable snapshot", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"error":"dataset_file_bytes_missing: the versioned file has no readable backing bytes"}`)
+		}, http.StatusUnprocessableEntity, "dataset_error", "dataset_file_bytes_missing"},
+		{"schema names another version", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"dataset_id": strings.Repeat("1", 8) + "-1111-1111-1111-111111111111", "branch": "main", "version": 4,
+				"transaction_id": schemaVerifiedTxn, "content_hash": hash,
+			})
+		}, http.StatusServiceUnavailable, "bad_response", "batched_schema_binding_invalid"},
+		{"412 without the structured code", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = io.WriteString(w, `{"error":"dataset_schema_content_hash_mismatch: the committed schema does not match expected_content_hash"}`)
+		}, http.StatusPreconditionFailed, "dataset_error", "dataset_schema_content_hash_mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := boundBatchedHarness(t, hash, tc.answer)
+			body := `{"pipeline_rid":"` + h.pipelineRID + `","build_branch":"main","output_dataset_rids":["` + h.outputRID + `"]}`
+			rr := httptest.NewRecorder()
+			CreateBuild(rr, h.request(http.MethodPost, "/api/v1/builds", body, h.actor))
+			require.Equal(t, tc.status, rr.Code, rr.Body.String())
+			var answer map[string]string
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &answer))
+			require.Equal(t, tc.error, answer["error"])
+			require.Contains(t, answer["detail"], tc.detail)
+			require.Empty(t, h.store.configs)
+		})
+	}
+}
+
+// schemaBlindVersioning offers every other batched preflight capability but
+// cannot verify a pinned input schema.
+type schemaBlindVersioning struct {
+	resolver.DatasetVersioningRepository
+	resolver.BuildAwareTransactionOpener
+	batchedActiveBranchChecker
+	TransactionAborter
+}
+
+func TestBatchedExpectedInputSchemaFailsClosedWithoutTheAdapter(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	h := boundBatchedHarness(t, hash, schemaAnswer(schemaVerifiedTxn, hash))
+	stub := h.versioning
+	h.restore = append(h.restore, SetBuildLifecyclePorts(BuildLifecyclePorts{
+		JobSpecs: h.specRepo, Locks: stubLockRepo{}, Builds: h.store,
+		Versioning: schemaBlindVersioning{stub, stub, stub, stub},
+	}))
+	body := `{"pipeline_rid":"` + h.pipelineRID + `","build_branch":"main","output_dataset_rids":["` + h.outputRID + `"]}`
+	rr := httptest.NewRecorder()
+	CreateBuild(rr, h.request(http.MethodPost, "/api/v1/builds", body, h.actor))
+	require.Equal(t, http.StatusServiceUnavailable, rr.Code, rr.Body.String())
+	var answer map[string]string
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &answer))
+	require.Equal(t, "batched_input_schema_unavailable", answer["error"])
+	require.Empty(t, h.store.configs)
+	require.Zero(t, h.dvs.schemaCalls)
+}
 
 func TestBatchedReplayExactBytes(t *testing.T) {
 	h := newBatchedHarness(t, batchedFixture(3))

@@ -118,11 +118,12 @@ type batchedPayload struct {
 }
 
 type batchedPayloadInput struct {
-	Version   int    `json:"version"`
-	Branch    string `json:"branch"`
-	Path      string `json:"path"`
-	AllFiles  bool   `json:"all_files"`
-	Predicate string `json:"predicate"`
+	Version            int             `json:"version"`
+	Branch             string          `json:"branch"`
+	Path               string          `json:"path"`
+	AllFiles           bool            `json:"all_files"`
+	Predicate          string          `json:"predicate"`
+	ExpectedSchemaHash json.RawMessage `json:"expected_schema_hash,omitempty"`
 }
 
 type batchedPayloadOutput struct {
@@ -252,6 +253,19 @@ func parseBatchedSpec(specs []models.JobSpec, body models.CreateBuildRequest, ar
 	if payload.Input.Path != "" && !validBatchedObjectPath(payload.Input.Path) {
 		return nil, bad("input.path %q is not a canonical logical path", payload.Input.Path)
 	}
+	var expectedSchemaHash string
+	if payload.Input.ExpectedSchemaHash != nil {
+		if err := json.Unmarshal(payload.Input.ExpectedSchemaHash, &expectedSchemaHash); err != nil ||
+			len(expectedSchemaHash) != hex.EncodedLen(sha256.Size) || strings.ToLower(expectedSchemaHash) != expectedSchemaHash {
+			return nil, bad("input.expected_schema_hash must be a lowercase hexadecimal SHA-256 digest")
+		}
+		if _, err := hex.DecodeString(expectedSchemaHash); err != nil {
+			return nil, bad("input.expected_schema_hash must be a lowercase hexadecimal SHA-256 digest")
+		}
+		if payload.Input.Path != "" && !batchedParquetPath(payload.Input.Path) {
+			return nil, bad("input.expected_schema_hash requires a Parquet input path or all_files=true")
+		}
+	}
 	predicate := strings.TrimSpace(payload.Input.Predicate)
 	if len(payload.Input.Predicate) > batchedPredicateMaxLen {
 		return nil, bad("input.predicate exceeds %d characters", batchedPredicateMaxLen)
@@ -294,19 +308,20 @@ func parseBatchedSpec(specs []models.JobSpec, body models.CreateBuildRequest, ar
 		return nil, bad("output.logical_path %q collides with the reserved transactions/ subtree", logicalPath)
 	}
 	return &models.BatchedBuildConfig{
-		TransformType:      payload.TransformType,
-		InputDatasetRID:    inputRID,
-		InputBranch:        payload.Input.Branch,
-		InputVersion:       int32(payload.Input.Version),
-		InputPath:          payload.Input.Path,
-		AllFiles:           payload.Input.AllFiles,
-		Predicate:          predicate,
-		OutputDatasetRID:   outputRID,
-		OutputBranch:       args.BuildBranch,
-		LogicalPath:        logicalPath,
-		JobSpecRID:         spec.RID,
-		JobSpecContentHash: spec.ContentHash,
-		ActorSubject:       actor,
+		TransformType:           payload.TransformType,
+		InputDatasetRID:         inputRID,
+		InputBranch:             payload.Input.Branch,
+		InputVersion:            int32(payload.Input.Version),
+		InputPath:               payload.Input.Path,
+		ExpectedInputSchemaHash: expectedSchemaHash,
+		AllFiles:                payload.Input.AllFiles,
+		Predicate:               predicate,
+		OutputDatasetRID:        outputRID,
+		OutputBranch:            args.BuildBranch,
+		LogicalPath:             logicalPath,
+		JobSpecRID:              spec.RID,
+		JobSpecContentHash:      spec.ContentHash,
+		ActorSubject:            actor,
 	}, nil
 }
 
@@ -345,6 +360,7 @@ func batchedConfigEqual(a, b *models.BatchedBuildConfig) bool {
 		a.InputBranch == b.InputBranch &&
 		a.InputVersion == b.InputVersion &&
 		a.InputPath == b.InputPath &&
+		a.ExpectedInputSchemaHash == b.ExpectedInputSchemaHash &&
 		a.AllFiles == b.AllFiles &&
 		a.Predicate == b.Predicate &&
 		a.OutputDatasetRID == b.OutputDatasetRID &&
@@ -407,8 +423,44 @@ func prepareBatchedCreateBuild(ctx context.Context, ports BuildLifecyclePorts, b
 	if active != cfg.OutputBranch {
 		return nil, batchedSpecErrorf(http.StatusBadRequest, "batched_output_branch_not_active", "output branch %q is not the dataset's active branch %q", cfg.OutputBranch, active)
 	}
+	if cfg.ExpectedInputSchemaHash != "" {
+		// An input bound to an expected schema is proven against the
+		// dataset service BEFORE the build row exists, so an incompatible
+		// input is answered at creation rather than at the first scan.
+		// This is an early answer only: execution re-verifies before its
+		// first scan page, so a row frozen without passing here (or a
+		// retry) still cannot scan or upload.
+		schema, ok := ports.Versioning.(batchedInputSchemaChecker)
+		if !ok {
+			return nil, batchedSpecErrorf(http.StatusServiceUnavailable, "batched_input_schema_unavailable", "the versioning adapter cannot verify the pinned input schema")
+		}
+		if _, err := schema.VerifyInputSchema(ctx, cfg.InputDatasetRID, cfg.InputBranch, cfg.InputVersion, cfg.ExpectedInputSchemaHash); err != nil {
+			// The dataset service answers a mismatch as HTTP 412 with the
+			// structured code; match that code, never free text.
+			var httpErr *DatasetHTTPError
+			if errors.As(err, &httpErr) && httpErr.Status == http.StatusPreconditionFailed &&
+				httpErr.Code == batchedInputSchemaMismatchCode {
+				return nil, batchedSpecErrorf(http.StatusPreconditionFailed, "batched_input_schema_mismatch",
+					"%s: the committed schema of input version %d on branch %q does not match input.expected_schema_hash %s",
+					batchedInputSchemaMismatchCode, cfg.InputVersion, cfg.InputBranch, cfg.ExpectedInputSchemaHash)
+			}
+			return nil, err // dataset 403/404/422/… pass through via writeResolutionHTTPError
+		}
+	}
 	args.ReservationPurpose = batchedReservationPurpose
 	return cfg, nil
+}
+
+// batchedInputSchemaMismatchCode is the dataset service's machine code for
+// a committed schema that differs from the expected content hash.
+const batchedInputSchemaMismatchCode = "dataset_schema_content_hash_mismatch"
+
+// batchedInputSchemaChecker proves that the pinned input version's
+// committed schema matches the expected hash, for the CALLER. The
+// CreateBuild preflight uses it before the build row exists; execution
+// re-checks it (this is an early answer, not a lock).
+type batchedInputSchemaChecker interface {
+	VerifyInputSchema(ctx context.Context, datasetRID, branch string, version int32, expectedHash string) (uuid.UUID, error)
 }
 
 // batchedBuildStore is the execute/abort persistence port implemented by
@@ -893,6 +945,18 @@ func stageBatchedInput(ctx context.Context, client batchedDatasetClient, cfg *mo
 		Version:    cfg.InputVersion,
 		Path:       cfg.InputPath,
 		Predicate:  cfg.Predicate,
+	}
+	if cfg.ExpectedInputSchemaHash != "" {
+		// Share the stage attempt budget with the schema read. If the
+		// precondition fails, no scan or upload has started.
+		attemptCtx, cancel := context.WithTimeout(ctx, client.cfg.StageTimeout)
+		defer cancel()
+		ctx = attemptCtx
+		txn, err := client.VerifyInputSchema(ctx, input, cfg.ExpectedInputSchemaHash)
+		if err != nil {
+			return batchedStageResponse{}, batchedDigest{}, err
+		}
+		input.ExpectedTransactionID = &txn
 	}
 	hash := sha256.New()
 	var size, records int64
