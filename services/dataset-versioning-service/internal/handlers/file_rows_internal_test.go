@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -59,6 +60,48 @@ func TestCSVCellValueKeepsTheInferenceMirrorLiterals(t *testing.T) {
 	} {
 		assert.Equal(t, tc.want, string(csvCellValue(tc.cell)), "cell %q", tc.cell)
 	}
+}
+
+// The Amazon smoke's reports.column_names mirrors this function.
+func TestCSVColumnNamesKeepTheInferenceMirrorRule(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		header  []string
+		want    []string
+		refused string
+	}{
+		{"padded cell", []string{" \torder postal\r\n"}, []string{"order postal"}, ""},
+		{"non-breaking space and NEL", []string{"\u00a0total\u0085"}, []string{"total"}, ""},
+		{"em space and ideographic space", []string{"\u2003total\u3000"}, []string{"total"}, ""},
+		{"a separator outside the set is kept", []string{"\x1cstring\x1c"}, []string{"\x1cstring\x1c"}, ""},
+		{"empty once trimmed, counted from 1", []string{"", " ", "\t\n"}, []string{"column_1", "column_2", "column_3"}, ""},
+		{"a generated name met again", []string{"column_2", " "}, nil, `duplicate column "column_2"`},
+		{"the first repeat met is named", []string{"a", "b", "b", "c", "c"}, nil, `duplicate column "b"`},
+	} {
+		columns, err := csvColumnNames(tc.header)
+		if tc.refused != "" {
+			assert.EqualError(t, err, tc.refused, tc.name)
+			continue
+		}
+		assert.NoError(t, err, tc.name)
+		assert.Equal(t, tc.want, columns, tc.name)
+	}
+
+	// The bound is 256 columns, and a repeated name is refused before it.
+	assert.Equal(t, 256, datasetFileRowsMaxColumns)
+	wide := make([]string, datasetFileRowsMaxColumns+1)
+	for i := range wide {
+		wide[i] = fmt.Sprintf("c%d", i)
+	}
+	columns, err := csvColumnNames(wide[:datasetFileRowsMaxColumns])
+	assert.NoError(t, err)
+	assert.Len(t, columns, datasetFileRowsMaxColumns)
+	_, err = csvColumnNames(wide)
+	assert.EqualError(t, err, "file has 257 columns, max 256")
+	wide[1] = wide[0]
+	_, err = csvColumnNames(wide)
+	assert.EqualError(t, err, `duplicate column "c0"`)
 }
 
 func TestParseDelimitedRows(t *testing.T) {

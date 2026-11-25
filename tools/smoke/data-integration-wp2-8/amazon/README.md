@@ -54,6 +54,10 @@ The field names are read from upstream `UNILUME-AI/unilume` at `6f3103e`,
    publication mirrors that rule in `reader_number`, so `1e3`, `+1`, `001.00`, `NaN`,
    `Infinity` and `007` are text in a `total` column, although `Decimal` would parse some of
    them. `order postal` stays `STRING`: a code with leading zeroes is text.
+   A column is named as the same reader names it (`csvColumnNames` in the same file, mirrored
+   by `column_names`): each header cell is trimmed, a cell that is empty once trimmed is
+   `column_<position>` counted from 1, and a name that comes twice, or a header of more than 256
+   columns, is refused.
 5. A reported no-data month is written as one JSON record to a separate status dataset. It never
    touches the report dataset.
 6. An independent reader, who has no knowledge of the staged file or of the receipt, resolves each

@@ -58,7 +58,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
   as a snapshot of one NDJSON file does.
 - A Pipeline graph input pinned by `dataset_snapshot` can carry the fields that
   `expected_schema_hash` covers with `expected_schema`. A refused schema then
-  names each field that differs from the committed schema of the pinned version.
+  names at most eight differences from the committed schema of the pinned
+  version, and a changed field order.
 
 ### Changed
 - **BREAKING:** The bundled Iceberg catalog returns HTTP 503 for valid row appends

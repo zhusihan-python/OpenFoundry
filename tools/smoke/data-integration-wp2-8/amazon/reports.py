@@ -44,6 +44,8 @@ COUNTS = ("settlement id", "quantity")
 # what the Python version strips.
 GO_SPACE = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
 NUMBER = re.compile(r"-?(0|[1-9][0-9]*)(\.[0-9]+)?")
+# What the Dataset CSV reader reads at most in one record (datasetFileRowsMaxColumns, file_rows.go).
+MAX_COLUMNS = 256
 
 
 class RegistrationError(ValueError):
@@ -163,6 +165,26 @@ def reader_number(cell):
     return text if -(1 << 63) <= int(whole) <= (1 << 63) - 1 else False
 
 
+def column_names(header):
+    """The names the Dataset CSV reader gives the columns of a record (csvColumnNames, file_rows.go).
+
+    Each header cell is trimmed. A cell that is empty once trimmed is column_<position>, counted
+    from 1. A name that comes twice is refused as it is met, and a header with more than
+    MAX_COLUMNS columns is refused after it: the reader refuses such a file, so a column of it
+    cannot be read or typed.
+    """
+    names, seen = [], set()
+    for position, cell in enumerate(header, 1):
+        name = cell.strip(GO_SPACE) or f"column_{position}"
+        if name in seen:
+            raise ValueError(f"the report names the column {name!r} twice")
+        seen.add(name)
+        names.append(name)
+    if len(names) > MAX_COLUMNS:
+        raise ValueError(f"the report has {len(names)} columns, more than the {MAX_COLUMNS} the Dataset CSV reader reads")
+    return names
+
+
 def field_type(name, cells):
     """The type of one column: the one its business role names, if the cells of this file hold it."""
     if name not in AMOUNTS and name not in COUNTS:
@@ -178,17 +200,19 @@ def field_type(name, cells):
 def csv_schema(data):
     """The schema of a published report: one field per header column, in header order.
 
-    The business role of a column names the type it may hold and the cells of this file decide
-    whether it holds: an amount is DOUBLE and a count is LONG while every cell that is not empty
-    is a number the Dataset CSV reader gives as one. Any other column is STRING, and so is an
-    amount or a count that holds text in this file. Every field is nullable, because an empty cell
-    is null in any column. Nullability is not read from one file's cells, or two files of one
-    month would carry two schemas.
+    A field is named as the Dataset CSV reader names the column (column_names), and the business
+    role of a column follows that name: a header cell padded with spaces is still the column it
+    names. The role names the type the column may hold and the cells of this file decide whether
+    it holds: an amount is DOUBLE and a count is LONG while every cell that is not empty is a
+    number the Dataset CSV reader gives as one. Any other column is STRING, and so is an amount
+    or a count that holds text in this file. Every field is nullable, because an empty cell is
+    null in any column. Nullability is not read from one file's cells, or two files of one month
+    would carry two schemas.
     """
     records = [record for record in csv.reader(io.StringIO(data.decode("utf-8-sig"), newline="")) if record]
     if len(records) < HEADER_ROW:
         raise ValueError("the report has no header record")
-    header, rows = records[HEADER_ROW - 1], records[HEADER_ROW:]
+    header, rows = column_names(records[HEADER_ROW - 1]), records[HEADER_ROW:]
     if any(len(row) != len(header) for row in rows):
         raise ValueError("a record of the report does not match its header")
     return [dict(name=name, type=field_type(name, [row[at] for row in rows]), nullable=True)

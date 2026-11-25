@@ -588,10 +588,12 @@ func TestDatasetSnapshotReadBoundsTheFieldLevelReason(t *testing.T) {
 
 // Every kind of difference, in order: the pin's fields first, a field that
 // differs in two ways as its type and then its nullability, then the fields
-// only the committed schema holds.
+// only the committed schema holds, then a changed order of the fields both
+// schemas hold.
 func TestDatasetSnapshotReadNamesEveryKindOfDifferenceInOrder(t *testing.T) {
 	// The pin order is a, both, gone, z. The committed order is z, both, a,
-	// extra 1, extra 2, so that the clauses follow the pin is visible.
+	// extra 1, extra 2, so that the clauses follow the pin is visible. The
+	// fields both schemas hold are a, both and z.
 	expected := []snapshotSchemaField{
 		{Name: "a", FieldType: "STRING"},
 		{Name: "both", FieldType: "DOUBLE", Nullable: true},
@@ -619,14 +621,16 @@ func TestDatasetSnapshotReadNamesEveryKindOfDifferenceInOrder(t *testing.T) {
 		`field "gone" is in the expected schema and not in the committed schema; `+
 		`field "z" is not nullable in the committed schema and nullable in the expected schema; `+
 		`field "extra 1" is in the committed schema and not in the expected schema; `+
-		`field "extra 2" is in the committed schema and not in the expected schema`,
+		`field "extra 2" is in the committed schema and not in the expected schema; `+
+		`the 3 fields both schemas hold come in another order: the committed schema has "z" where the expected schema has "a"`,
 		strings.TrimPrefix(err.Error(), "dataset_input_schema_rejected: "+hashMismatchRefusal))
+	assertNoEmptyClause(t, err.Error())
 	assert.Empty(t, scanRequests(fake))
 }
 
 // The same fields in another order hash differently, so the proof is
-// refused although no field differs. The reason says that and never ends
-// in an empty clause.
+// refused although no field differs. The order clause says so, at the first
+// place the two orders differ, and never ends in an empty clause.
 func TestDatasetSnapshotReadNamesAnotherOrderOfTheSameFields(t *testing.T) {
 	expected := []snapshotSchemaField{
 		{Name: "order postal", FieldType: "STRING", Nullable: true},
@@ -642,7 +646,79 @@ func TestDatasetSnapshotReadNamesAnotherOrderOfTheSameFields(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Equal(t, "dataset_input_schema_rejected: "+hashMismatchRefusal+
-		"; the committed schema of version 3 differs from the expected schema: the same fields in another order", err.Error())
+		`; the committed schema of version 3 differs from the expected schema: the 3 fields both schemas hold come in another order: the committed schema has "total" where the expected schema has "order postal"`,
+		err.Error())
+	assertNoEmptyClause(t, err.Error())
+	assert.Empty(t, scanRequests(fake))
+}
+
+// A changed order of the fields both schemas hold is named even when some of
+// them also differ: the field clauses come first, then the order clause.
+func TestDatasetSnapshotReadNamesAChangedOrderWithFieldDifferences(t *testing.T) {
+	expected := []snapshotSchemaField{{Name: "a", FieldType: "STRING"}, {Name: "b", FieldType: "DOUBLE", Nullable: true}}
+	committed := []snapshotSchemaField{{Name: "b", FieldType: "STRING", Nullable: true}, {Name: "a", FieldType: "STRING"}}
+	datasetID := uuid.NewString()
+	reader, fake := newSchemaDifferenceEnv(t, http.StatusPreconditionFailed, []byte(hashMismatchAnswer),
+		http.StatusOK, committedSchemaAnswer(datasetID, committed))
+
+	_, err := reader.ReadDatasetRows(callerCtx(), pinnedSchemaRequest(datasetID, expected))
+
+	require.Error(t, err)
+	assert.Equal(t, "; the committed schema of version 3 differs from the expected schema: "+
+		`field "b" is STRING in the committed schema and DOUBLE in the expected schema; `+
+		`the 2 fields both schemas hold come in another order: the committed schema has "b" where the expected schema has "a"`,
+		strings.TrimPrefix(err.Error(), "dataset_input_schema_rejected: "+hashMismatchRefusal))
+	assertNoEmptyClause(t, err.Error())
+	assert.Empty(t, scanRequests(fake))
+}
+
+// An addition and a removal leave the order of the other fields as it was
+// and name nothing about order, wherever the added field sits.
+func TestDatasetSnapshotReadNamesNoOrderForAnAdditionAndARemoval(t *testing.T) {
+	expected := []snapshotSchemaField{{Name: "a", FieldType: "STRING"}, {Name: "b", FieldType: "STRING"}, {Name: "c", FieldType: "STRING"}}
+	added := snapshotSchemaField{Name: "x", FieldType: "STRING"}
+	for _, committed := range [][]snapshotSchemaField{
+		{expected[0], expected[2], added},
+		{expected[0], added, expected[2]},
+	} {
+		datasetID := uuid.NewString()
+		reader, fake := newSchemaDifferenceEnv(t, http.StatusPreconditionFailed, []byte(hashMismatchAnswer),
+			http.StatusOK, committedSchemaAnswer(datasetID, committed))
+
+		_, err := reader.ReadDatasetRows(callerCtx(), pinnedSchemaRequest(datasetID, expected))
+
+		require.Error(t, err)
+		assert.Equal(t, "; the committed schema of version 3 differs from the expected schema: "+
+			`field "b" is in the expected schema and not in the committed schema; `+
+			`field "x" is in the committed schema and not in the expected schema`,
+			strings.TrimPrefix(err.Error(), "dataset_input_schema_rejected: "+hashMismatchRefusal))
+		assertNoEmptyClause(t, err.Error())
+		assert.Empty(t, scanRequests(fake))
+	}
+}
+
+// The bound never drops the order clause: eight field clauses, the count of
+// the rest, then the order clause.
+func TestDatasetSnapshotReadKeepsTheOrderClauseBeyondTheBound(t *testing.T) {
+	var expected, committed []snapshotSchemaField
+	clauses := make([]string, 0, 10)
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("f%02d", i)
+		expected = append(expected, snapshotSchemaField{Name: name, FieldType: "DOUBLE", Nullable: true})
+		committed = append([]snapshotSchemaField{{Name: name, FieldType: "STRING", Nullable: true}}, committed...)
+		clauses = append(clauses, fmt.Sprintf(`field %q is STRING in the committed schema and DOUBLE in the expected schema`, name))
+	}
+	datasetID := uuid.NewString()
+	reader, fake := newSchemaDifferenceEnv(t, http.StatusPreconditionFailed, []byte(hashMismatchAnswer),
+		http.StatusOK, committedSchemaAnswer(datasetID, committed))
+
+	_, err := reader.ReadDatasetRows(callerCtx(), pinnedSchemaRequest(datasetID, expected))
+
+	require.Error(t, err)
+	assert.Equal(t, "; the committed schema of version 3 differs from the expected schema: "+
+		strings.Join(clauses[:8], "; ")+"; and 2 more; "+
+		`the 10 fields both schemas hold come in another order: the committed schema has "f10" where the expected schema has "f01"`,
+		strings.TrimPrefix(err.Error(), "dataset_input_schema_rejected: "+hashMismatchRefusal))
 	assertNoEmptyClause(t, err.Error())
 	assert.Empty(t, scanRequests(fake))
 }
@@ -666,12 +742,29 @@ func TestDatasetSnapshotReadKeepsTheRefusalWhenTheSchemaReadBackHasTheExpectedHa
 	assert.Equal(t, []string{"schema", "schema"}, requestKinds(fake.requests))
 }
 
+// No difference can be named, here because the committed answer repeats a
+// field name: the refusal is kept and says so, never an empty clause.
+func TestDatasetSnapshotReadSaysWhenNoDifferenceCanBeNamed(t *testing.T) {
+	expected := []snapshotSchemaField{{Name: "a", FieldType: "STRING"}}
+	committed := []snapshotSchemaField{{Name: "a", FieldType: "STRING"}, {Name: "a", FieldType: "STRING"}}
+	datasetID := uuid.NewString()
+	reader, fake := newSchemaDifferenceEnv(t, http.StatusPreconditionFailed, []byte(hashMismatchAnswer),
+		http.StatusOK, committedSchemaAnswer(datasetID, committed))
+
+	_, err := reader.ReadDatasetRows(callerCtx(), pinnedSchemaRequest(datasetID, expected))
+
+	require.Error(t, err)
+	assert.Equal(t, "dataset_input_schema_rejected: "+hashMismatchRefusal+
+		"; the committed schema of version 3 differs from the expected schema in a way this service cannot name", err.Error())
+	assertNoEmptyClause(t, err.Error())
+	assert.Empty(t, scanRequests(fake))
+}
+
 func TestParseDatasetInputSnapshotExpectedSchema(t *testing.T) {
 	const (
 		total       = `[{"name":"total","field_type":"DOUBLE","nullable":true}]`
 		array       = "dataset_snapshot_invalid: expected_schema must be a JSON array of objects with the keys name, field_type and nullable"
 		nullable    = "dataset_snapshot_invalid: expected_schema field 1 must state nullable as true or false"
-		decimal     = `[{"name":"total","field_type":"DECIMAL","nullable":true}]`
 		unnamed     = `[{"name":"","field_type":"DOUBLE","nullable":true}]`
 		repeated    = `[{"name":"total","field_type":"DOUBLE","nullable":true},{"name":"total","field_type":"STRING","nullable":false}]`
 		notNullable = `[{"name":"total","field_type":"DOUBLE","nullable":false}]`
@@ -707,7 +800,6 @@ func TestParseDatasetInputSnapshotExpectedSchema(t *testing.T) {
 		"empty array":               {pin(digestOf(`[]`), `[]`), "dataset_snapshot_invalid: expected_schema must be a non-empty JSON array"},
 		"not an array":              {pin(digestOf(total), `{"name":"total"}`), array},
 		"unknown key":               {pin(digestOf(total), `[{"name":"total","field_type":"DOUBLE","nullable":true,"unit":"x"}]`), `json: unknown field "unit"`},
-		"unknown type":              {pin(digestOf(decimal), decimal), `dataset_snapshot_invalid: expected_schema field "total" has an unsupported field_type "DECIMAL"`},
 		"empty name":                {pin(digestOf(unnamed), unnamed), "dataset_snapshot_invalid: expected_schema field 1 must have a non-empty name"},
 		"duplicate names":           {pin(digestOf(repeated), repeated), `dataset_snapshot_invalid: expected_schema names must be unique: "total"`},
 		"does not hash to the hash": {pin(schemaHash, total), "dataset_snapshot_invalid: expected_schema does not hash to expected_schema_hash"},
@@ -724,6 +816,197 @@ func TestParseDatasetInputSnapshotExpectedSchema(t *testing.T) {
 			assert.Contains(t, err.Error(), "dataset_snapshot_invalid: ")
 			assert.Contains(t, err.Error(), tc.want)
 		})
+	}
+}
+
+// expectedSchemaPin is a pin that declares the hash as written and the list
+// as its expected_schema.
+func expectedSchemaPin(rawHash, list string) string {
+	return strings.TrimSuffix(validSnapshot, "}") + `,"expected_schema_hash":` + rawHash + `,"expected_schema":` + list + `}`
+}
+
+// snapshotWithField is a pin that declares one expected field with its name
+// and type label written as given, next to the hash of that very list, so
+// that nothing but the field itself can refuse the pin.
+func snapshotWithField(name, label string) string {
+	list := `[{"name":"` + name + `","field_type":"` + label + `","nullable":true}]`
+	return expectedSchemaPin(`"`+fmt.Sprintf("%x", sha256.Sum256([]byte(list)))+`"`, list)
+}
+
+// shapeAdvice is what a refused type label must look like, as the parse
+// error states it.
+const shapeAdvice = " must be upper-case, up to 64 bytes, like DECIMAL(38,10)"
+
+// A type label of another shape is refused with a message that says what a
+// label must look like and echoes the offending one quoted.
+func TestParseDatasetInputSnapshotExpectedSchemaRefusesATypeLabelOfAnotherShape(t *testing.T) {
+	for name, tc := range map[string]struct{ label, echoed string }{
+		"empty":             {``, `""`},
+		"lowercase":         {`string`, `"string"`},
+		"a space":           {`DECIMAL(38, 10)`, `"DECIMAL(38, 10)"`},
+		"a line break":      {`DECIMAL(38,\n10)`, `"DECIMAL(38,\n10)"`},
+		"unclosed brackets": {`DECIMAL(38,10`, `"DECIMAL(38,10"`},
+		"unopened brackets": {`38,10)`, `"38,10)"`},
+		"over 64 bytes":     {strings.Repeat("A", 65), `"` + strings.Repeat("A", 63) + `...`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			snapshot, err := parseDatasetInputSnapshot(json.RawMessage(snapshotWithField("total", tc.label)))
+
+			require.Error(t, err)
+			assert.Nil(t, snapshot)
+			assert.Equal(t, `dataset_snapshot_invalid: expected_schema field "total": field_type `+tc.echoed+shapeAdvice, err.Error())
+		})
+	}
+}
+
+// A pin cannot grow its own error: a long type label, a long field name and
+// a long unknown key are each echoed cut, quoted, and on one line.
+func TestParseDatasetInputSnapshotExpectedSchemaBoundsWhatItEchoes(t *testing.T) {
+	// A 300-byte label is echoed in at most 64 bytes of its quoted form, on
+	// a rune boundary, so the error stays under 200 bytes.
+	for name, tc := range map[string]struct{ label, kept string }{
+		"ascii":            {strings.Repeat("A", 300), strings.Repeat("A", 63)},
+		"three-byte runes": {strings.Repeat("€", 100), strings.Repeat("€", 21)},
+	} {
+		_, err := parseDatasetInputSnapshot(json.RawMessage(snapshotWithField("total", tc.label)))
+
+		require.Error(t, err, name)
+		assert.Equal(t, `dataset_snapshot_invalid: expected_schema field "total": field_type "`+tc.kept+`...`+shapeAdvice, err.Error(), name)
+		assert.Less(t, len(err.Error()), 200, name)
+	}
+
+	// Quoting turns a control byte into four characters. The cut is taken
+	// after quoting, so this error is short too, and on one line.
+	_, err := parseDatasetInputSnapshot(json.RawMessage(snapshotWithField("total", strings.Repeat(`\u0001`, 300))))
+	require.Error(t, err)
+	assert.Less(t, len(err.Error()), 200)
+	assert.NotContains(t, err.Error(), "\x01")
+	assert.NotContains(t, err.Error(), "\n")
+
+	// A 300-byte field name is echoed in at most 128 bytes of its quoted
+	// form, wherever a parse error names it. The stored field keeps it whole.
+	long := strings.Repeat("n", 300)
+	_, err = parseDatasetInputSnapshot(json.RawMessage(snapshotWithField(long, "")))
+	require.Error(t, err)
+	assert.Equal(t, `dataset_snapshot_invalid: expected_schema field "`+strings.Repeat("n", 127)+`...: field_type ""`+shapeAdvice, err.Error())
+	assert.Less(t, len(err.Error()), 300)
+
+	twice := `[{"name":"` + long + `","field_type":"DOUBLE","nullable":true},{"name":"` + long + `","field_type":"STRING","nullable":false}]`
+	_, err = parseDatasetInputSnapshot(json.RawMessage(expectedSchemaPin(`"`+schemaHash+`"`, twice)))
+	require.Error(t, err)
+	assert.Equal(t, `dataset_snapshot_invalid: expected_schema names must be unique: "`+strings.Repeat("n", 127)+`...`, err.Error())
+	assert.Less(t, len(err.Error()), 300)
+
+	snapshot, err := parseDatasetInputSnapshot(json.RawMessage(snapshotWithField(long, "DOUBLE")))
+	require.NoError(t, err)
+	assert.Equal(t, []snapshotSchemaField{{Name: long, FieldType: "DOUBLE", Nullable: true}}, snapshot.ExpectedSchema)
+
+	// The decoder names an unknown key in its own text, which is cut like
+	// the text of any other answer.
+	const intro = "dataset_snapshot_invalid: expected_schema must be a JSON array of objects with the keys name, field_type and nullable: "
+	unknown := `[{"name":"total","field_type":"DOUBLE","nullable":true,"` + strings.Repeat("k", 300) + `":1}]`
+	_, err = parseDatasetInputSnapshot(json.RawMessage(expectedSchemaPin(`"`+schemaHash+`"`, unknown)))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), intro+`json: unknown field "kkkk`)
+	assert.LessOrEqual(t, len(err.Error()), len(intro)+maxSchemaReasonBytes)
+}
+
+// schemaTypeLabels lists the type labels the versioned schema route states
+// for a Parquet file and for a keyed text output, with and without
+// parameters. labelledSchema gives each of them a field of its own.
+func schemaTypeLabels() []string {
+	return []string{
+		"BOOLEAN", "BYTE", "SHORT", "INTEGER", "LONG", "FLOAT", "DOUBLE", "STRING", "DATE",
+		"BINARY", "BINARY(16)", "UINT8", "UINT16", "UINT32", "UINT64",
+		"DECIMAL(38,10)", "TIMESTAMP(MILLIS,UTC)", "TIMESTAMP(MICROS,LOCAL)", "TIMESTAMP(NANOS,UTC)",
+	}
+}
+
+func labelledSchema() []snapshotSchemaField {
+	fields := make([]snapshotSchemaField, 0, len(schemaTypeLabels()))
+	for i, label := range schemaTypeLabels() {
+		fields = append(fields, snapshotSchemaField{Name: fmt.Sprintf("c%02d", i), FieldType: label, Nullable: i%2 == 0})
+	}
+	return fields
+}
+
+// Every type label the versioned schema route can state is accepted, with
+// the hash over the list as the route encodes it. A label of exactly 64
+// bytes, the bound, is accepted too.
+func TestParseDatasetInputSnapshotExpectedSchemaAcceptsEveryTypeLabel(t *testing.T) {
+	fields := append(labelledSchema(), snapshotSchemaField{Name: "edge", FieldType: strings.Repeat("A", 64)})
+
+	snapshot := requireSnapshotParse(t, snapshotWithSchema(fields))
+
+	assert.Equal(t, fields, snapshot.ExpectedSchema)
+	assert.Equal(t, schemaDigest(fields), snapshot.ExpectedSchemaHash)
+}
+
+// Through the dataset service double, every label comes back as it was
+// written.
+func TestCommittedInputSchemaReadsEveryTypeLabelAsStated(t *testing.T) {
+	fields := labelledSchema()
+	datasetID := uuid.NewString()
+	fake := newSnapshotTestServer(t, nil)
+	fake.answerSchema(http.StatusOK, schemaFieldsAnswer(datasetID, "main", "3", pinnedSnapshotTxn, schemaDigest(fields), fields))
+	pinned := uuid.MustParse(pinnedSnapshotTxn)
+	client := batchedDatasetClient{cfg: BatchedClientConfig{BaseURL: fake.server.URL}}
+
+	committed, err := client.committedInputSchema(callerCtx(), batchedScanInput{DatasetRID: datasetID, Branch: "main", Version: 3, ExpectedTransactionID: &pinned})
+
+	require.NoError(t, err)
+	assert.Equal(t, fields, committed, "every label is read back as it was written")
+	assert.Equal(t, schemaJSON(fields), schemaJSON(committed))
+}
+
+// A difference names both type labels as they are written.
+func TestDatasetSnapshotReadNamesBothTypeLabelsAsWritten(t *testing.T) {
+	datasetID := uuid.NewString()
+	for _, tc := range []struct{ committed, expected string }{
+		{"DECIMAL(38,10)", "DOUBLE"},
+		{"DECIMAL(38,10)", "TIMESTAMP(MILLIS,UTC)"},
+	} {
+		reader, fake := newSchemaDifferenceEnv(t, http.StatusPreconditionFailed, []byte(hashMismatchAnswer), http.StatusOK,
+			committedSchemaAnswer(datasetID, []snapshotSchemaField{{Name: "amount", FieldType: tc.committed, Nullable: true}}))
+
+		_, err := reader.ReadDatasetRows(callerCtx(), pinnedSchemaRequest(datasetID, []snapshotSchemaField{{Name: "amount", FieldType: tc.expected, Nullable: true}}))
+
+		require.Error(t, err)
+		assert.Equal(t, `; the committed schema of version 3 differs from the expected schema: field "amount" is `+tc.committed+
+			" in the committed schema and "+tc.expected+" in the expected schema",
+			strings.TrimPrefix(err.Error(), "dataset_input_schema_rejected: "+hashMismatchRefusal))
+		assertNoEmptyClause(t, err.Error())
+		assert.Empty(t, scanRequests(fake))
+	}
+}
+
+// A committed label of the stated shape is printed as it is. Any other is
+// printed quoted, so that a line break in it never reaches the node error
+// raw, and cut to 64 bytes of its quoted form on a rune boundary, "..."
+// marking the cut.
+func TestDatasetSnapshotReadQuotesACommittedLabelOutsideTheShape(t *testing.T) {
+	datasetID := uuid.NewString()
+	// 40 three-byte runes are 120 bytes, of which 21 fit in 63 bytes.
+	for _, tc := range []struct{ committed, printed string }{
+		{"STRING", "STRING"},
+		{"STR\nING", `"STR\nING"`},
+		{"string", `"string"`},
+		{strings.Repeat("A", 100), `"` + strings.Repeat("A", 63) + `...`},
+		{strings.Repeat("€", 40), `"` + strings.Repeat("€", 21) + `...`},
+		{strings.Repeat("A", 60) + "\n" + strings.Repeat("B", 40), `"` + strings.Repeat("A", 60) + `\nB...`},
+	} {
+		committed := []snapshotSchemaField{{Name: "amount", FieldType: tc.committed, Nullable: true}}
+		reader, fake := newSchemaDifferenceEnv(t, http.StatusPreconditionFailed, []byte(hashMismatchAnswer), http.StatusOK,
+			committedSchemaAnswer(datasetID, committed))
+
+		_, err := reader.ReadDatasetRows(callerCtx(), pinnedSchemaRequest(datasetID, []snapshotSchemaField{{Name: "amount", FieldType: "DOUBLE", Nullable: true}}))
+
+		require.Error(t, err)
+		assert.Equal(t, `; the committed schema of version 3 differs from the expected schema: field "amount" is `+tc.printed+
+			" in the committed schema and DOUBLE in the expected schema",
+			strings.TrimPrefix(err.Error(), "dataset_input_schema_rejected: "+hashMismatchRefusal))
+		assert.NotContains(t, err.Error(), "\n", "the refusal stays on one line")
+		assert.Empty(t, scanRequests(fake))
 	}
 }
 

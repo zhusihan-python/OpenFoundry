@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -49,8 +50,9 @@ import (
 // An optional expected_schema inside the pin holds the fields that hash
 // covers, as the dataset service lists them. A refused proof then reads the
 // committed schema of the pinned version once more, without the hash so the
-// route answers the schema instead of comparing it, and names each
-// difference. When that read fails the refusal is the one without the key.
+// route answers the schema instead of comparing it, and names the field
+// differences and a changed field order. When that read fails, the refusal
+// is kept and says so.
 
 // maxDatasetInputTotalBytes is the hard aggregate bound on the raw record
 // bytes one snapshot read may materialize into the lightweight table
@@ -59,15 +61,23 @@ import (
 // partial output is ever produced from a pinned snapshot.
 const maxDatasetInputTotalBytes = 64 << 20
 
-// A refusal names at most maxSchemaDifferenceClauses differences. One clause
-// quotes its field name cut to maxSchemaFieldNameBytes, and a diagnostic
-// read that fails is quoted cut to maxSchemaReasonBytes, each on a rune
-// boundary so neither can flood the node error.
+// A refusal names at most maxSchemaDifferenceClauses field differences, then
+// a changed field order. One clause quotes its field name cut to
+// maxSchemaFieldNameBytes and its type label cut to maxSchemaFieldTypeBytes,
+// and a diagnostic read that fails is quoted cut to maxSchemaReasonBytes,
+// each on a rune boundary so none can flood the node error.
 const (
 	maxSchemaDifferenceClauses = 8
 	maxSchemaFieldNameBytes    = 128
+	maxSchemaFieldTypeBytes    = 64
 	maxSchemaReasonBytes       = 200
 )
+
+// snapshotSchemaFieldTypeShape is the shape of a type label as the dataset
+// service's versioned schema route states it: an upper-case name, with
+// parameters in brackets or without, such as DOUBLE, BINARY(16) or
+// TIMESTAMP(MILLIS,UTC).
+var snapshotSchemaFieldTypeShape = regexp.MustCompile(`^[A-Z][A-Z0-9_]*(\([A-Z0-9,_]+\))?$`)
 
 // snapshotSchemaField is one field of a schema as the dataset service's
 // versioned schema route lists it. The keys and their order are the route's
@@ -229,7 +239,10 @@ func parseDatasetInputSnapshot(raw json.RawMessage) (*datasetInputSnapshot, erro
 		decoder.DisallowUnknownFields()
 		var elements []snapshotSchemaElement
 		if err := decoder.Decode(&elements); err != nil {
-			return nil, bad("expected_schema must be a JSON array of objects with the keys name, field_type and nullable: %v", err)
+			// The decoder's text can name an unknown key of the pin, so it is
+			// cut like the text of any other answer.
+			return nil, bad("expected_schema must be a JSON array of objects with the keys name, field_type and nullable: %s",
+				cutRunes(err.Error(), maxSchemaReasonBytes))
 		}
 		if len(elements) == 0 {
 			return nil, bad("expected_schema must be a non-empty JSON array")
@@ -245,11 +258,13 @@ func parseDatasetInputSnapshot(raw json.RawMessage) (*datasetInputSnapshot, erro
 				return nil, bad("expected_schema field %d must have a non-empty name", i+1)
 			}
 			if _, duplicate := names[element.Name]; duplicate {
-				return nil, bad("expected_schema names must be unique: %q", element.Name)
+				return nil, bad("expected_schema names must be unique: %s", quoteSchemaFieldName(element.Name))
 			}
 			if !validSnapshotSchemaFieldType(element.FieldType) {
-				return nil, bad("expected_schema field %q has an unsupported field_type %q; use BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, STRING or DATE",
-					element.Name, element.FieldType)
+				// The name and the label are quoted and cut: a pin must not
+				// grow its own error. The stored field keeps the full name.
+				return nil, bad("expected_schema field %s: field_type %s must be upper-case, up to 64 bytes, like DECIMAL(38,10)",
+					quoteSchemaFieldName(element.Name), schemaFieldTypeText(element.FieldType))
 			}
 			names[element.Name] = struct{}{}
 			expectedSchema = append(expectedSchema, snapshotSchemaField{Name: element.Name, FieldType: element.FieldType, Nullable: nullable})
@@ -293,14 +308,13 @@ func validSnapshotSchemaHash(hash string) bool {
 	return err == nil
 }
 
-// validSnapshotSchemaFieldType accepts the scalar type labels the dataset
-// service states without a type parameter.
+// validSnapshotSchemaFieldType accepts a type label of the shape the dataset
+// service's versioned schema route states, non-empty and at most
+// maxSchemaFieldTypeBytes long. The hash binding is what vouches for the
+// list: the check only keeps what a refusal quotes of a label bounded and
+// on one line.
 func validSnapshotSchemaFieldType(fieldType string) bool {
-	switch fieldType {
-	case "BOOLEAN", "BYTE", "SHORT", "INTEGER", "LONG", "FLOAT", "DOUBLE", "STRING", "DATE":
-		return true
-	}
-	return false
+	return len(fieldType) <= maxSchemaFieldTypeBytes && snapshotSchemaFieldTypeShape.MatchString(fieldType)
 }
 
 // readDatasetSnapshotRows materializes the pinned snapshot through the
@@ -404,12 +418,13 @@ func (r DatasetServiceRowReader) readDatasetSnapshotRows(ctx context.Context, re
 // refuseSnapshotSchema is the read's error for a refused schema proof. When
 // the dataset service answered a differing schema and the pin holds the
 // fields it expects, the committed schema of the pinned version is read once
-// more and each difference is named. That read never leaves a difference
-// unnamed: a read that fails, answers the expected schema after all, or
-// finds the same fields in another order says which of these it was. Every
-// other refusal is returned exactly as it was before the pin could hold
-// fields. Nothing is scanned in any case: the caller returns before its
-// first page.
+// more and each difference is named, the field differences first and then a
+// changed order of the fields both schemas hold. That read never leaves a
+// difference unnamed: a read that fails or answers the expected schema after
+// all says which of these it was, and a difference with no clause at all is
+// said to be one this service cannot name. Every other refusal is returned
+// exactly as it was before the pin could hold fields. Nothing is scanned in
+// any case: the caller returns before its first page.
 func refuseSnapshotSchema(ctx context.Context, client batchedDatasetClient, in batchedScanInput, snapshot *datasetInputSnapshot, refusal error) error {
 	var mismatch *batchedClientError
 	if len(snapshot.ExpectedSchema) == 0 || !errors.As(refusal, &mismatch) ||
@@ -429,14 +444,20 @@ func refuseSnapshotSchema(ctx context.Context, client batchedDatasetClient, in b
 			refusal, snapshot.Version)
 	}
 	clauses := schemaDifferences(snapshot.ExpectedSchema, committed)
-	if len(clauses) == 0 {
-		// Unique names, three keys and one encoding leave no other cause
-		// for a differing hash than the order of the fields.
-		clauses = []string{"the same fields in another order"}
-	}
 	if len(clauses) > maxSchemaDifferenceClauses {
 		clauses = append(clauses[:maxSchemaDifferenceClauses:maxSchemaDifferenceClauses],
 			fmt.Sprintf("and %d more", len(clauses)-maxSchemaDifferenceClauses))
+	}
+	if order := schemaOrderClause(snapshot.ExpectedSchema, committed); order != "" {
+		// Appended after the bound, so a reorder that comes with field
+		// differences is not cut away with them.
+		clauses = append(clauses, order)
+	}
+	if len(clauses) == 0 {
+		// Unreachable while the dataset service is consistent: fields with
+		// no difference have one hash.
+		return fmt.Errorf("dataset_input_schema_rejected: %w; the committed schema of version %d differs from the expected schema in a way this service cannot name",
+			refusal, snapshot.Version)
 	}
 	return fmt.Errorf("dataset_input_schema_rejected: %w; the committed schema of version %d differs from the expected schema: %s",
 		refusal, snapshot.Version, strings.Join(clauses, "; "))
@@ -445,7 +466,9 @@ func refuseSnapshotSchema(ctx context.Context, client batchedDatasetClient, in b
 // schemaDifferences names how the committed schema differs from the expected
 // one: the expected fields in pin order, a field that differs in two ways as
 // its type and then its nullability, then the committed-only fields in
-// committed order.
+// committed order. A type label read back is printed through
+// schemaFieldTypeText: it is the dataset service's text, while the pin's own
+// label was checked when parsed.
 func schemaDifferences(expected, committed []snapshotSchemaField) []string {
 	committedByName := make(map[string]snapshotSchemaField, len(committed))
 	for _, field := range committed {
@@ -460,7 +483,7 @@ func schemaDifferences(expected, committed []snapshotSchemaField) []string {
 		}
 		if actual.FieldType != field.FieldType {
 			clauses = append(clauses, fmt.Sprintf("field %s is %s in the committed schema and %s in the expected schema",
-				quoteSchemaFieldName(field.Name), actual.FieldType, field.FieldType))
+				quoteSchemaFieldName(field.Name), schemaFieldTypeText(actual.FieldType), field.FieldType))
 		}
 		if actual.Nullable != field.Nullable {
 			nullability := "not nullable in the committed schema and nullable in the expected schema"
@@ -470,16 +493,67 @@ func schemaDifferences(expected, committed []snapshotSchemaField) []string {
 			clauses = append(clauses, fmt.Sprintf("field %s is %s", quoteSchemaFieldName(field.Name), nullability))
 		}
 	}
-	expectedNames := make(map[string]struct{}, len(expected))
-	for _, field := range expected {
-		expectedNames[field.Name] = struct{}{}
-	}
+	expectedNames := schemaFieldNames(expected)
 	for _, field := range committed {
 		if _, present := expectedNames[field.Name]; !present {
 			clauses = append(clauses, fmt.Sprintf("field %s is in the committed schema and not in the expected schema", quoteSchemaFieldName(field.Name)))
 		}
 	}
 	return clauses
+}
+
+func schemaFieldNames(fields []snapshotSchemaField) map[string]struct{} {
+	names := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		names[field.Name] = struct{}{}
+	}
+	return names
+}
+
+// schemaOrderClause names a changed relative order of the fields both
+// schemas hold, at the first place the two orders differ. Fields only one
+// schema holds are left out, so an addition or a removal alone is no change
+// of order. It is "" when the order is the same.
+func schemaOrderClause(expected, committed []snapshotSchemaField) string {
+	committedNames := schemaFieldNames(committed)
+	var expectedOrder, committedOrder []string
+	for _, field := range expected {
+		if _, present := committedNames[field.Name]; present {
+			expectedOrder = append(expectedOrder, field.Name)
+		}
+	}
+	expectedNames := schemaFieldNames(expected)
+	for _, field := range committed {
+		if _, present := expectedNames[field.Name]; present {
+			committedOrder = append(committedOrder, field.Name)
+		}
+	}
+	// The expected names are unique and each is in the committed schema, so
+	// the committed order is at least as long: indexing it is always safe.
+	for i, name := range expectedOrder {
+		if name != committedOrder[i] {
+			return fmt.Sprintf("the %d fields both schemas hold come in another order: the committed schema has %s where the expected schema has %s",
+				len(expectedOrder), quoteSchemaFieldName(committedOrder[i]), quoteSchemaFieldName(name))
+		}
+	}
+	return ""
+}
+
+// schemaFieldTypeText is a type label as an error prints it. A label of the
+// stated shape is printed as it is. Any other label, which only the dataset
+// service can answer or a pin can declare, is quoted, so that a line break or
+// another control character never reaches the node error raw, and cut after
+// quoting on a rune boundary, "..." marking the cut: an escaped byte is four
+// times as wide as the raw one.
+func schemaFieldTypeText(label string) string {
+	if validSnapshotSchemaFieldType(label) {
+		return label
+	}
+	quoted := strconv.Quote(label)
+	if len(quoted) <= maxSchemaFieldTypeBytes {
+		return quoted
+	}
+	return cutRunes(quoted, maxSchemaFieldTypeBytes) + "..."
 }
 
 // quoteSchemaFieldName quotes a field name for a refusal, cut on a rune

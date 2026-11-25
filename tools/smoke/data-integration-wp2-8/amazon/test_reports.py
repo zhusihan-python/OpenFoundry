@@ -8,8 +8,8 @@ import unittest
 
 import reports
 import transactions
-from reports import (AMOUNTS, COUNTS, HEADER_ROW, STORE, RegistrationError, coverage, csv_schema, envelope, file_commit,
-                     no_data_commit, object_key, reader_number, registration, unpack)
+from reports import (AMOUNTS, COUNTS, HEADER_ROW, MAX_COLUMNS, STORE, RegistrationError, column_names, coverage, csv_schema,
+                     envelope, file_commit, no_data_commit, object_key, reader_number, registration, unpack)
 
 HERE = Path(__file__).resolve().parent
 # What the sender registered for each original file. A fixture edit changes these values.
@@ -41,13 +41,35 @@ def no_data(status="reported", period="2026-08", report_changes=(), **receipt):
     return envelope("no_data", report=report, receipt={} if status is None else dict(status=status, **receipt))
 
 
-def changed(data, row, column, cell):
-    """The report with one cell of one data row replaced. It is written again as CSV, so its quoting may differ."""
-    records = [record for record in csv.reader(io.StringIO(data.decode("utf-8-sig"), newline="")) if record]
-    records[HEADER_ROW + row][records[HEADER_ROW - 1].index(column)] = cell
+def records(data):
+    """The records of a report as a CSV reader gives them."""
+    return [record for record in csv.reader(io.StringIO(data.decode("utf-8-sig"), newline="")) if record]
+
+
+def written(records):
+    """Records written again as CSV. The quoting may differ from the file they came from."""
     out = io.StringIO(newline="")
     csv.writer(out, lineterminator="\n").writerows(records)
     return out.getvalue().encode()
+
+
+def changed(data, row, column, cell):
+    """The report with one cell of one data row replaced."""
+    every = records(data)
+    every[HEADER_ROW + row][every[HEADER_ROW - 1].index(column)] = cell
+    return written(every)
+
+
+def with_header(data, cells):
+    """The report with the cells of its header replaced."""
+    every = records(data)
+    every[HEADER_ROW - 1] = cells
+    return written(every)
+
+
+def report_of_width(width):
+    """A report whose header and its one data row hold `width` cells, named c1 to the last one."""
+    return written([["All amounts in USD"], [f"c{at}" for at in range(1, width + 1)], ["x"] * width])
 
 
 def types(data):
@@ -278,6 +300,76 @@ class SchemaTest(unittest.TestCase):
                              (narrow, "does not match its header")):
             with self.subTest(data=data[:44]), self.assertRaisesRegex(ValueError, reason):
                 csv_schema(data)
+
+    def test_header_cells_padded_with_spaces_name_the_same_columns_and_keep_their_types(self):
+        data = fixture("2026-10")
+        header = records(data)[HEADER_ROW - 1]
+        # Every cell padded, and one cell padded: the reader trims a name, so the schema does too.
+        for cells in (["\u00a0" + name + " " for name in header], header[:29] + [" total "]):
+            with self.subTest(padded=sum(cell != cell.strip() for cell in cells)):
+                self.assertEqual(csv_schema(with_header(data, cells)), csv_schema(data))
+        self.assertEqual((len(csv_schema(data)), types(data)["total"]), (30, "DOUBLE"))
+
+    def test_an_unnamed_header_cell_is_named_by_its_position_and_is_a_string(self):
+        header = records(fixture("2026-10"))[HEADER_ROW - 1]
+        # Cells 1, 7, 15 and 30 are left without a name. The last three hold numbers: a count and two amounts.
+        unnamed = with_header(fixture("2026-10"), [""] + header[1:6] + [" "] + header[7:14] + ["\u3000"] + header[15:29] + [" "])
+        names = [field["name"] for field in csv_schema(unnamed)]
+        self.assertEqual(len(names), 30)
+        self.assertEqual([names[at] for at in (0, 6, 14, 29)], ["column_1", "column_7", "column_15", "column_30"])
+        self.assertEqual([name for name in names if not name.startswith("column_")], header[1:6] + header[7:14] + header[15:29])
+        # An unnamed column has no business role, whatever its cells hold.
+        self.assertEqual([types(unnamed)[name] for name in ("column_7", "column_15", "column_30", "settlement id", "other")],
+                         ["STRING", "STRING", "STRING", "LONG", "DOUBLE"])
+
+    def test_a_name_that_comes_twice_once_trimmed_is_refused(self):
+        header = records(fixture("2026-10"))[HEADER_ROW - 1]
+        # One cell of the header is replaced in each, so the header keeps its 30 cells and the rows their width.
+        for case, cells in enumerate((header[:28] + [" total "] + header[29:],                      # total, padded
+                                      header[:4] + [" order id "] + header[5:],                    # order id, padded
+                                      header[:3] + ["", header[4], " column_4 "] + header[6:])):   # column_4, named and unnamed
+            self.assertEqual(len(cells), 30)
+            with self.subTest(case=case), self.assertRaisesRegex(ValueError, "names the column .* twice"):
+                csv_schema(with_header(fixture("2026-10"), cells))
+
+    def test_a_header_wider_than_the_reader_reads_is_refused(self):
+        self.assertEqual(MAX_COLUMNS, 256)
+        self.assertEqual([field["name"] for field in csv_schema(report_of_width(MAX_COLUMNS))],
+                         [f"c{at}" for at in range(1, 257)])
+        with self.assertRaisesRegex(ValueError, "257 columns, more than the 256"):
+            csv_schema(report_of_width(MAX_COLUMNS + 1))
+
+
+class ColumnNamesTest(unittest.TestCase):
+    def test_cells_are_trimmed_and_an_empty_one_is_named_by_its_position(self):
+        self.assertEqual(column_names([" total ", "\u00a0", "a\t", "", "b"]), ["total", "column_2", "a", "column_4", "b"])
+        self.assertEqual(column_names([]), [])
+
+    def test_every_character_go_trims_is_trimmed_from_a_name(self):
+        for space in reports.GO_SPACE:
+            with self.subTest(space=repr(space)):
+                self.assertEqual(column_names([space + "n" + space, space]), ["n", "column_2"])
+
+    def test_a_name_that_comes_twice_is_refused(self):
+        # The second name of each pair is the one met again, after trimming or after an empty cell takes its position name.
+        for header, again in ((["sku", " sku "], "sku"), (["", "sku", "column_1"], "column_1"),
+                              (["column_3", "a", " "], "column_3"), (["a", "\u3000a\u3000"], "a")):
+            with self.subTest(header=header), self.assertRaisesRegex(ValueError, f"names the column {again!r} twice"):
+                column_names(header)
+
+    def test_a_repeated_name_is_refused_as_it_is_met_before_the_columns_are_counted(self):
+        # The reader refuses the name in passing. A header too wide to be read is refused for a repeated name first.
+        wide = [f"c{at}" for at in range(1, 301)]
+        for header in (["c1", *wide], [*wide[:-1], "c5"], ["c1"] * 256):
+            with self.subTest(columns=len(header)), self.assertRaisesRegex(ValueError, "twice"):
+                column_names(header)
+
+    def test_more_columns_than_the_reader_reads_are_refused(self):
+        self.assertEqual(len(column_names([f"c{at}" for at in range(1, 257)])), 256)
+        self.assertEqual(column_names([""] * 256)[-1], "column_256")
+        for header in ([f"c{at}" for at in range(1, 258)], [""] * 257):
+            with self.subTest(columns=len(header)), self.assertRaisesRegex(ValueError, "257 columns, more than the 256"):
+                column_names(header)
 
     def test_the_publication_and_the_reader_hold_the_same_business_columns(self):
         self.assertEqual((reports.AMOUNTS, reports.COUNTS), (transactions.AMOUNTS, transactions.COUNTS))

@@ -227,6 +227,18 @@ input node fails with `dataset_input_schema_rejected`, the run publishes
 nothing, and the error carries the dataset service's code, such as
 `dataset_schema_content_hash_mismatch`.
 
+The pin can also carry `expected_schema`: an array of objects with `name`,
+`field_type` and `nullable`, exactly as the versioned schema route lists
+`fields`. It is accepted only together with `expected_schema_hash` and must
+hash to it. A pin without it behaves as before. When the check fails, the
+Pipeline service reads the committed schema of the pinned version once more
+and the node error names the differences, at most eight: a missing or added
+field, another type, another nullability, and then a changed order of the
+fields both schemas hold. An addition or a removal alone is not a change of
+order. When that read fails, when the schema comes back with the expected
+hash, or when no difference can be named, the error keeps the dataset
+service's code and says so in words instead.
+
 ## Match rows by key
 
 Select two committed snapshots on the **Compare** tab, enter a **Key column**,
