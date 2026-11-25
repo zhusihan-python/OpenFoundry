@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ### Added
 
+- A Pipeline graph input pinned by `dataset_snapshot` can require the committed schema hash of that version with `expected_schema_hash`; a mismatch refuses the input before any row is read or published.
 - PostgreSQL order CDC can publish versioned datasets from Debezium and resume after a committed publish.
 - MySQL 8.4 InnoDB sources can publish primary-key-ordered batch snapshots for version-pinned pipeline inputs.
 - Native PostgreSQL table snapshots publish primary-key-ordered NDJSON using verified TLS and source-scoped credentials.

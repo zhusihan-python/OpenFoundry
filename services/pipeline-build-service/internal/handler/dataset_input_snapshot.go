@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -29,6 +31,16 @@ import (
 // early preview exit could return rows that the page's post-stream
 // binding validation never checked), while unpinned preview reads keep
 // their legacy sampling behavior.
+//
+// An optional expected_schema_hash inside the pin adds a precondition:
+// the committed schema of the pinned version must have that SHA-256
+// content hash. It is proved against the dataset service's versioned
+// schema route BEFORE the first scan page, under the caller's bearer and
+// with the pinned (version, transaction) pair, and the answer must be
+// bound to the dataset, branch, version, transaction and hash. A refused
+// or unusable answer fails the read, so no row is scanned and nothing
+// downstream is published from that input. Without the key nothing
+// changes: no schema request is made.
 
 // maxDatasetInputTotalBytes is the hard aggregate bound on the raw record
 // bytes one snapshot read may materialize into the lightweight table
@@ -44,9 +56,14 @@ type datasetInputSnapshot struct {
 	Branch        string
 	Version       int32
 	TransactionID uuid.UUID
-	FlattenJSON   bool
-	Excel         json.RawMessage
-	ExcelFiles    []excelSnapshotFile
+	// ExpectedSchemaHash is the lowercase hexadecimal SHA-256 content hash
+	// the pinned version's committed schema must have. It is "" only when
+	// the pin declares no expected_schema_hash key at all: a declared key
+	// is always valid or a parse error.
+	ExpectedSchemaHash string
+	FlattenJSON        bool
+	Excel              json.RawMessage
+	ExcelFiles         []excelSnapshotFile
 }
 
 // PayloadDeclaresDatasetSnapshot reports whether a logic_payload declares
@@ -124,6 +141,15 @@ func parseDatasetInputSnapshot(raw json.RawMessage) (*datasetInputSnapshot, erro
 	if err != nil {
 		return nil, bad("transaction_id %q is not a transaction RID", txn)
 	}
+	// Only an absent key skips the check. A present key must be the digest
+	// (the #78 batched rule): null and "" are refused, never read as "off",
+	// so a generated pin cannot silently drop its precondition.
+	var expectedSchemaHash string
+	if value, ok := fields["expected_schema_hash"]; ok {
+		if json.Unmarshal(value, &expectedSchemaHash) != nil || !validSnapshotSchemaHash(expectedSchemaHash) {
+			return nil, bad("expected_schema_hash must be a lowercase hexadecimal SHA-256 digest")
+		}
+	}
 	var flatten bool
 	if value, ok := fields["flatten_json"]; ok {
 		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) || json.Unmarshal(value, &flatten) != nil {
@@ -141,7 +167,18 @@ func parseDatasetInputSnapshot(raw json.RawMessage) (*datasetInputSnapshot, erro
 	if len(files) != 0 && (len(excel) != 0 || flatten) {
 		return nil, bad("excel_files cannot be combined with excel or flatten_json")
 	}
-	return &datasetInputSnapshot{Branch: strings.TrimSpace(branch), Version: int32(version), TransactionID: txnID, FlattenJSON: flatten, Excel: excel, ExcelFiles: files}, nil
+	return &datasetInputSnapshot{Branch: strings.TrimSpace(branch), Version: int32(version), TransactionID: txnID, ExpectedSchemaHash: expectedSchemaHash, FlattenJSON: flatten, Excel: excel, ExcelFiles: files}, nil
+}
+
+// validSnapshotSchemaHash accepts exactly what the dataset service's
+// versioned schema route accepts as expected_content_hash: a lowercase
+// hexadecimal SHA-256 digest.
+func validSnapshotSchemaHash(hash string) bool {
+	if len(hash) != hex.EncodedLen(sha256.Size) || strings.ToLower(hash) != hash {
+		return false
+	}
+	_, err := hex.DecodeString(hash)
+	return err == nil
 }
 
 // readDatasetSnapshotRows materializes the pinned snapshot through the
@@ -179,6 +216,22 @@ func (r DatasetServiceRowReader) readDatasetSnapshotRows(ctx context.Context, re
 	}
 	limit := clampDatasetInputRows(req.Limit)
 	expectedTxn := req.Snapshot.TransactionID
+	if hash := req.Snapshot.ExpectedSchemaHash; hash != "" {
+		// The precondition is proved before any read below asks for a page:
+		// a refusal or an answer bound to another dataset, branch, version,
+		// transaction or hash fails the node here, so nothing is scanned
+		// and no output can be published from this input.
+		verifiedTxn, err := client.VerifyInputSchema(ctx, batchedScanInput{
+			DatasetRID:            rid,
+			Branch:                req.Snapshot.Branch,
+			Version:               req.Snapshot.Version,
+			ExpectedTransactionID: &expectedTxn,
+		}, hash)
+		if err != nil {
+			return DatasetRowsResult{}, fmt.Errorf("dataset_input_schema_rejected: %w", err)
+		}
+		expectedTxn = verifiedTxn
+	}
 	if len(req.Snapshot.ExcelFiles) > 0 {
 		return client.readExcelSnapshotFiles(ctx, rid, datasetUUID, req, limit, maxTotalBytes)
 	}

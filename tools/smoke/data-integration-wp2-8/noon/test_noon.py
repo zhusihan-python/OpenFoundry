@@ -1,7 +1,8 @@
 import json
 import unittest
 
-from smoke import COLUMNS, HERE, ORDER_LINE_COLUMNS, ORDER_LINE_SCHEMA, columns_of, encode, expected, materialize, projection, published_schema
+from smoke import (COLUMNS, HERE, ORDER_LINE_COLUMNS, ORDER_LINE_SCHEMA, columns_of, encode, expected, line_price_nodes,
+                   materialize, numeric_unit_price, numeric_unit_price_schema, projection, published_schema)
 
 
 class OrderLiveReplay(unittest.TestCase):
@@ -74,3 +75,52 @@ class OrderLineSchema(unittest.TestCase):
             self.assertNotEqual(columns_of(encode(rows)), ORDER_LINE_SCHEMA, name)
         with self.assertRaises(ValueError):
             columns_of(encode(mistyped))
+
+
+DIGEST = "a" * 64
+
+
+class Graph:
+    @staticmethod
+    def graph_nodes(source, version, txn, out):
+        return [{"id": "input", "config": {"dataset_id": source, "dataset_snapshot": {"branch": "main", "version": version, "transaction_id": txn}}},
+                {"id": "output", "depends_on": ["input"]}]
+
+
+class SchemaPin(unittest.TestCase):
+    def test_pin_without_a_hash_declares_no_key(self):
+        nodes = line_price_nodes(Graph(), "source", "out", {"version": 2, "transaction": "txn"})
+        self.assertEqual(nodes[0]["config"]["dataset_snapshot"], {"branch": "main", "version": 2, "transaction_id": "txn"})
+
+    def test_pin_with_a_hash_adds_the_key_to_the_input_snapshot_only(self):
+        nodes = line_price_nodes(Graph(), "source", "out", {"version": 2, "transaction": "txn"}, DIGEST)
+        self.assertEqual(nodes[0]["config"]["dataset_snapshot"],
+                         {"branch": "main", "version": 2, "transaction_id": "txn", "expected_schema_hash": DIGEST})
+        self.assertNotIn("expected_schema_hash", json.dumps(nodes[1:]))
+
+
+NUMERIC = {"file_format": "TEXT", "fields": [
+    {"name": column, "type": "DOUBLE" if column == "unit_price" else "STRING", "nullable": False} for column in ORDER_LINE_COLUMNS]}
+
+
+class NumericUnitPrice(unittest.TestCase):
+    def test_only_the_unit_price_changes_to_a_number(self):
+        rows = numeric_unit_price(2)
+        self.assertEqual([{key: value for key, value in row.items() if key != "unit_price"} for row in rows],
+                         [{key: value for key, value in row.items() if key != "unit_price"} for row in expected(2)])
+        self.assertEqual([row["unit_price"] for row in rows], [49.25, 120.0, 30.0, 25.0, 60.0])
+        self.assertTrue(all(type(row["unit_price"]) is float for row in rows))
+        # The published key order is the declared order, as for the string contract.
+        self.assertEqual([list(row) for row in map(json.loads, encode(rows).splitlines())], [ORDER_LINE_COLUMNS] * len(rows))
+
+    def test_declares_the_unit_price_as_double_and_the_rest_as_before(self):
+        self.assertEqual(numeric_unit_price_schema(numeric_unit_price(2)), NUMERIC)
+
+    def test_each_contract_refuses_the_rows_of_the_other(self):
+        for name, declare, rows in (("string price", numeric_unit_price_schema, expected(2)),
+                                    ("numeric price", published_schema, numeric_unit_price(2)),
+                                    ("boolean price", numeric_unit_price_schema, [dict(row, unit_price=True) for row in numeric_unit_price(2)]),
+                                    ("missing column", numeric_unit_price_schema,
+                                     [{key: value for key, value in row.items() if key != "sku"} for row in numeric_unit_price(2)])):
+            with self.subTest(rows=name), self.assertRaises(ValueError):
+                declare(rows)

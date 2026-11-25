@@ -99,6 +99,12 @@ func stagedManualGroupConfig(specs []models.JobSpec) (*manualStagedGroupConfig, 
 		SpecHashes: make(map[string]string, len(specs)),
 	}
 	if len(options.ExcelOutputs) != 0 {
+		// The workbook group rebuilds its pin per sheet from the manifest,
+		// which carries no schema hash: a declared one would be dropped
+		// without a proof. Refuse it instead of running the precondition unproved.
+		if pin.ExpectedSchemaHash != "" {
+			return nil, errors.New("excel_outputs does not support expected_schema_hash: remove it from dataset_snapshot")
+		}
 		if len(specs) != 1 || len(pin.Excel) != 0 || pin.FlattenJSON || excelSnapshotFormat(cfg.DatasetPath) == "" {
 			return nil, errors.New("excel_outputs requires one supported Excel workbook JobSpec without a single-sheet config")
 		}
