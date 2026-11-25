@@ -35,6 +35,32 @@ func TestCSVCellValuePreservesLeadingZeros(t *testing.T) {
 	}
 }
 
+// The schema a CSV publication declares mirrors this predicate cell for cell,
+// so each of these literals must keep its type.
+func TestCSVCellValueKeepsTheInferenceMirrorLiterals(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		cell string
+		want string
+	}{
+		{"1e3", `"1e3"`},           // exponent notation
+		{"+1", `"+1"`},             // explicit sign
+		{"001.00", `"001.00"`},     // leading zeros
+		{"NaN", `"NaN"`},           // not a JSON number
+		{"Infinity", `"Infinity"`}, // not a JSON number
+		{"9223372036854775808", `"9223372036854775808"`}, // one past int64
+		{"1234567890123456.5", `"1234567890123456.5"`},   // 16 integer digits
+		{"007", `"007"`}, // SKU keeps leading zeros as a string
+		{"-0", `-0`},     // negative zero is an int64
+		{"9223372036854775807", `9223372036854775807`}, // the largest int64
+		{"123456789012345.5", `123456789012345.5`},     // 15 integer digits
+		{" 12 ", `12`}, // surrounding whitespace trimmed
+		{"  ", `null`}, // whitespace-only cell is null
+	} {
+		assert.Equal(t, tc.want, string(csvCellValue(tc.cell)), "cell %q", tc.cell)
+	}
+}
+
 func TestParseDelimitedRows(t *testing.T) {
 	t.Parallel()
 	data := []byte("sku,qty,price,label\n007,2,1.5,hello\n100, ,3.25,world\n")

@@ -1,5 +1,7 @@
+import csv
 from decimal import Decimal
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -7,8 +9,8 @@ import re
 import unittest
 from unittest import mock
 
-from transactions import (AMOUNTS, COLUMNS, IDENTITY, NEGATIVE_AMOUNTS, OUTPUT_SHA256, agrees, expected, holds, lines,
-                          negative_amounts, nodes, read, table, value_diffs)
+from transactions import (AMOUNTS, COLUMNS, COUNTS, IDENTITY, NEGATIVE_AMOUNTS, NET_TOTAL, OUTPUT_SHA256, agrees, expected,
+                          holds, lines, negative_amounts, net, nodes, read, table, text_total, value_diffs, with_total)
 
 HERE = Path(__file__).resolve().parent
 DESCRIPTIVE = {"marketplace", "account type", "fulfillment", "order city", "order state", "order postal",
@@ -32,6 +34,11 @@ def file(*rows):
 def changed(**changes):
     """The download with its first line changed."""
     return file({**FIRST, **changes}, *REST)
+
+
+def records(data):
+    """The records of a report as a CSV reader gives them."""
+    return [record for record in csv.reader(io.StringIO(data.decode("utf-8-sig"), newline=""))]
 
 
 class Expectation(unittest.TestCase):
@@ -189,6 +196,66 @@ class ParsedRows(unittest.TestCase):
                           {"settlement id": 1000000010}])
 
 
+class NegativeReport(unittest.TestCase):
+    def test_with_total_changes_the_total_of_the_last_data_row_and_no_other_cell(self):
+        original, derived = fixture("2026-10-2"), text_total(fixture("2026-10-2"))
+        before, after = records(original), records(derived)
+        self.assertEqual((len(before), len(after), before[1][-1]), (4, 4, "total"))
+        self.assertEqual([len(record) for record in after], [len(record) for record in before])
+        differences = [(at, cell) for at, (x, y) in enumerate(zip(before, after))
+                       for cell, (a, b) in enumerate(zip(x, y)) if a != b]
+        # One cell: the last column of the last record.
+        self.assertEqual(differences, [(3, 29)])
+        self.assertEqual((before[3][29], after[3][29]), ("8.49", "N/A"))
+
+    def test_with_total_keeps_the_bom_the_line_endings_and_the_other_rows_byte_for_byte(self):
+        original, derived = fixture("2026-10-2"), text_total(fixture("2026-10-2"))
+        # All that differs is the one cell. The BOM is in the shared start and the last line ending in the shared end.
+        start = os.path.commonprefix([original, derived])
+        end = os.path.commonprefix([original[::-1], derived[::-1]])
+        self.assertEqual((original[len(start):len(original) - len(end)], derived[len(start):len(derived) - len(end)]),
+                         (b"8.49", b"N/A"))
+        self.assertEqual((start[:3], start[-1:], end), (b"\xef\xbb\xbf", b",", b"\n"))
+        self.assertEqual(original.split(b"\n")[:-2], derived.split(b"\n")[:-2])
+
+    def test_with_total_keeps_the_line_endings_of_a_report_with_crlf_or_without_a_last_newline(self):
+        lf = fixture("2026-10-2")
+        crlf, bare = lf.replace(b"\n", b"\r\n"), lf.rstrip(b"\n")
+        # Putting the cell back gives the same bytes, whatever the line endings.
+        self.assertEqual([with_total(data, "8.49") for data in (lf, crlf, bare)], [lf, crlf, bare])
+        derived = [with_total(data, "N/A") for data in (lf, crlf, bare)]
+        self.assertEqual([data.endswith(ending) for data, ending in zip(derived, (b",N/A\n", b",N/A\r\n", b",N/A"))],
+                         [True] * 3)
+        # Every line ending of the CRLF report is still CRLF, and the bare report still has no last newline.
+        self.assertEqual([data.count(b"\n") for data in derived], [4, 4, 3])
+        self.assertEqual(with_total(crlf, "N/A").replace(b"\r\n", b"").count(b"\n"), 0)
+
+    def test_with_total_refuses_a_last_data_row_that_does_not_end_with_a_number(self):
+        for data in (text_total(fixture("2026-10-2")), b"", b"\n", b"date/time,total\n1\n", b"date/time,total\n1,8.49\n1\n",
+                     b'date/time,total\n1,"8.49"\n', b"date/time,total\n1,8.49 \n", b"date/time,total\n1,1e3\n",
+                     b"date/time,total\n1,007\n"):
+            with self.subTest(data=data), self.assertRaisesRegex(ValueError, "does not end with a number"):
+                with_total(data, "N/A")
+
+
+class NetTotal(unittest.TestCase):
+    def test_the_net_of_each_october_report_is_pinned_and_the_download_sums_to_it(self):
+        for name, total in (("2026-10", Decimal("59.57")), ("2026-10-2", Decimal("-1.36"))):
+            with self.subTest(file=name):
+                # What a reader downloads: one JSON object per line, an amount a number.
+                download = "".join(json.dumps({"total": float(row["total"])}) + "\n" for row in expected(fixture(name))).encode()
+                self.assertEqual((NET_TOTAL[name], net(expected(fixture(name))), net(read(download))), (total, total, total))
+
+    def test_the_net_skips_a_row_whose_total_is_empty_or_text(self):
+        rows = expected(fixture("2026-10-2"))
+        rows[-1]["total"] = "N/A"
+        self.assertEqual(net(rows), expected(fixture("2026-10-2"))[0]["total"])
+        self.assertEqual(net(read(b'{"total": -9.85}\n{"total": "N/A"}\n')), Decimal("-9.85"))
+        self.assertEqual(net([{"total": 1}, {"total": Decimal("0.5")}, {"total": None}, {"total": "1"}, {"total": True}, {}]),
+                         Decimal("1.5"))
+        self.assertEqual(net([]), Decimal(0))
+
+
 class Graph:
     """The node builder of the real WP3.4 harness, which reads its environment at import."""
 
@@ -202,6 +269,11 @@ class Graph:
 
 
 class TransactionPipeline(unittest.TestCase):
+    # The answer of the versioned schema route for one report version, as the reader holds it.
+    SCHEMA = {"content_hash": "0" * 63 + "1",
+              "fields": [{"name": "date/time", "field_type": "STRING", "nullable": True},
+                         {"name": "total", "field_type": "DOUBLE", "nullable": True}]}
+
     def test_the_pipeline_pins_the_published_version_and_projects_the_columns(self):
         built = nodes(Graph(), "reports", "amounts", dict(version=3, transaction="txn-3"))
         self.assertEqual([node["id"] for node in built], ["input", "project-transactions", "output"])
@@ -221,6 +293,24 @@ class TransactionPipeline(unittest.TestCase):
         self.assertEqual(pins, [{"branch": "main", "version": 2, "transaction_id": "ri.foundry.main.transaction.txn-2"},
                                 {"branch": "main", "version": 3, "transaction_id": "ri.foundry.main.transaction.txn-3"},
                                 pins[0]])
+
+    def test_the_pin_also_carries_the_schema_the_reader_asked_of_the_version_and_its_hash(self):
+        built = nodes(Graph(), "reports", "amounts", dict(version=4, transaction="txn-4"), self.SCHEMA)
+        self.assertEqual([node["id"] for node in built], ["input", "project-transactions", "output"])
+        pin = built[0]["config"]["dataset_snapshot"]
+        self.assertEqual({name: value for name, value in pin.items() if not name.startswith("expected_schema")},
+                         {"branch": "main", "version": 4, "transaction_id": "ri.foundry.main.transaction.txn-4"})
+        self.assertEqual((pin["expected_schema_hash"], pin["expected_schema"]),
+                         (self.SCHEMA["content_hash"], self.SCHEMA["fields"]))
+        # The pin holds a copy of the answer. A change to one does not reach the other.
+        self.assertIsNot(pin["expected_schema"], self.SCHEMA["fields"])
+        pin["expected_schema"][1]["field_type"] = "STRING"
+        self.assertEqual(self.SCHEMA["fields"][1]["field_type"], "DOUBLE")
+
+    def test_a_pin_without_an_expected_schema_names_none(self):
+        for built in (nodes(Graph(), "reports", "amounts", dict(version=2, transaction="txn-2")),
+                      nodes(Graph(), "reports", "amounts", dict(version=2, transaction="txn-2"), None)):
+            self.assertEqual(sorted(built[0]["config"]["dataset_snapshot"]), ["branch", "transaction_id", "version"])
 
 
 if __name__ == "__main__":

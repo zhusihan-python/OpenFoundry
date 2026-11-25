@@ -2,10 +2,12 @@
 
 These helpers serve the Pipeline acceptance only. The publication path is reports.py.
 """
+import copy
 import csv
 from decimal import Decimal
 import io
 import json
+import re
 
 # A transaction is named by these columns of its report. The sixteen amount columns of a report follow.
 IDENTITY = ["date/time", "settlement id", "type", "order id", "sku", "description", "quantity"]
@@ -20,6 +22,10 @@ NEGATIVE_AMOUNTS = {"2026-10": 6, "2026-10-2": 3}
 # SHA256 of the NDJSON a downstream consumer downloads for the transactions of each October report.
 OUTPUT_SHA256 = {"2026-10": "2adc3f19f70041f150364fa81f33d275c19667204e68efabd28389551e2ce464",
                  "2026-10-2": "127b33a8a8523ba3d44479ad4b66480529c29423b71b89acd2d796a6ef5aa143"}
+# The sum of total over the transactions of each October report.
+NET_TOTAL = {"2026-10": Decimal("59.57"), "2026-10-2": Decimal("-1.36")}
+# The end of a data row whose last cell is a number the Dataset CSV reader gives as one.
+LAST_NUMBER = re.compile(rb",-?(0|[1-9][0-9]*)(\.[0-9]+)?(\r?)$")
 
 
 def expected(data, columns=None):
@@ -118,9 +124,45 @@ def negative_amounts(rows):
     return [{name: row[name] for name in AMOUNTS if row[name] is not None and row[name] < 0} for row in rows]
 
 
-def nodes(graph, source, out, published):
-    """The graph of one Pipeline: a pinned report input, a select of COLUMNS and an output to another dataset."""
+def with_total(data, cell):
+    """The report with the `total` cell of its last data row replaced by `cell`.
+
+    This builds a test input: a report that a Pipeline must refuse for its schema. Only that cell
+    changes, and it changes on the bytes, so the BOM, the line endings and every other cell stay
+    as they are. total is the last column of a report, so the last data row must end with a comma
+    and a number.
+    """
+    body = data.rstrip(b"\r\n")
+    last = LAST_NUMBER.search(body)
+    if last is None:
+        raise ValueError("the last data row of the report does not end with a number")
+    return b"".join((body[:last.start()], b",", cell.encode(), last.group(3), data[len(body):]))
+
+
+def text_total(data):
+    """The report with the total of its last data row as text, N/A. The test input of the refusal a Pipeline owes it."""
+    return with_total(data, "N/A")
+
+
+def net(rows):
+    """The sum of `total` over the rows that hold a number, as a Decimal.
+
+    A row whose total is empty or is text, as in the report with a text total, adds nothing.
+    """
+    return sum((row["total"] for row in rows if type(row.get("total")) in (int, Decimal)), Decimal(0))
+
+
+def nodes(graph, source, out, published, expected_schema=None):
+    """The graph of one Pipeline: a pinned report input, a select of COLUMNS and an output to another dataset.
+
+    With the schema a reader asked of the input version (`expected_schema`, the answer of the
+    versioned schema route) the pin also requires that schema: it carries the answer's content
+    hash and a copy of its fields.
+    """
     nodes = graph.graph_nodes(source, published["version"], published["transaction"], out)
+    if expected_schema is not None:
+        nodes[0]["config"]["dataset_snapshot"].update(expected_schema_hash=expected_schema["content_hash"],
+                                                      expected_schema=copy.deepcopy(expected_schema["fields"]))
     nodes.insert(1, {"id": "project-transactions", "label": "Publish transaction amounts", "depends_on": ["input"],
                      "transform_type": "select", "config": {"columns": COLUMNS}})
     nodes[-1]["depends_on"] = ["project-transactions"]

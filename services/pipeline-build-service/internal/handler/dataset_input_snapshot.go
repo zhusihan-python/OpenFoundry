@@ -6,8 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -41,6 +45,12 @@ import (
 // or unusable answer fails the read, so no row is scanned and nothing
 // downstream is published from that input. Without the key nothing
 // changes: no schema request is made.
+//
+// An optional expected_schema inside the pin holds the fields that hash
+// covers, as the dataset service lists them. A refused proof then reads the
+// committed schema of the pinned version once more, without the hash so the
+// route answers the schema instead of comparing it, and names each
+// difference. When that read fails the refusal is the one without the key.
 
 // maxDatasetInputTotalBytes is the hard aggregate bound on the raw record
 // bytes one snapshot read may materialize into the lightweight table
@@ -48,6 +58,59 @@ import (
 // bound (64MiB): beyond it the read fails instead of truncating, so no
 // partial output is ever produced from a pinned snapshot.
 const maxDatasetInputTotalBytes = 64 << 20
+
+// A refusal names at most maxSchemaDifferenceClauses differences. One clause
+// quotes its field name cut to maxSchemaFieldNameBytes, and a diagnostic
+// read that fails is quoted cut to maxSchemaReasonBytes, each on a rune
+// boundary so neither can flood the node error.
+const (
+	maxSchemaDifferenceClauses = 8
+	maxSchemaFieldNameBytes    = 128
+	maxSchemaReasonBytes       = 200
+)
+
+// snapshotSchemaField is one field of a schema as the dataset service's
+// versioned schema route lists it. The keys and their order are the route's
+// own, so the plain json.Marshal of a field list hashes to its content_hash.
+type snapshotSchemaField struct {
+	Name      string `json:"name"`
+	FieldType string `json:"field_type"`
+	Nullable  bool   `json:"nullable"`
+}
+
+// snapshotSchemaElement is one element of expected_schema as the pin writes
+// it. Into a bool a missing nullable would read as false, so the literal is
+// kept raw until it is proved to be true or false.
+type snapshotSchemaElement struct {
+	Name      string          `json:"name"`
+	FieldType string          `json:"field_type"`
+	Nullable  json.RawMessage `json:"nullable"`
+}
+
+// snapshotSchemaNullable reads the nullability an element states. Only the
+// literals true and false state it: a missing key, null or a value of
+// another JSON type is never read as false.
+func snapshotSchemaNullable(raw json.RawMessage) (nullable, stated bool) {
+	switch string(bytes.TrimSpace(raw)) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	}
+	return false, false
+}
+
+// snapshotSchemaDigest is the content hash of a field list: the lowercase
+// hexadecimal SHA-256 over the plain json.Marshal of the list, in its order.
+// No encoder of this package takes part.
+func snapshotSchemaDigest(fields []snapshotSchemaField) (string, error) {
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
 
 // datasetInputSnapshot is the parsed, validated pin of one dataset_input
 // node: branch, positive version and the transaction that cut it. All
@@ -61,9 +124,13 @@ type datasetInputSnapshot struct {
 	// the pin declares no expected_schema_hash key at all: a declared key
 	// is always valid or a parse error.
 	ExpectedSchemaHash string
-	FlattenJSON        bool
-	Excel              json.RawMessage
-	ExcelFiles         []excelSnapshotFile
+	// ExpectedSchema is the field list that hash covers, read from the
+	// pin's expected_schema. It is nil unless the pin declares both keys:
+	// an expected_schema without a valid hash is a parse error.
+	ExpectedSchema []snapshotSchemaField
+	FlattenJSON    bool
+	Excel          json.RawMessage
+	ExcelFiles     []excelSnapshotFile
 }
 
 // PayloadDeclaresDatasetSnapshot reports whether a logic_payload declares
@@ -150,6 +217,48 @@ func parseDatasetInputSnapshot(raw json.RawMessage) (*datasetInputSnapshot, erro
 			return nil, bad("expected_schema_hash must be a lowercase hexadecimal SHA-256 digest")
 		}
 	}
+	var expectedSchema []snapshotSchemaField
+	if value, ok := fields["expected_schema"]; ok {
+		// The fields must hash to the declared digest, so the hash is
+		// what vouches for them: without it the key is refused, never
+		// read as a list to trust on its own.
+		if expectedSchemaHash == "" {
+			return nil, bad("expected_schema requires expected_schema_hash")
+		}
+		decoder := json.NewDecoder(bytes.NewReader(value))
+		decoder.DisallowUnknownFields()
+		var elements []snapshotSchemaElement
+		if err := decoder.Decode(&elements); err != nil {
+			return nil, bad("expected_schema must be a JSON array of objects with the keys name, field_type and nullable: %v", err)
+		}
+		if len(elements) == 0 {
+			return nil, bad("expected_schema must be a non-empty JSON array")
+		}
+		expectedSchema = make([]snapshotSchemaField, 0, len(elements))
+		names := make(map[string]struct{}, len(elements))
+		for i, element := range elements {
+			nullable, stated := snapshotSchemaNullable(element.Nullable)
+			if !stated {
+				return nil, bad("expected_schema field %d must state nullable as true or false", i+1)
+			}
+			if element.Name == "" {
+				return nil, bad("expected_schema field %d must have a non-empty name", i+1)
+			}
+			if _, duplicate := names[element.Name]; duplicate {
+				return nil, bad("expected_schema names must be unique: %q", element.Name)
+			}
+			if !validSnapshotSchemaFieldType(element.FieldType) {
+				return nil, bad("expected_schema field %q has an unsupported field_type %q; use BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, STRING or DATE",
+					element.Name, element.FieldType)
+			}
+			names[element.Name] = struct{}{}
+			expectedSchema = append(expectedSchema, snapshotSchemaField{Name: element.Name, FieldType: element.FieldType, Nullable: nullable})
+		}
+		digest, err := snapshotSchemaDigest(expectedSchema)
+		if err != nil || digest != expectedSchemaHash {
+			return nil, bad("expected_schema does not hash to expected_schema_hash")
+		}
+	}
 	var flatten bool
 	if value, ok := fields["flatten_json"]; ok {
 		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) || json.Unmarshal(value, &flatten) != nil {
@@ -167,7 +276,10 @@ func parseDatasetInputSnapshot(raw json.RawMessage) (*datasetInputSnapshot, erro
 	if len(files) != 0 && (len(excel) != 0 || flatten) {
 		return nil, bad("excel_files cannot be combined with excel or flatten_json")
 	}
-	return &datasetInputSnapshot{Branch: strings.TrimSpace(branch), Version: int32(version), TransactionID: txnID, ExpectedSchemaHash: expectedSchemaHash, FlattenJSON: flatten, Excel: excel, ExcelFiles: files}, nil
+	return &datasetInputSnapshot{
+		Branch: strings.TrimSpace(branch), Version: int32(version), TransactionID: txnID, ExpectedSchemaHash: expectedSchemaHash,
+		ExpectedSchema: expectedSchema, FlattenJSON: flatten, Excel: excel, ExcelFiles: files,
+	}, nil
 }
 
 // validSnapshotSchemaHash accepts exactly what the dataset service's
@@ -179,6 +291,16 @@ func validSnapshotSchemaHash(hash string) bool {
 	}
 	_, err := hex.DecodeString(hash)
 	return err == nil
+}
+
+// validSnapshotSchemaFieldType accepts the scalar type labels the dataset
+// service states without a type parameter.
+func validSnapshotSchemaFieldType(fieldType string) bool {
+	switch fieldType {
+	case "BOOLEAN", "BYTE", "SHORT", "INTEGER", "LONG", "FLOAT", "DOUBLE", "STRING", "DATE":
+		return true
+	}
+	return false
 }
 
 // readDatasetSnapshotRows materializes the pinned snapshot through the
@@ -221,14 +343,15 @@ func (r DatasetServiceRowReader) readDatasetSnapshotRows(ctx context.Context, re
 		// a refusal or an answer bound to another dataset, branch, version,
 		// transaction or hash fails the node here, so nothing is scanned
 		// and no output can be published from this input.
-		verifiedTxn, err := client.VerifyInputSchema(ctx, batchedScanInput{
+		input := batchedScanInput{
 			DatasetRID:            rid,
 			Branch:                req.Snapshot.Branch,
 			Version:               req.Snapshot.Version,
 			ExpectedTransactionID: &expectedTxn,
-		}, hash)
+		}
+		verifiedTxn, err := client.VerifyInputSchema(ctx, input, hash)
 		if err != nil {
-			return DatasetRowsResult{}, fmt.Errorf("dataset_input_schema_rejected: %w", err)
+			return DatasetRowsResult{}, refuseSnapshotSchema(ctx, client, input, req.Snapshot, err)
 		}
 		expectedTxn = verifiedTxn
 	}
@@ -276,6 +399,108 @@ func (r DatasetServiceRowReader) readDatasetSnapshotRows(ctx context.Context, re
 		Columns:       scan.Metadata.Schema.columns(),
 		Rows:          rows,
 	}, nil
+}
+
+// refuseSnapshotSchema is the read's error for a refused schema proof. When
+// the dataset service answered a differing schema and the pin holds the
+// fields it expects, the committed schema of the pinned version is read once
+// more and each difference is named. That read never leaves a difference
+// unnamed: a read that fails, answers the expected schema after all, or
+// finds the same fields in another order says which of these it was. Every
+// other refusal is returned exactly as it was before the pin could hold
+// fields. Nothing is scanned in any case: the caller returns before its
+// first page.
+func refuseSnapshotSchema(ctx context.Context, client batchedDatasetClient, in batchedScanInput, snapshot *datasetInputSnapshot, refusal error) error {
+	var mismatch *batchedClientError
+	if len(snapshot.ExpectedSchema) == 0 || !errors.As(refusal, &mismatch) ||
+		mismatch.Status != http.StatusPreconditionFailed || mismatch.Code != batchedInputSchemaMismatchCode {
+		return fmt.Errorf("dataset_input_schema_rejected: %w", refusal)
+	}
+	committed, err := client.committedInputSchema(ctx, in)
+	if err != nil {
+		return fmt.Errorf("dataset_input_schema_rejected: %w; the committed schema of version %d could not be read for a field-level reason (%s)",
+			refusal, snapshot.Version, cutRunes(err.Error(), maxSchemaReasonBytes))
+	}
+	if readBack, err := snapshotSchemaDigest(committed); err == nil && readBack == snapshot.ExpectedSchemaHash {
+		// The second read answers the very schema the first refused, which
+		// contradicts that refusal. Nothing then supports a difference to
+		// name, so the refusal is kept and says so.
+		return fmt.Errorf("dataset_input_schema_rejected: %w; the schema read back for version %d has the expected hash, so no field difference can be named",
+			refusal, snapshot.Version)
+	}
+	clauses := schemaDifferences(snapshot.ExpectedSchema, committed)
+	if len(clauses) == 0 {
+		// Unique names, three keys and one encoding leave no other cause
+		// for a differing hash than the order of the fields.
+		clauses = []string{"the same fields in another order"}
+	}
+	if len(clauses) > maxSchemaDifferenceClauses {
+		clauses = append(clauses[:maxSchemaDifferenceClauses:maxSchemaDifferenceClauses],
+			fmt.Sprintf("and %d more", len(clauses)-maxSchemaDifferenceClauses))
+	}
+	return fmt.Errorf("dataset_input_schema_rejected: %w; the committed schema of version %d differs from the expected schema: %s",
+		refusal, snapshot.Version, strings.Join(clauses, "; "))
+}
+
+// schemaDifferences names how the committed schema differs from the expected
+// one: the expected fields in pin order, a field that differs in two ways as
+// its type and then its nullability, then the committed-only fields in
+// committed order.
+func schemaDifferences(expected, committed []snapshotSchemaField) []string {
+	committedByName := make(map[string]snapshotSchemaField, len(committed))
+	for _, field := range committed {
+		committedByName[field.Name] = field
+	}
+	clauses := make([]string, 0, len(expected)+len(committed))
+	for _, field := range expected {
+		actual, present := committedByName[field.Name]
+		if !present {
+			clauses = append(clauses, fmt.Sprintf("field %s is in the expected schema and not in the committed schema", quoteSchemaFieldName(field.Name)))
+			continue
+		}
+		if actual.FieldType != field.FieldType {
+			clauses = append(clauses, fmt.Sprintf("field %s is %s in the committed schema and %s in the expected schema",
+				quoteSchemaFieldName(field.Name), actual.FieldType, field.FieldType))
+		}
+		if actual.Nullable != field.Nullable {
+			nullability := "not nullable in the committed schema and nullable in the expected schema"
+			if actual.Nullable {
+				nullability = "nullable in the committed schema and not nullable in the expected schema"
+			}
+			clauses = append(clauses, fmt.Sprintf("field %s is %s", quoteSchemaFieldName(field.Name), nullability))
+		}
+	}
+	expectedNames := make(map[string]struct{}, len(expected))
+	for _, field := range expected {
+		expectedNames[field.Name] = struct{}{}
+	}
+	for _, field := range committed {
+		if _, present := expectedNames[field.Name]; !present {
+			clauses = append(clauses, fmt.Sprintf("field %s is in the committed schema and not in the expected schema", quoteSchemaFieldName(field.Name)))
+		}
+	}
+	return clauses
+}
+
+// quoteSchemaFieldName quotes a field name for a refusal, cut on a rune
+// boundary so one long name cannot crowd out the other differences.
+func quoteSchemaFieldName(name string) string {
+	quoted := strconv.Quote(name)
+	if len(quoted) <= maxSchemaFieldNameBytes {
+		return quoted
+	}
+	return cutRunes(quoted, maxSchemaFieldNameBytes) + "..."
+}
+
+// cutRunes shortens text to at most limit bytes without splitting a rune.
+func cutRunes(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	for !utf8.ValidString(text[:limit]) {
+		limit--
+	}
+	return text[:limit]
 }
 
 // canonicalDatasetRIDForComparison normalises any accepted dataset
