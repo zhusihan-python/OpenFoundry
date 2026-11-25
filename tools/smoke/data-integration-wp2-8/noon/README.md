@@ -50,6 +50,26 @@ The connector's raw batch and the six-column Pipeline projection are NDJSON with
 
 `schema-*.json` hold each answer, and the report's `schema` section records the dataset, columns, hashes and answers.
 
+## Schema precondition on the Pipeline input
+
+The input node's `dataset_snapshot` also carries `expected_schema_hash`, the hash the reader read for the pinned version.
+All three runs name the same seven-column hash. The Pipeline service proves it as the caller before it reads a row,
+so v1 and v2 are each read by their version and transaction only after the committed schema of that version answered the hash.
+
+After those runs the test publishes a third version of the order lines. It is a valid publication:
+the declaration states `unit_price` as `DOUBLE` and every stored row holds a number, so its schema hash differs from the first two versions.
+The same Pipeline, still naming the original hash, is then bound to v3.
+The run fails on the input node, whose own error carries `dataset_input_schema_rejected` and `dataset_schema_content_hash_mismatch`.
+The two nodes after it are cancelled, and the output dataset keeps its three versions.
+
+Before and after the refused run the independent reader maps the last good output v3 and the input v2 to their transactions,
+downloads both files and asks the schema of v2 bound to its transaction and the pinned hash. Both answers are the same.
+`schema-gate-refused-run.json` holds the refused run, `published-v3-numeric.ndjson` the third version,
+and the report's `schema_gate` section records the two snapshots.
+
+This stack has no recorder between the Pipeline service and the dataset service, so the run shows the refusal and its reason.
+That a refused schema reads no row is proven by the unit tests of the Pipeline service.
+
 ## Version comparison preview
 
 The optional `noon-preview` case runs the checks above in the same stack, then compares the three published output versions of that one Pipeline dataset by `item_nr`:

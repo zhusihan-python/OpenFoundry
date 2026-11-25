@@ -217,6 +217,16 @@ verified transaction. A mismatch fails the build before an output upload begins
 and preserves the previous output version. The optional check covers the entire
 Parquet snapshot, including when the build copies a single file from it.
 
+For a Pipeline graph input, set `expected_schema_hash` inside the node's
+`dataset_snapshot`. Only an absent key skips the check: `null` or an empty
+string is refused when the node is parsed. Before the first row is read, the
+Pipeline service asks the versioned schema route with the pinned branch,
+version, transaction and hash, as the user who started the run. The answer must
+name the same dataset, branch, version, transaction and hash. Otherwise the
+input node fails with `dataset_input_schema_rejected`, the run publishes
+nothing, and the error carries the dataset service's code, such as
+`dataset_schema_content_hash_mismatch`.
+
 ## Match rows by key
 
 Select two committed snapshots on the **Compare** tab, enter a **Key column**,

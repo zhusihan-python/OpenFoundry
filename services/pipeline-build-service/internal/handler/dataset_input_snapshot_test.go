@@ -37,6 +37,12 @@ type snapshotTestServer struct {
 	// rowsFirst writes the rows array before the binding fields so the
 	// client can only post-validate them after the rows streamed.
 	rowsFirst bool
+	// schemaBody, when non-nil, makes the double answer the versioned
+	// schema route (path suffix "/schema") with schemaStatus and these
+	// bytes; the request is recorded like every other one. nil keeps the
+	// 404 below.
+	schemaStatus int
+	schemaBody   []byte
 }
 
 type snapshotTestRequest struct {
@@ -51,6 +57,12 @@ func newSnapshotTestServer(t *testing.T, records [][]byte) *snapshotTestServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/datasets/", func(w http.ResponseWriter, r *http.Request) {
 		s.requests = append(s.requests, snapshotTestRequest{Path: r.URL.Path, Query: r.URL.RawQuery, Auth: r.Header.Get("Authorization")})
+		if strings.HasSuffix(r.URL.Path, "/schema") && s.schemaBody != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(s.schemaStatus)
+			_, _ = w.Write(s.schemaBody)
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/files/rows:scan") {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"unexpected path","code":"not_found"}`))

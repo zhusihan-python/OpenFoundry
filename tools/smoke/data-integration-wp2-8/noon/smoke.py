@@ -91,13 +91,36 @@ def columns_of(data):
     return [{"name": name, "field_type": "STRING", "nullable": name in nullable} for name in names]
 
 
+def numeric_unit_price(version):
+    """The same order lines with the unit price as a JSON number instead of a string."""
+    return [dict(row, unit_price=float(row["unit_price"])) for row in expected(version)]
+
+
+def numeric_unit_price_schema(rows):
+    """The publish contract with one legitimate change: the unit price is a
+    number in the declaration and in every row, the other columns as before.
+    """
+    for row in rows:
+        if set(row) != set(ORDER_LINE_COLUMNS) or not all(
+                type(row[name]) in (int, float) if name == "unit_price" else isinstance(row[name], str) for name in row):
+            raise ValueError("numeric order lines must have the contract columns, the unit price a number and the rest strings")
+    return {"file_format": "TEXT",
+            "fields": [{"name": name, "type": "DOUBLE" if name == "unit_price" else "STRING", "nullable": False}
+                       for name in ORDER_LINE_COLUMNS]}
+
+
 def schema_route(dataset, version, **params):
     """The formal versioned schema request for one dataset version on main."""
     return f"/v1/datasets/{dataset}/schema?" + urlencode({"branch": "main", "version": version, **params})
 
 
-def line_price_nodes(graph, source, out, published):
+def line_price_nodes(graph, source, out, published, expected_schema_hash=None):
     nodes = graph.graph_nodes(source, published["version"], published["transaction"], out)
+    if expected_schema_hash is not None:
+        # The pin also requires the committed schema of that version to
+        # have this content hash. The pipeline service proves it against
+        # the dataset service as the caller before it reads any row.
+        nodes[0]["config"]["dataset_snapshot"]["expected_schema_hash"] = expected_schema_hash
     nodes.insert(1, {"id": "project-lines", "label": "Publish order line prices", "depends_on": ["input"],
                      "transform_type": "select", "config": {"columns": COLUMNS}})
     nodes[-1]["depends_on"] = ["project-lines"]
@@ -142,13 +165,13 @@ def main(state):
     assert sync.status in (200,201)
     sync_id = sync.body["id"]
 
-    def commit(batch, parent, rows):
+    def commit(batch, parent, rows, declare=published_schema):
         data = encode(rows)
         payload = dict(idempotency_key=f"noon:{raw}:{batch}", branch="main", transaction_type="SNAPSHOT", format="json",
                        metadata=dict(source_dataset=raw, source_batch=batch, parent_version=str(parent)),
                        files=[dict(logical_path="order-lines.ndjson", operation="ADD", content_type="application/x-ndjson",
                                    size_bytes=len(data), content_base64=base64.b64encode(data).decode())],
-                       schema=published_schema(rows))
+                       schema=declare(rows))
         return p1.http("dataset", f"/api/v1/datasets/{target}/outputs:commit", token=owner, payload=payload)
 
     def deliver(run, parent):
@@ -248,11 +271,11 @@ def main(state):
 
     # One pipeline reads the published order lines, not the raw batches: v1, then v2, then v1 again.
     down = p1.create_dataset(owner, "noon AE order line prices", "json")["id"]
-    pipeline = report["pipeline"] = dict(pipeline_id=None, output_dataset=down, columns=COLUMNS, builds=[])
+    pipeline = report["pipeline"] = dict(pipeline_id=None, output_dataset=down, columns=COLUMNS, expected_schema_hash=digest, builds=[])
     known = {v["transaction_id"] for v in graph.list_versions(down)}
     for ordinal, batch in enumerate((report["batches"][0], report["batches"][1], report["batches"][0]), 1):
         rows = projection(batch["version"])
-        nodes = line_price_nodes(graph, target, down, batch)
+        nodes = line_price_nodes(graph, target, down, batch, digest)
         graph.TOKEN = owner
         try:
             if pipeline["pipeline_id"] is None:
@@ -276,6 +299,9 @@ def main(state):
               and observed["dataset_branch"] == "main"
               and observed["dataset_version"] == batch["version"]
               and observed["dataset_transaction_id"] == "ri.foundry.main.transaction." + batch["transaction"])
+        check(f"pipeline run {ordinal} pins the seven-column schema hash the reader read for published v{batch['version']}",
+              config["dataset_snapshot"].get("expected_schema_hash") == digest
+              and json.loads(declared[batch["version"]])["content_hash"] == digest)
         produced, = [v for v in graph.list_versions(down) if v["transaction_id"] not in known]
         known.add(produced["transaction_id"])
         resource, = next(n for n in run["node_results"] if n["node_id"] == "output")["output_resources"]
@@ -292,7 +318,8 @@ def main(state):
         (state / artifact).write_bytes(response.body)
         pipeline["builds"].append(dict(pipeline_run_id=run["id"], input_branch=observed["dataset_branch"],
                                        input_dataset=target, input_version=observed["dataset_version"],
-                                       input_transaction=batch["transaction"], output_version=produced["version"],
+                                       input_transaction=batch["transaction"], input_schema_hash=config["dataset_snapshot"].get("expected_schema_hash"),
+                                       output_version=produced["version"],
                                        output_transaction=produced["transaction_id"],
                                        pipeline_output_transaction_rid=resource["transaction_rid"],
                                        output_file_id=file["id"], artifact=artifact, rows=rows,
@@ -326,6 +353,101 @@ def main(state):
               and b'"fields"' not in result.body)
         schema["answers"].append(dict(name=f"unsupported-{name}", dataset=dataset, version=version, status=result.status,
                                       artifact=f"schema-unsupported-{name}.json"))
+    # The pin carries the schema precondition. A third publication of the
+    # order lines legitimately changes the contract. The same graph keeps
+    # the original hash when it is bound to that version.
+    gate = report["schema_gate"] = dict(dataset=target, pipeline_id=pid, output_dataset=down, expected_schema_hash=digest)
+    latest = pipeline["builds"][-1]
+
+    def last_good():
+        """The reader maps the last good output and its input version to their
+        transactions, downloads both files and asks the schema of the input
+        bound to its transaction and the pinned hash.
+        """
+        output = p1.download_file(reader, down, latest["output_file_id"])
+        source = p1.download_file(reader, target, second_batch["file"])
+        answer = p1.http("dataset", schema_route(target, 2, transaction_id=second_batch["transaction"], expected_content_hash=digest),
+                         token=reader, raw=True)
+        return dict(output_versions={v["version"]: v["transaction_id"] for v in graph.list_versions(down)},
+                    input_versions={v["version"]: v["transaction_id"] for v in graph.list_versions(target)},
+                    output_status=output.status, output_sha256=hashlib.sha256(output.body).hexdigest(),
+                    input_status=source.status, input_sha256=hashlib.sha256(source.body).hexdigest(),
+                    input_schema_status=answer.status, input_schema_sha256=hashlib.sha256(answer.body).hexdigest())
+
+    # A legitimate third publication: the unit price is a number in the
+    # declaration and in every stored row. The service accepts it, and the
+    # schema hash of that version differs from the one the graph pins.
+    numeric = numeric_unit_price(2)
+    third = commit("numeric-unit-price", 2, numeric, declare=numeric_unit_price_schema)
+    check("order line v3 with a numeric unit price publishes as a legitimate version", third.status == 201)
+    third_txn = third.body["transaction"]["id"]
+    third_file, = [f for f in p1.list_files(reader, target) if f["transaction_id"] == third_txn]
+    v3 = schema_answer(3, "v3-numeric", transaction_id=third_txn)
+    answer = json.loads(v3.body) if v3.status == 200 else {}
+    response = p1.download_file(reader, target, third_file["id"])
+    (state / "published-v3-numeric.ndjson").write_bytes(response.body)
+    gate["third"] = dict(version=3, transaction=third_txn, file=third_file["id"], rows=len(numeric),
+                         sha256=hashlib.sha256(response.body).hexdigest(), schema_status=v3.status, content_hash=answer.get("content_hash"))
+    check("order line v3 declares the unit price as DOUBLE and stores it as a number, so its schema hash differs",
+          v3.status == 200 and graph.version_by_txn(target, third_txn) == 3
+          and (answer.get("dataset_id"), answer.get("branch"), answer.get("version"), answer.get("transaction_id")) == (target, "main", 3, third_txn)
+          and answer.get("fields") == [dict(name=f["name"], field_type=f["type"], nullable=f["nullable"])
+                                       for f in numeric_unit_price_schema(numeric)["fields"]]
+          and answer["content_hash"] == hashlib.sha256(json.dumps(answer["fields"], separators=(",", ":")).encode()).hexdigest()
+          and answer["content_hash"] != digest and response.status == 200 and response.body == encode(numeric)
+          and all(type(json.loads(line)["unit_price"]) is float for line in response.body.splitlines()))
+
+    # The two snapshots straddle the refused run only: v3 is already the head,
+    # and v2 is still the last version that answers the pinned hash.
+    before = last_good()
+    gate["before"] = before
+    check("before the refusal the reader maps the last good output v3 and input v2 to their transactions and downloads both",
+          before["output_versions"] == versions
+          and before["output_versions"][latest["output_version"]] == latest["output_transaction"]
+          and before["input_versions"] == {**{b["version"]: b["transaction"] for b in report["batches"]}, 3: third_txn}
+          and before["output_status"] == before["input_status"] == before["input_schema_status"] == 200
+          and before["output_sha256"] == latest["sha256"] and before["input_sha256"] == second_batch["sha256"]
+          and before["input_schema_sha256"] == hashlib.sha256(declared[2]).hexdigest())
+
+    # The same graph, the same hash, now bound to v3. The pipeline service
+    # must refuse the input for the schema before it reads a row.
+    nodes = line_price_nodes(graph, target, down, dict(version=3, transaction=third_txn), digest)
+    before_outputs, before_inputs = graph.list_versions(down), graph.list_versions(target)
+    graph.TOKEN = owner
+    try:
+        graph.http("PATCH", f"{graph.PBS}/api/v1/pipelines/{pid}", {"nodes": nodes})
+        _, saved = graph.http("GET", f"{graph.PBS}/api/v1/pipelines/{pid}")
+        saved_input = next(n["config"] for n in saved["dag"]["nodes"] if n["id"] == "input")
+        refused = graph.run_pipeline(pid)
+    finally:
+        graph.TOKEN = reader
+    (state / "schema-gate-refused-run.json").write_bytes(json.dumps(refused, indent=2).encode())
+    results = refused.get("node_results") or []
+    input_result = next((n for n in results if n["node_id"] == "input"), {})
+    input_error = input_result.get("error") or ""
+    gate["refused"] = dict(run_id=refused.get("run_id"), status=refused["status"], saved_input=saved_input,
+                           nodes=[dict(node_id=n["node_id"], status=n["status"], error=n.get("error"),
+                                       output_resources=[r["status"] for r in n.get("output_resources") or []]) for n in results])
+    check("the same graph keeps the original schema hash when it is bound to v3",
+          saved_input["dataset_id"] == target and saved_input["dataset_snapshot"] == nodes[0]["config"]["dataset_snapshot"]
+          and saved_input["dataset_snapshot"]["expected_schema_hash"] == digest)
+    # Both codes must be in the input node's own error: the run only reports "failed".
+    check("the run bound to v3 is refused for the schema hash and publishes nothing",
+          refused["status"] == "failed"
+          and {n["node_id"]: n["status"] for n in results} == {"input": "failed", "project-lines": "cancelled", "output": "cancelled"}
+          and "dataset_input_schema_rejected" in input_error and "dataset_schema_content_hash_mismatch" in input_error
+          and not [r for n in results for r in n.get("output_resources") or [] if r["status"] == "committed"]
+          and graph.list_versions(down) == before_outputs and graph.list_versions(target) == before_inputs)
+    after = last_good()
+    gate["after"] = after
+    check("after the refusal the reader maps and downloads the same last good output and input",
+          after == before and graph.list_versions(down) == before_outputs)
+    head = p1.api("dataset", "ds_branch_get", token=reader, path_args={"id": target, "branch": "main"})
+    check("the refused run leaves the pinned versions readable and v3 the head",
+          head.status == 200 and head.body["head_transaction_id"] == third_txn
+          and graph.scan_all(target, 1)["rows"] == expected(1) and graph.scan_all(target, 2)["rows"] == expected(2)
+          and graph.scan_all(target, 3)["rows"] == numeric)
+
     s3.write_json(state / "noon-report.json", report)
     return dict(reader=reader, other=ids["user_b"].token, p1=p1, graph=graph)
 

@@ -244,7 +244,10 @@ func batchedErrorFromResponse(status int, body []byte) *batchedClientError {
 }
 
 // VerifyInputSchema checks the frozen precondition and returns the
-// transaction the scan must echo from its first page onward.
+// transaction the scan must echo from its first page onward. A caller
+// that sets ExpectedTransactionID (a dataset_snapshot pin) also sends it,
+// so the dataset service proves the version was cut by that transaction
+// before it compares the hash; the answer must then name it too.
 func (c batchedDatasetClient) VerifyInputSchema(ctx context.Context, in batchedScanInput, hash string) (uuid.UUID, error) {
 	expectedDataset, err := batchedDatasetUUID(in.DatasetRID)
 	if err != nil {
@@ -254,6 +257,9 @@ func (c batchedDatasetClient) VerifyInputSchema(ctx context.Context, in batchedS
 		"branch":                {in.Branch},
 		"version":               {strconv.FormatInt(int64(in.Version), 10)},
 		"expected_content_hash": {hash},
+	}
+	if in.ExpectedTransactionID != nil {
+		query.Set("transaction_id", in.ExpectedTransactionID.String())
 	}
 	endpoint := c.baseURL() + "/v1/datasets/" + url.PathEscape(in.DatasetRID) + "/schema?" + query.Encode()
 	req, err := c.newRequest(ctx, http.MethodGet, endpoint, nil, "")
@@ -287,7 +293,8 @@ func (c batchedDatasetClient) VerifyInputSchema(ctx context.Context, in batchedS
 		return uuid.Nil, fmt.Errorf("batched_schema_response_invalid: %w", err)
 	}
 	if schema.DatasetID != expectedDataset || schema.Branch != in.Branch || schema.Version != in.Version ||
-		schema.TransactionID == uuid.Nil || schema.ContentHash != hash {
+		schema.TransactionID == uuid.Nil || schema.ContentHash != hash ||
+		(in.ExpectedTransactionID != nil && schema.TransactionID != *in.ExpectedTransactionID) {
 		return uuid.Nil, errors.New("batched_schema_binding_invalid: schema response does not match the frozen input and digest")
 	}
 	return schema.TransactionID, nil
