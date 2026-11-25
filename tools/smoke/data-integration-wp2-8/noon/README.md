@@ -95,3 +95,24 @@ The case fails if a token or secret reaches its directory.
 The gateway does not serve this stack's downloads: it follows the dataset service's redirect to a signed loopback URL that its container cannot reach.
 The NDJSON therefore comes from the dataset service's download route, the entry the reader checks above use. The report records the gateway's answer to that request without asserting it.
 The page comparison and the API comparison go through the gateway. On the page, a version of a format without a schema preview stays selected with a note and is never marked unavailable.
+
+## Schema comparison of the order lines
+
+`noon-preview` then compares the published order lines themselves, the input dataset of the runs above, on the same Compare tab in one page session of the real browser:
+v1 with v2, v2 with v3, and v1 with v2 again while v3 is the head.
+The reader asks the schema of each version through the gateway, as the page does, and of the dataset service bound to the version and transaction.
+Both answer the bytes the handoff read when that version was published. The page must state these changes:
+
+| Pair | Schema diff |
+| --- | --- |
+| v1 → v2 | none: the same seven columns and hash, while rows and a price changed |
+| v2 → v3 | `unit_price` `STRING` → `DOUBLE`; nothing added, removed or otherwise changed |
+
+v3 is the input of the refused run. The report records that run's ID, its saved input binding and the input node's error,
+and the page's selected transaction must be the one that run was bound to.
+An answer that is not a committed schema bound to the selected version and transaction, an empty one included, never counts as "no changes".
+The page's Schema diff panel is counted item by item: with a change it holds that row and no empty notice, without any exactly one `No schema changes.` and no row.
+A change next to the empty notice, or next to another sentence, never passes. Each capture also reads such mixed panels with the code that reads the page's own, and must refuse them.
+`compare-schema-*.png` and `compare-schema-*.dom.html` hold the three captures;
+`compare-schema-v*.gateway.json` and `compare-schema-v*.dvs.json` hold both answers of each version.
+The report's `schema_diff` section records them.

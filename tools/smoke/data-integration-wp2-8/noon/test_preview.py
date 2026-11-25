@@ -1,3 +1,4 @@
+import hashlib
 import os
 import threading
 import unittest
@@ -6,7 +7,7 @@ from unittest import mock
 from urllib.error import URLError
 
 import preview
-from smoke import projection
+from smoke import expected, numeric_unit_price, projection
 
 
 class LocalOnlyRedirects(unittest.TestCase):
@@ -84,6 +85,89 @@ class VersionComparison(unittest.TestCase):
     def test_duplicate_key(self):
         with self.assertRaises(ValueError):
             preview.compare_records(projection(1), projection(1) + projection(1))
+
+
+class CommittedSchema(unittest.TestCase):
+    """Only a committed declaration bound to its version is a schema to compare."""
+
+    BINDING = ("dataset", "main", 1, "transaction")
+    FIELDS = [{"name": "item_nr", "field_type": "STRING", "nullable": False}]
+
+    def answer(self, **changes):
+        body = dict(dataset_id="dataset", branch="main", version=1, transaction_id="transaction",
+                    fields=[dict(field) for field in self.FIELDS], content_hash=preview.schema_hash(self.FIELDS))
+        return dict(body, **changes)
+
+    def test_declared_fields(self):
+        self.assertEqual(preview.committed_schema(self.answer(), self.BINDING), self.FIELDS)
+
+    def test_content_hash_is_the_hash_of_the_compact_fields(self):
+        fields = [dict(name="unit_price", field_type="DOUBLE", nullable=False)]
+        self.assertEqual(preview.schema_hash(fields), hashlib.sha256(
+            b'[{"name":"unit_price","field_type":"DOUBLE","nullable":false}]').hexdigest())
+
+    def test_no_schema_is_never_a_schema_to_compare(self):
+        tampered = self.answer()
+        tampered["fields"][0]["field_type"] = "DOUBLE"
+        without_fields = {name: value for name, value in self.answer().items() if name != "fields"}
+        # A missing, empty or changed-after-hashing declaration, another hash,
+        # another version, another transaction.
+        refused = ((self.answer(fields=None), self.BINDING), (without_fields, self.BINDING),
+                   (self.answer(fields=[], content_hash=preview.schema_hash([])), self.BINDING),
+                   (tampered, self.BINDING), (self.answer(content_hash="0" * 64), self.BINDING),
+                   (self.answer(), ("dataset", "main", 2, "transaction")),
+                   (self.answer(), ("dataset", "main", 1, "another transaction")))
+        for body, binding in refused:
+            with self.subTest(body=body, binding=binding), self.assertRaises(ValueError):
+                preview.committed_schema(body, binding)
+
+
+class StatedSchema(unittest.TestCase):
+    """The Schema diff panel states exactly one thing. A mixed panel never passes."""
+
+    ROW = dict(sign="~", name="unit_price", hint="STRING → DOUBLE")
+
+    def view(self, **changes):
+        return dict(dict(items=1, rows=[], empty_notices=1, other=[]), **changes)
+
+    def test_one_empty_notice_states_no_change(self):
+        self.assertTrue(preview.states_schema(self.view(), []))
+
+    def test_one_row_states_the_change(self):
+        self.assertTrue(preview.states_schema(self.view(items=1, rows=[self.ROW], empty_notices=0), [self.ROW]))
+
+    def test_a_mixed_or_blank_panel_never_passes(self):
+        # The change next to the empty notice or next to a sentence of its own, a
+        # second change, a missing or a doubled notice, a look-alike sentence, an
+        # empty panel: whichever statement each is held against.
+        mixed = (dict(items=2, rows=[self.ROW], empty_notices=1),
+                 dict(items=2, rows=[self.ROW], other=["unit_price is now a number"]),
+                 dict(items=2, rows=[self.ROW, dict(sign="+", name="sku", hint="STRING")], empty_notices=0),
+                 dict(items=1, rows=[self.ROW], empty_notices=1),
+                 dict(items=2, rows=[self.ROW], empty_notices=0, other=["No schema changes"]),
+                 dict(items=2, rows=[], empty_notices=1, other=["unit_price is now a number"]),
+                 dict(items=2, rows=[], empty_notices=2),
+                 dict(items=1, rows=[], empty_notices=0, other=["No schema changes"]),
+                 dict(items=0, rows=[], empty_notices=0, other=[]))
+        for view in mixed:
+            for expected in ([], [self.ROW]):
+                with self.subTest(view=view, expected=expected):
+                    self.assertFalse(preview.states_schema(view, expected))
+
+
+class OrderLineRows(unittest.TestCase):
+    def test_second_batch_changed_rows_and_a_price(self):
+        self.assertTrue(preview.rows_and_price_changed(expected(1), expected(2)))
+        self.assertFalse(preview.rows_and_price_changed(expected(1), expected(1)))
+
+    def test_numeric_unit_price_changed_the_unit_price_alone(self):
+        self.assertTrue(preview.only_unit_price_changed(expected(2), numeric_unit_price(2)))
+        self.assertFalse(preview.only_unit_price_changed(expected(1), expected(2)))
+        self.assertFalse(preview.only_unit_price_changed(expected(2), expected(2)))
+
+    def test_every_selection_states_its_schema_changes(self):
+        self.assertEqual([name for name, _, _ in preview.SCHEMA_GROUPS], list(preview.EXPECTED_SCHEMA))
+        self.assertEqual([name for name, first, _ in preview.SCHEMA_GROUPS if first == 2], ["v2-v3"])
 
 
 if __name__ == "__main__":
