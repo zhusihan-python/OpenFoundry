@@ -109,26 +109,38 @@ func (h *Handlers) getHistoricalSchema(w http.ResponseWriter, r *http.Request, d
 		return
 	}
 	var fields []historicalSchemaField
-	for _, file := range files {
-		if !validStagedParquetPath(file.LogicalPath) || file.Operation != models.FileOperationAdd {
-			writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity,
-				"dataset_schema_format_unsupported: versioned schemas require Parquet ADD files"))
+	// NDJSON has no footer. One NDJSON output answers from the schema its
+	// keyed commit sealed in the receipt of the transaction that cut the
+	// version; any other non-Parquet version stays unsupported.
+	if textOutput := len(files) == 1 && datasetRowsFormat(files[0].LogicalPath) == "ndjson" &&
+		files[0].Operation == models.FileOperationAdd; textOutput {
+		var ok bool
+		fields, ok = h.readHistoricalReceiptFields(w, ctx, opener, datasetID, branch, target.txn, files[0])
+		if !ok {
 			return
 		}
-		if !h.validateScanStagedObject(w, ctx, datasetID, target.txn, file.LogicalPath, &file) {
-			return
+	} else {
+		for _, file := range files {
+			if !validStagedParquetPath(file.LogicalPath) || file.Operation != models.FileOperationAdd {
+				writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity,
+					"dataset_schema_format_unsupported: versioned schemas require Parquet ADD files or one NDJSON output with a schema in its commit receipt"))
+				return
+			}
+			if !h.validateScanStagedObject(w, ctx, datasetID, target.txn, file.LogicalPath, &file) {
+				return
+			}
+			current, err := readHistoricalParquetFields(ctx, opener, file)
+			if err != nil {
+				writeDatasetRowsError(w, err)
+				return
+			}
+			if fields != nil && !slices.Equal(fields, current) {
+				writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity,
+					"dataset_schema_files_mismatch: Parquet files in the version have different schemas"))
+				return
+			}
+			fields = current
 		}
-		current, err := readHistoricalParquetFields(ctx, opener, file)
-		if err != nil {
-			writeDatasetRowsError(w, err)
-			return
-		}
-		if fields != nil && !slices.Equal(fields, current) {
-			writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity,
-				"dataset_schema_files_mismatch: Parquet files in the version have different schemas"))
-			return
-		}
-		fields = current
 	}
 	// Hash only the ordered public field list, so changing row values or
 	// republishing the same schema in another transaction preserves the digest.
@@ -160,6 +172,25 @@ func validHistoricalSchemaHash(value string) bool {
 }
 
 func readHistoricalParquetFields(ctx context.Context, opener localObjectOpener, file models.StageTransactionFile) ([]historicalSchemaField, error) {
+	reader, err := openHistoricalSchemaFile(ctx, opener, file)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = reader.Close() }()
+	at, ok := reader.(io.ReaderAt)
+	if !ok {
+		at = seekParquetReader{reader}
+	}
+	footer, _, err := readBoundedParquetFooter(ctx, at, file.SizeBytes)
+	if err != nil {
+		return nil, parquetScanReadError(err)
+	}
+	return historicalParquetFields(footer)
+}
+
+// openHistoricalSchemaFile opens the backing bytes of one versioned file and
+// proves that they are still there at the committed size.
+func openHistoricalSchemaFile(ctx context.Context, opener localObjectOpener, file models.StageTransactionFile) (io.ReadSeekCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, parquetScanReadError(err)
 	}
@@ -171,24 +202,17 @@ func readHistoricalParquetFields(ctx context.Context, opener localObjectOpener, 
 	if err != nil {
 		return nil, datasetRowsErr(http.StatusInternalServerError, "failed to open versioned file bytes")
 	}
-	defer func() { _ = reader.Close() }()
 	size, err := reader.Seek(0, io.SeekEnd)
 	if err != nil {
+		_ = reader.Close()
 		return nil, datasetRowsErr(http.StatusInternalServerError, "failed to measure versioned file")
 	}
 	if size != file.SizeBytes {
+		_ = reader.Close()
 		return nil, datasetRowsErr(http.StatusUnprocessableEntity,
 			"dataset_file_size_mismatch: versioned file is %d bytes on disk but %d bytes in its committed file record", size, file.SizeBytes)
 	}
-	at, ok := reader.(io.ReaderAt)
-	if !ok {
-		at = seekParquetReader{reader}
-	}
-	footer, _, err := readBoundedParquetFooter(ctx, at, size)
-	if err != nil {
-		return nil, parquetScanReadError(err)
-	}
-	return historicalParquetFields(footer)
+	return reader, nil
 }
 
 // Read flat primitive schema elements directly from the bounded raw footer.

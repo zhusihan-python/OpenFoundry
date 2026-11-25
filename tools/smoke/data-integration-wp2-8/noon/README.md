@@ -31,6 +31,25 @@ the three run IDs, input and output transactions, versions, file IDs, rows and c
 The `pipeline-*-input-v*.ndjson` files are the downloaded outputs.
 This run exercises the handoff using local Docker services. Live noon extraction and production scheduling are outside its scope.
 
+## Versioned schema of the order lines
+
+Each order-line publication is a keyed inline `outputs:commit` that declares one fixed publish contract in its formal `schema` field:
+`currency, item_nr, market, order_nr, sku, store, unit_price`, each `STRING` and not nullable.
+The publisher builds the field list from that constant. It rejects rows with a missing or extra column or a value that is not a string, and an empty snapshot declares the same columns.
+The dataset service seals the declaration in the immutable receipt of the transaction that cut the version. Its versioned schema route answers from that receipt, matched by dataset, transaction and branch. The service derives nothing from the file and never reads the transaction's free-form `metadata`, so the names, order, types and nullability are the publisher's statement and the content hash follows it.
+
+The reader of the first organization holds no write permission. It calls `GET /v1/datasets/{id}/schema` on the order-line dataset with its own token:
+after v1 is published and before v2 exists, and again after v2 is published.
+
+- Each answer is bound to the version and transaction that cut it and lists the seven contract fields. The hash equals SHA-256 of the compact JSON `fields` array.
+- v2 changes row values, including the unit price `49` → `49.25`, and answers the same fields and hash as v1. A second read of v1 while v2 is the head returns the earlier bytes.
+- The other version's transaction returns HTTP 409 `dataset_schema_transaction_mismatch`; the version's own transaction and hash return HTTP 200; another hash returns HTTP 412 `dataset_schema_content_hash_mismatch`.
+- The fields match the ordered keys and string values of the NDJSON the reader downloads for that version. Another tenant cannot read the schema.
+
+The connector's raw batch and the six-column Pipeline projection are NDJSON without a schema in a commit receipt. Their versioned schema stays HTTP 422 `dataset_schema_format_unsupported` without `fields`. The projection has its schema in transaction metadata only, because the pipeline commits without a key, and the route does not read that metadata.
+
+`schema-*.json` hold each answer, and the report's `schema` section records the dataset, columns, hashes and answers.
+
 ## Version comparison preview
 
 The optional `noon-preview` case runs the checks above in the same stack, then compares the three published output versions of that one Pipeline dataset by `item_nr`:

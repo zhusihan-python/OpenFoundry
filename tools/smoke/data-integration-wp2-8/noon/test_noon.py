@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from smoke import COLUMNS, HERE, expected, materialize, projection
+from smoke import COLUMNS, HERE, ORDER_LINE_COLUMNS, ORDER_LINE_SCHEMA, columns_of, encode, expected, materialize, projection, published_schema
 
 
 class OrderLiveReplay(unittest.TestCase):
@@ -34,3 +34,43 @@ class OrderLiveReplay(unittest.TestCase):
                       [dict(self.rows[0], country_code="SA")], [dict(self.rows[0], offer_price="NaN")]):
             with self.subTest(delta=delta), self.assertRaises(ValueError):
                 materialize([], delta)
+
+
+CONTRACT = {"file_format": "TEXT", "fields": [
+    {"name": column, "type": "STRING", "nullable": False} for column in ORDER_LINE_COLUMNS]}
+
+
+class OrderLineSchema(unittest.TestCase):
+    def test_contract_is_fixed_and_matches_the_published_rows(self):
+        for version in (1, 2):
+            rows = [json.loads(line) for line in encode(expected(version)).splitlines()]
+            # The published key order is the declared order, and every value is a string.
+            self.assertEqual([list(row) for row in rows], [ORDER_LINE_COLUMNS] * len(rows))
+            self.assertEqual(published_schema(expected(version)), CONTRACT)
+            self.assertEqual(columns_of(encode(expected(version))), ORDER_LINE_SCHEMA)
+
+    def test_empty_snapshot_declares_the_contract_columns(self):
+        self.assertEqual(published_schema([]), CONTRACT)
+
+    def test_unit_price_stays_a_string_when_it_changes(self):
+        prices = [[row["unit_price"] for row in map(json.loads, encode(expected(v)).splitlines())] for v in (1, 2)]
+        self.assertEqual(prices, [["49", "120", "30"], ["49.25", "120", "30", "25", "60"]])
+        self.assertTrue(all(isinstance(price, str) for batch in prices for price in batch))
+
+    def test_row_key_order_does_not_change_the_contract(self):
+        reordered = [dict(reversed(list(row.items()))) for row in expected(1)]
+        self.assertEqual(published_schema(reordered), CONTRACT)
+
+    def test_rejects_missing_extra_and_mistyped_columns(self):
+        missing = [{key: value for key, value in row.items() if key != "sku"} for row in expected(1)]
+        extra = [dict(row, extra="x") for row in expected(1)]
+        mistyped = [dict(expected(1)[0], unit_price=49.25)]
+        for name, rows in (("missing", missing), ("extra", extra), ("mistyped", mistyped)):
+            with self.subTest(rows=name), self.assertRaises(ValueError):
+                published_schema(rows)
+        # The independent reader derives what the bytes hold, so its answer
+        # differs from the contract for such rows.
+        for name, rows in (("missing", missing), ("extra", extra)):
+            self.assertNotEqual(columns_of(encode(rows)), ORDER_LINE_SCHEMA, name)
+        with self.assertRaises(ValueError):
+            columns_of(encode(mistyped))

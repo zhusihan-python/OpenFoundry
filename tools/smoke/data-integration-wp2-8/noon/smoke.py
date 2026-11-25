@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from urllib.parse import urlencode
 
 HERE = Path(__file__).resolve().parent
 SMOKE = HERE.parents[1]
@@ -57,6 +58,42 @@ def expected(version):
 def projection(version):
     # Downstream order lines keep their key, currency and unit price.
     return [{column: row[column] for column in COLUMNS} for row in expected(version)]
+
+
+# Order lines are published under one fixed contract: these seven columns as
+# JSON strings, the unit price included. encode() writes sorted keys, which is
+# this order, so the versioned schema answers it as declared.
+ORDER_LINE_COLUMNS = ["currency", "item_nr", "market", "order_nr", "sku", "store", "unit_price"]
+ORDER_LINE_SCHEMA = [{"name": name, "field_type": "STRING", "nullable": False} for name in ORDER_LINE_COLUMNS]
+
+
+def published_schema(rows):
+    """The typed column contract every order-line snapshot is published under.
+
+    Each row must have exactly the contract columns, all strings, so an empty
+    snapshot declares the same columns as any other.
+    """
+    for row in rows:
+        if set(row) != set(ORDER_LINE_COLUMNS) or not all(isinstance(value, str) for value in row.values()):
+            raise ValueError("published order lines must have exactly the contract columns, all strings")
+    return {"file_format": "TEXT", "fields": [{"name": name, "type": "STRING", "nullable": False} for name in ORDER_LINE_COLUMNS]}
+
+
+def columns_of(data):
+    """The ordered typed columns an independent reader finds in published NDJSON bytes."""
+    rows = [json.loads(line) for line in data.splitlines()]
+    names = list(rows[0])
+    nullable = {name for row in rows for name, value in row.items() if value is None}
+    if any(list(row) != names for row in rows):
+        raise ValueError("published order lines have different column orders")
+    if not all(isinstance(value, str) for row in rows for value in row.values()):
+        raise ValueError("published order lines are not all strings")
+    return [{"name": name, "field_type": "STRING", "nullable": name in nullable} for name in names]
+
+
+def schema_route(dataset, version, **params):
+    """The formal versioned schema request for one dataset version on main."""
+    return f"/v1/datasets/{dataset}/schema?" + urlencode({"branch": "main", "version": version, **params})
 
 
 def line_price_nodes(graph, source, out, published):
@@ -110,7 +147,8 @@ def main(state):
         payload = dict(idempotency_key=f"noon:{raw}:{batch}", branch="main", transaction_type="SNAPSHOT", format="json",
                        metadata=dict(source_dataset=raw, source_batch=batch, parent_version=str(parent)),
                        files=[dict(logical_path="order-lines.ndjson", operation="ADD", content_type="application/x-ndjson",
-                                   size_bytes=len(data), content_base64=base64.b64encode(data).decode())])
+                                   size_bytes=len(data), content_base64=base64.b64encode(data).decode())],
+                       schema=published_schema(rows))
         return p1.http("dataset", f"/api/v1/datasets/{target}/outputs:commit", token=owner, payload=payload)
 
     def deliver(run, parent):
@@ -120,6 +158,18 @@ def main(state):
 
     seed = [json.loads(line) for line in (HERE / "replay.ndjson").read_bytes().splitlines()]
     revised = dict(seed[0], offer_price=49.25, base_price=49.25, gmv_lcy=49.25)
+    # The reader holds no write permission. It asks the formal versioned schema
+    # route of the order lines and checks each answer against an independent
+    # expectation, never against the publisher's declaration.
+    schema = report["schema"] = dict(dataset=target, columns=ORDER_LINE_COLUMNS, reads=[], answers=[])
+    declared = {}
+
+    def schema_answer(version, name, **params):
+        result = p1.http("dataset", schema_route(target, version, **params), token=reader, raw=True)
+        (state / f"schema-{name}.json").write_bytes(result.body)
+        schema["answers"].append(dict(name=name, version=version, **params, status=result.status, artifact=f"schema-{name}.json"))
+        return result
+
     runs = []
     for version, delta in enumerate((seed[:3], [revised, *seed[3:]]), 1):
         path = state / f"delta-v{version}.ndjson"
@@ -145,6 +195,35 @@ def main(state):
               and graph.scan_all(target, version)["rows"] == expected(version))
         report["batches"].append(dict(version=version, parent_version=version-1, raw_transaction=run["dataset_version_id"],
                                       sync_run=run["id"], transaction=txn, file=file["id"], row_count=len(expected(version))))
+        # The first iteration reads v1 before the second publication, the second reads v2 after it.
+        read = schema_answer(version, f"v{version}-first")
+        body = json.loads(read.body) if read.status == 200 else {}
+        check(f"independent reader reads the declared schema of order line v{version}", read.status == 200
+              and (body.get("dataset_id"), body.get("branch"), body.get("version"), body.get("transaction_id")) == (target, "main", version, txn)
+              and body.get("fields") == ORDER_LINE_SCHEMA
+              and body.get("content_hash") == hashlib.sha256(json.dumps(body["fields"], separators=(",", ":")).encode()).hexdigest())
+        declared[version] = read.body
+        schema["reads"].append(dict(version=version, transaction=txn, content_hash=body["content_hash"]))
+
+    first_batch, second_batch = report["batches"][0], report["batches"][1]
+    again = schema_answer(1, "v1-again")
+    check("order line schema of v1 answers as before while v2 is the head", again.status == 200 and again.body == declared[1])
+    check("v2 changed row values and kept the declared columns and schema hash",
+          encode(expected(1)) != encode(expected(2))
+          and [json.loads(declared[v])["fields"] for v in (1, 2)] == [ORDER_LINE_SCHEMA] * 2
+          and json.loads(declared[1])["content_hash"] == json.loads(declared[2])["content_hash"])
+    for name, version, other in (("v1-with-v2-transaction", 1, second_batch), ("v2-with-v1-transaction", 2, first_batch)):
+        crossed = schema_answer(version, name, transaction_id=other["transaction"])
+        check(f"order line schema of v{version} refuses the transaction of the other version", crossed.status == 409
+              and json.loads(crossed.body).get("code") == "dataset_schema_transaction_mismatch" and b'"fields"' not in crossed.body)
+    digest = json.loads(declared[2])["content_hash"]
+    bound = schema_answer(2, "v2-bound", transaction_id=second_batch["transaction"], expected_content_hash=digest)
+    check("order line schema of v2 accepts its own transaction and content hash", bound.status == 200 and bound.body == declared[2])
+    stale = schema_answer(2, "v2-other-hash", expected_content_hash=hashlib.sha256(b"[]").hexdigest())
+    check("order line schema of v2 refuses another content hash", stale.status == 412
+          and json.loads(stale.body).get("code") == "dataset_schema_content_hash_mismatch" and b'"fields"' not in stale.body)
+    foreign = p1.http("dataset", schema_route(target, 1), token=ids["user_b"].token, raw=True)
+    check("other tenant cannot read the order line schema", foreign.status in (403, 404))
 
     before = graph.list_versions(target)
     replay = deliver(runs[0], 0)
@@ -162,6 +241,8 @@ def main(state):
         check(f"independent reader scans and downloads exact v{v}", response.status == 200
               and response.body == encode(wanted) and graph.scan_all(target, v)["rows"] == wanted)
         (state / f"published-v{v}.ndjson").write_bytes(response.body)
+        check(f"declared schema of order line v{v} matches the columns of the rows the reader downloaded",
+              columns_of(response.body) == ORDER_LINE_SCHEMA == json.loads(declared[v])["fields"])
         batch["sha256"] = hashlib.sha256(response.body).hexdigest()
         check(f"other tenant cannot download v{v}", p1.download_file(ids["user_b"].token, target, batch["file"]).status in (403,404))
 
@@ -233,7 +314,18 @@ def main(state):
           first["input_transaction"] == replay["input_transaction"] != latest["input_transaction"]
           and first["sha256"] == replay["sha256"] != latest["sha256"]
           and (state / first["artifact"]).read_bytes() == (state / replay["artifact"]).read_bytes()
-          and (state / first["artifact"]).read_bytes() != (state / latest["artifact"]).read_bytes())
+              and (state / first["artifact"]).read_bytes() != (state / latest["artifact"]).read_bytes())
+
+    # The connector's raw batch and the six-column projection are NDJSON
+    # without a schema in a commit receipt. Both keep their unsupported answer.
+    for name, dataset, version in (("raw-batch", raw, 1), ("projection", down, first["output_version"])):
+        result = p1.http("dataset", schema_route(dataset, version), token=reader, raw=True)
+        (state / f"schema-unsupported-{name}.json").write_bytes(result.body)
+        check(f"versioned schema of the {name} without a schema in a commit receipt stays unsupported", result.status == 422
+              and json.loads(result.body).get("error", "").startswith("dataset_schema_format_unsupported")
+              and b'"fields"' not in result.body)
+        schema["answers"].append(dict(name=f"unsupported-{name}", dataset=dataset, version=version, status=result.status,
+                                      artifact=f"schema-unsupported-{name}.json"))
     s3.write_json(state / "noon-report.json", report)
     return dict(reader=reader, other=ids["user_b"].token, p1=p1, graph=graph)
 

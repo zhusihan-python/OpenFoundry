@@ -104,6 +104,7 @@ type Store interface {
 	AbortTransaction(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID) error
 	WithIdempotentOutputCommit(ctx context.Context, scope repo.TenantScope, datasetID uuid.UUID, key string, fingerprint string, build func(ctx context.Context, tx repo.OutputCommitTxStore) (models.CommitDatasetOutputResponse, error)) (*models.OutputCommitReceipt, bool, error)
 	GetOutputCommitReceipt(ctx context.Context, scope repo.TenantScope, datasetID uuid.UUID, key string) (*models.OutputCommitReceipt, error)
+	GetTransactionOutputCommit(ctx context.Context, datasetID, transactionID uuid.UUID, branch string) (*models.CommitDatasetOutputResponse, error)
 	AcquireStagedUploadLease(ctx context.Context, scope repo.TenantScope, binding repo.StagedBinding, attemptID uuid.UUID, leaseTTL time.Duration) (*repo.StagedOutputObject, *uuid.UUID, bool, error)
 	SealStagedOutput(ctx context.Context, scope repo.TenantScope, binding repo.StagedBinding, attemptID uuid.UUID, sizeBytes int64, sha256Hex string, recordCount int64, sealedPath string, ttl time.Duration) (*repo.StagedOutputObject, error)
 	ReleaseStagedLease(ctx context.Context, attemptID uuid.UUID) error

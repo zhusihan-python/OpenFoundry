@@ -266,6 +266,50 @@ func (r *Repo) GetOutputCommitReceipt(ctx context.Context, scope TenantScope, da
 	return receipt, nil
 }
 
+// GetTransactionOutputCommit loads the committed receipt that cut one
+// version, matched by dataset, transaction and branch. nil means that
+// version has no receipt, which is the case for every commit made without
+// an idempotency key. The caller must already have authorized the dataset
+// and resolved the committed version. The answer keeps only what the
+// service serialized at commit: a key of the transaction's free-form
+// metadata never reaches it.
+func (r *Repo) GetTransactionOutputCommit(ctx context.Context, datasetID, transactionID uuid.UUID, branch string) (*models.CommitDatasetOutputResponse, error) {
+	// One keyed commit cuts one transaction and writes one receipt. Limit 2
+	// makes a violation of that invariant an error instead of an arbitrary
+	// pick.
+	rows, err := r.Pool.Query(ctx, `
+		SELECT r.response_body
+		  FROM dataset_output_commit_receipts r
+		 WHERE r.dataset_id = $1 AND r.transaction_id = $2 AND r.branch_name = $3
+		 LIMIT 2`,
+		datasetID, transactionID, branch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var raw string
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if err := rows.Scan(&raw); err != nil {
+		return nil, err
+	}
+	if rows.Next() {
+		return nil, fmt.Errorf("output commit receipt for transaction %s of dataset %s is not unique", transactionID, datasetID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var response models.CommitDatasetOutputResponse
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		return nil, fmt.Errorf("decode output commit receipt: %w", err)
+	}
+	return &response, nil
+}
+
 // loadOutputCommitReceipt reads one receipt by (dataset, key) on the open
 // transaction — the tenant predicate was already enforced by the locked
 // datasets row, so no join is needed here.
