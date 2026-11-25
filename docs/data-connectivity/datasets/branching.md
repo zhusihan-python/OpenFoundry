@@ -230,14 +230,16 @@ nothing, and the error carries the dataset service's code, such as
 The pin can also carry `expected_schema`: an array of objects with `name`,
 `field_type` and `nullable`, exactly as the versioned schema route lists
 `fields`. It is accepted only together with `expected_schema_hash` and must
-hash to it. A pin without it behaves as before. When the check fails, the
-Pipeline service reads the committed schema of the pinned version once more
-and the node error names the differences, at most eight: a missing or added
-field, another type, another nullability, and then a changed order of the
-fields both schemas hold. An addition or a removal alone is not a change of
-order. When that read fails, when the schema comes back with the expected
-hash, or when no difference can be named, the error keeps the dataset
-service's code and says so in words instead.
+hash to it. A pin without it behaves as before. Only when the dataset service
+answers the hash check with `412 dataset_schema_content_hash_mismatch` does
+the Pipeline service read the committed schema of the pinned version once
+more. The node error then names at most eight field differences: a missing or
+added field, another type, another nullability. When it leaves differences
+out, it says how many. When the fields both schemas hold come in another
+order, it adds one clause for that order. An addition or a removal alone is
+not a change of order. When that read fails, when the schema comes back with
+the expected hash, or when no difference can be named, the error keeps the
+dataset service's code and says so in words instead.
 
 ## Match rows by key
 
