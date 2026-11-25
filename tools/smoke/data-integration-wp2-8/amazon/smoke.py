@@ -16,6 +16,7 @@ spec = importlib.util.spec_from_file_location("wp23_s3", SMOKE / "data-integrati
 s3 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(s3)
 reports = s3.module("amazon_reports", HERE / "reports.py")
+transactions = s3.module("amazon_transactions", HERE / "transactions.py")
 BUCKET = "amazon-monthly"
 # (period, fixture): October holds two files, as one upstream row can.
 FILES = (("2026-09", "2026-09"), ("2026-10", "2026-10"), ("2026-10", "2026-10-2"))
@@ -251,6 +252,239 @@ def main(state):
           and versions(files_ds) == before and versions(status) == [(1, no_data)])
     check("the other tenant is denied a staged envelope",
           s3.s3_request("GET", f"{BUCKET}/{reports.object_key('2026-09', '2026-09')}", credentials=s3.scoped_credentials(f"arn:aws:s3:::{BUCKET}/other-org/*", "s3:GetObject")) == 403)
+    # One pipeline reads the two published October reports, not the staged envelopes: the first, then the second, then the first again.
+    os.environ.update(WP34_PROJECT="wp28-amazon", WP34_EVIDENCE=str(state), WP34_TOKEN=reader,
+                      WP34_DVS=p1.BASES["dataset"], WP34_PBS=os.environ["WP23_PBS"])
+    graph = s3.module("wp28_amazon_graph", SMOKE / "data-integration-wp3-4/harness34.py")
+    first, second = report["files"][1:]
+    # A build of one October file must hold none of the transactions of the other.
+    other = {first["file"]: second["file"], second["file"]: first["file"]}
+    for entry in (first, second):
+        data = originals[entry["file"]]
+        # One read, as the reader makes it: the version of the transaction, the file bound to it and its bytes.
+        seen = read(files_ds, entry["transaction"])
+        record = reports.registration(data, entry["period"])
+        published = seen["metadata"].get("schema") or {}
+        options = (published.get("custom_metadata") or {}).get("csv") or {}
+        entry["logical_path"] = seen["file"]["logical_path"]
+        check(f"reader resolves {entry['file']} as the input of the Pipeline: version {entry['version']}, its scope and "
+              f"fileId, the original CSV bytes, sha256 and length",
+              seen["version"] == [entry["version"]]
+              and seen["file"]["logical_path"] == f"amazon-us/transaction_view/{entry['period']}/{entry['file_id']}.csv"
+              and {k: seen["metadata"].get(k) for k in ("registration", "file_id")} == {"registration": record, "file_id": entry["file_id"]}
+              and seen["body"] == data and reports.sha256(seen["body"]) == record["sha256"]
+              and seen["file"]["size_bytes"] == record["byteSize"] == len(data))
+        check(f"{entry['file']} is published with its header on record {reports.HEADER_ROW}, after the amounts preamble",
+              published.get("file_format") == "TEXT" and published.get("fields") == []
+              and {name: options.get(name) for name in ("headerRow", "charset", "bom")}
+              == {"headerRow": reports.HEADER_ROW, "charset": "UTF-8", "bom": "strip"})
+
+    def head_of(dataset):
+        result = p1.api("dataset", "ds_branch_get", token=reader, path_args={"id": dataset, "branch": "main"})
+        assert result.status == 200, result.status
+        return result.body["head_transaction_id"]
+
+    def files_of(dataset, txn):
+        """The files one committed transaction holds, as the reader lists them for that transaction alone."""
+        listed = p1.http("dataset", f"/v1/datasets/{dataset}/files?transaction_id={txn}", token=reader)
+        assert listed.status == 200, (listed.status, listed.body)
+        return listed.body["files"]
+
+    down = p1.create_dataset(owner, "Amazon US transaction amounts", "json")["id"]
+    # Two different identifiers name one published output. Every build records both.
+    pipeline = report["pipeline"] = dict(
+        pipeline_id=None, output_dataset=down, columns=transactions.COLUMNS, expected_sha256=transactions.OUTPUT_SHA256,
+        builds=[],
+        transaction_ids={
+            "input_transaction": "Dataset Versioning transaction id of the report version the run read",
+            "output_transaction": "Dataset Versioning transaction id of the output version, as the reader lists it",
+            "pipeline_output_transaction_rid": "transaction_rid of the committed resource in the Pipeline run receipt, "
+                                               "the Pipeline's own name. The Dataset transaction repeats it in "
+                                               "metadata.transaction_rid, which links the run to its output version"})
+    input_before = head_of(files_ds)
+    known = {v["transaction_id"] for v in graph.list_versions(down)}
+    input_versions = {v["version"]: v["transaction_id"] for v in graph.list_versions(files_ds)}
+    for ordinal, entry in enumerate((first, second, first), 1):
+        name = entry["file"]
+        # The pin follows the version the reader lists for the transaction, not the number the handoff counted.
+        version = graph.version_by_txn(files_ds, entry["transaction"])
+        report_rows = transactions.expected(originals[name])
+        wanted = transactions.expected(originals[name], transactions.COLUMNS)
+        pin = {"branch": "main", "version": version,
+               "transaction_id": "ri.foundry.main.transaction." + entry["transaction"]}
+        nodes = transactions.nodes(graph, files_ds, down, dict(entry, version=version))
+        graph.TOKEN = owner
+        try:
+            pid = pipeline["pipeline_id"]
+            if pid is None:
+                pid = pipeline["pipeline_id"] = graph.create_pipeline("amazon-transaction-amounts", nodes)
+            else:
+                graph.http("PATCH", f"{graph.PBS}/api/v1/pipelines/{pid}", {"nodes": nodes})
+            run = graph.run_pipeline(pid)
+            # The graph as it stands after the run: the pin the run was saved with.
+            _, saved = graph.http("GET", f"{graph.PBS}/api/v1/pipelines/{pid}")
+        finally:
+            graph.TOKEN = reader
+        s3.write_json(state / f"pipeline-{ordinal}-graph.json", saved)
+        s3.write_json(state / f"pipeline-{ordinal}-run.json", run)
+        check(f"pipeline run {ordinal} succeeded", run["status"] == "succeeded")
+        # The reader reads the head of the input once the run is over: no run moved it off the version it read.
+        input_head = head_of(files_ds)
+        check(f"report v3 was still the head of the input after pipeline run {ordinal}", input_head == second["transaction"])
+        saved_nodes = {n["id"]: n for n in saved["dag"]["nodes"]}
+        config = saved_nodes["input"]["config"]
+        check(f"pipeline run {ordinal} saved the graph pinned to report v{version} and its transaction",
+              config["dataset_id"] == files_ds and config["dataset_snapshot"] == pin
+              and saved_nodes["project-transactions"]["config"] == {"columns": transactions.COLUMNS}
+              and saved_nodes["output"]["output_dataset_id"] == down)
+        observed = next(n["output"] for n in run["node_results"] if n["node_id"] == "input")
+        # The receipt holds the rows as a JSON reader parsed them. Their amounts are read back as Decimals.
+        read_diffs = transactions.value_diffs(transactions.lines(observed["sample_rows"]), report_rows)
+        check(f"pipeline run {ordinal} input node receipt read report v{version} on main through the pinned transaction: "
+              f"{len(report_rows)} transactions under their header columns" + ("" if not read_diffs else "; " + "; ".join(read_diffs)),
+              run["pipeline_id"] == pid and run["id"] == run["run_id"]
+              and observed["dataset_rid"].removeprefix("ri.foundry.main.dataset.") == files_ds
+              and observed["dataset_branch"] == pin["branch"] and observed["dataset_version"] == pin["version"]
+              and observed["dataset_transaction_id"] == pin["transaction_id"]
+              and observed["dataset_file_format"] == "csv" and observed["rows_affected"] == len(report_rows)
+              and not observed["dataset_rows_truncated"] and not read_diffs)
+        produced, = [v for v in graph.list_versions(down) if v["transaction_id"] not in known]
+        known.add(produced["transaction_id"])
+        output_node = next(n for n in run["node_results"] if n["node_id"] == "output")
+        resource, = output_node["output_resources"]
+        transaction = graph.get_output_transaction(down, produced["transaction_id"])
+        s3.write_json(state / f"pipeline-{ordinal}-transaction.json", transaction)
+        metadata = transaction["metadata"]
+        # The run's output resource carries the Pipeline's own transaction name. The Dataset
+        # transaction of the new version must name the same handle and this run, not another one.
+        handle = f"pipeline-run:{run['id']}:output"
+        produced_version = produced["version"]
+        check(f"pipeline run {ordinal} committed one resource as output v{produced_version}, a transaction of this run",
+              resource["status"] == "committed" and resource["kind"] == "dataset"
+              and resource["rid"].removeprefix("ri.foundry.main.dataset.") == down
+              and resource["transaction_rid"] == handle and transaction["status"] == "COMMITTED"
+              and transaction["branch_name"] == "main" and transaction["dataset_id"] == down
+              and metadata["pipeline_output"] is True and metadata["pipeline_rid"] == pid
+              and metadata["output_node_id"] == "output" and metadata["transaction_rid"] == handle)
+        output_txns = {v["version"]: v["transaction_id"] for v in graph.list_versions(down)}
+        bound, = [f for f in p1.list_files(reader, down) if f.get("transaction_id") == produced["transaction_id"]]
+        response = p1.download_file(reader, down, bound["id"])
+        artifact = f"pipeline-{ordinal}-output-v{produced_version}.ndjson"
+        (state / artifact).write_bytes(response.body)
+        diffs = transactions.value_diffs(response.body, wanted) if response.status == 200 else [f"download status {response.status}"]
+        check(f"independent reader maps output v{produced_version} to its transaction and downloads "
+              f"the {len(wanted)} transactions of report v{version}" + ("" if not diffs else ": " + "; ".join(diffs)),
+              response.status == 200 and output_txns[produced_version] == produced["transaction_id"] and not diffs
+              and reports.sha256(response.body) == transactions.OUTPUT_SHA256[name])
+        # The preview is compared only under unique column names and rows as wide as the columns.
+        preview = transactions.table(metadata["preview_columns"], metadata["preview_rows"])
+        check(f"dataset transaction of output v{produced_version} carries the run's output hash, "
+              f"the {len(wanted)} expected values and the bytes the reader downloaded",
+              metadata["output_content_hash"] == output_node["output"]["content_hash"]
+              and sorted(metadata["preview_columns"]) == sorted(transactions.COLUMNS) and preview is not None
+              and not transactions.value_diffs(transactions.lines(preview), wanted)
+              and metadata["row_count"] == len(wanted) and metadata["size_bytes"] == len(response.body))
+        held = transactions.read(response.body) if response.status == 200 and not diffs else []
+        check(f"output v{produced_version} holds only the {len(wanted)} transactions of {name}, in file order, "
+              f"and none of the other October file",
+              transactions.holds(held, wanted, transactions.expected(originals[other[name]], ("settlement id",))))
+        negatives = transactions.negative_amounts(held)
+        check(f"output v{produced_version} keeps the {transactions.NEGATIVE_AMOUNTS[name]} negative amounts of {name} "
+              f"where they are, sign included",
+              negatives == transactions.negative_amounts(wanted)
+              and sum(map(len, negatives)) == transactions.NEGATIVE_AMOUNTS[name])
+        pipeline["builds"].append(dict(ordinal=ordinal, pipeline_run_id=run["id"], input_dataset=files_ds,
+                                       input_file=name, input_file_id=entry["file_id"], input_logical_path=entry["logical_path"],
+                                       input_sha256=entry["sha256"], input_branch=observed["dataset_branch"],
+                                       input_version=version, input_transaction=entry["transaction"], input_head=input_head,
+                                       output_dataset=down, output_version=produced_version,
+                                       output_transaction=produced["transaction_id"],
+                                       pipeline_output_transaction_rid=handle,
+                                       pipeline_content_hash=metadata.get("output_content_hash"),
+                                       settlement_ids=[row["settlement id"] for row in held],
+                                       negative_amounts=sum(map(len, negatives)),
+                                       output_file_id=bound["id"], artifact=artifact, row_count=len(wanted),
+                                       size_bytes=len(response.body), sha256=reports.sha256(response.body)))
+
+    first_build, latest, replay = pipeline["builds"]
+    output_versions = {v["version"]: v["transaction_id"] for v in graph.list_versions(down)}
+    builds = pipeline["builds"]
+    pipeline["heads"] = dict(input_before=input_before, output_after=head_of(down))
+    check("three runs of one pipeline read report v2, v3 and v2 and published output v1, v2 and v3 in that order",
+          [b["input_version"] for b in builds] == [2, 3, 2] and [b["output_version"] for b in builds] == [1, 2, 3]
+          and sorted(output_versions) == [1, 2, 3]
+          and {b["output_version"]: b["output_transaction"] for b in builds} == output_versions
+          and all(len({b[field] for b in builds}) == 3
+                  for field in ("pipeline_run_id", "output_transaction", "output_file_id"))
+          and {v["version"]: v["transaction_id"] for v in graph.list_versions(files_ds)} == input_versions
+          == {**{1: report["files"][0]["transaction"]}, **{b["input_version"]: b["input_transaction"] for b in builds}}
+          and len(input_versions) == 3)
+    heads = pipeline["heads"]
+    check("report v3 was the head of the input before the runs and after every run read its pinned version, "
+          "and the output head after them is the replay",
+          heads["input_before"] == second["transaction"]
+          and all(b["input_head"] == second["transaction"] for b in builds)
+          and heads["output_after"] == replay["output_transaction"])
+    check("v2 replay read the first report v2 transaction again and published the first output bytes and hash, not v3's",
+          replay["input_transaction"] == first_build["input_transaction"] != latest["input_transaction"]
+          and replay["sha256"] == first_build["sha256"] == transactions.OUTPUT_SHA256[first["file"]]
+          != latest["sha256"] == transactions.OUTPUT_SHA256[second["file"]]
+          and (state / replay["artifact"]).read_bytes() == (state / first_build["artifact"]).read_bytes()
+          != (state / latest["artifact"]).read_bytes())
+
+    # Every output is history once v3 is the head. The reader starts from each version number alone: the
+    # transaction that cut it, the files that transaction holds, and the download of that file. It also scans
+    # the version by number. Nothing here uses what a build recorded while its output was the head.
+    history = pipeline["history"] = []
+    listed = {v["version"]: v["transaction_id"] for v in graph.list_versions(down)}
+    for build, entry in zip((first_build, latest, replay), (first, second, first)):
+        version = build["output_version"]
+        transaction = graph.get_output_transaction(down, listed[version])
+        wanted = transactions.expected(originals[entry["file"]], transactions.COLUMNS)
+        files = files_of(down, listed[version])
+        response = p1.download_file(reader, down, files[0]["id"]) if len(files) == 1 else None
+        artifact = f"pipeline-history-output-v{version}.ndjson"
+        if response is not None:
+            (state / artifact).write_bytes(response.body)
+        scan = graph.scan_all(down, version)
+        diffs = transactions.value_diffs(response.body, wanted) if response is not None and response.status == 200 else [
+            f"{len(files)} files listed for the transaction"]
+        scan_diffs = transactions.value_diffs(transactions.lines(scan["rows"]), wanted)
+        history.append(dict(version=version, transaction=listed[version], pipeline_run_id=build["pipeline_run_id"],
+                            pipeline_output_transaction_rid=transaction["metadata"].get("transaction_rid"),
+                            listed_files=[dict(file_id=f["id"], logical_path=f["logical_path"], status=f["status"],
+                                               transaction_id=f["transaction_id"]) for f in files],
+                            download_status=None if response is None else response.status, artifact=artifact,
+                            row_count=build["row_count"], size_bytes=None if response is None else len(response.body),
+                            download_sha256=None if response is None else reports.sha256(response.body),
+                            scan_rows=len(scan["rows"]), scan_sha256=scan["rendered_sha256"]))
+        seen = history[-1]
+        check(f"after v3 is the head, the read-only reader takes output v{version} to the transaction of build "
+              f"{build['ordinal']}, lists its one file and downloads the {len(wanted)} transactions of report "
+              f"v{build['input_version']} with the bytes and hash that build published"
+              + ("" if not diffs else ": " + "; ".join(diffs)),
+              listed[version] == build["output_transaction"] and transaction["status"] == "COMMITTED"
+              and transaction["metadata"].get("transaction_rid") == build["pipeline_output_transaction_rid"]
+              and transaction["metadata"].get("pipeline_rid") == pipeline["pipeline_id"]
+              and len(files) == 1 and files[0]["transaction_id"] == listed[version] and files[0]["status"] == "active"
+              and files[0]["id"] == build["output_file_id"] and response is not None and response.status == 200
+              and not diffs and seen["download_sha256"] == build["sha256"] == transactions.OUTPUT_SHA256[entry["file"]]
+              and response.body == (state / build["artifact"]).read_bytes())
+        check(f"a reader that knows only output v{version} scans that version and reads the same "
+              f"{len(wanted)} transactions of report v{build['input_version']}"
+              + ("" if not scan_diffs else ": " + "; ".join(scan_diffs)),
+              not scan_diffs and len(scan["rows"]) == len(wanted))
+    first_seen, latest_seen, replay_seen = history
+    check("the history a reader takes after v3 is the head replays: v1 and v3 are the first publication and v2 the second file, "
+          "by download and by scan",
+          [h["version"] for h in history] == [1, 2, 3]
+          and [h["download_sha256"] for h in history] == [transactions.OUTPUT_SHA256[first["file"]],
+                                                          transactions.OUTPUT_SHA256[second["file"]],
+                                                          transactions.OUTPUT_SHA256[first["file"]]]
+          and first_seen["scan_sha256"] == replay_seen["scan_sha256"] != latest_seen["scan_sha256"]
+          and (state / replay_seen["artifact"]).read_bytes() == (state / first_seen["artifact"]).read_bytes()
+          != (state / latest_seen["artifact"]).read_bytes()
+          and len({h["transaction"] for h in history}) == 3 and len({h["listed_files"][0]["file_id"] for h in history}) == 3)
     s3.write_json(state / "amazon-report.json", report)
 
 

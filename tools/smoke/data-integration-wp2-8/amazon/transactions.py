@@ -1,0 +1,127 @@
+"""What one Pipeline publishes for the transactions of a published report, and how a reader reconciles it.
+
+These helpers serve the Pipeline acceptance only. The publication path is reports.py.
+"""
+import csv
+from decimal import Decimal
+import io
+import json
+
+# A transaction is named by these columns of its report. The sixteen amount columns of a report follow.
+IDENTITY = ["date/time", "settlement id", "type", "order id", "sku", "description", "quantity"]
+AMOUNTS = ["product sales", "product sales tax", "shipping credits", "shipping credits tax", "gift wrap credits",
+           "giftwrap credits tax", "regulatory fee", "tax on regulatory fee", "promotional rebates",
+           "promotional rebates tax", "marketplace withheld tax", "selling fees", "fba fees",
+           "other transaction fees", "other", "total"]
+COLUMNS = IDENTITY + AMOUNTS
+COUNTS = ("settlement id", "quantity")
+# The negative amount cells of each October file.
+NEGATIVE_AMOUNTS = {"2026-10": 6, "2026-10-2": 3}
+# SHA256 of the NDJSON a downstream consumer downloads for the transactions of each October report.
+OUTPUT_SHA256 = {"2026-10": "2adc3f19f70041f150364fa81f33d275c19667204e68efabd28389551e2ce464",
+                 "2026-10-2": "127b33a8a8523ba3d44479ad4b66480529c29423b71b89acd2d796a6ef5aa143"}
+
+
+def expected(data, columns=None):
+    """The transactions of one report file as a reader expects them, in file order.
+
+    Each value is read from its column by name. An empty cell is None, a settlement id and a
+    quantity are whole numbers, an amount is a Decimal and every other column is a string.
+    Without `columns` every column of the report is kept, in the order of its header.
+    """
+    records = [record for record in csv.reader(io.StringIO(data.decode("utf-8-sig"), newline="")) if record]
+    header_at = next((index for index, record in enumerate(records) if record[0] == IDENTITY[0]), None)
+    if header_at is None:
+        raise ValueError("the report has no header record")
+    header, rows = records[header_at], records[header_at + 1:]
+    if any(len(row) != len(header) for row in rows):
+        raise ValueError("a record of the report does not match its header")
+    columns = header if columns is None else columns
+    missing = [name for name in columns if name not in header]
+    if missing:
+        raise ValueError(f"the report has no column {missing[0]!r}")
+    return [{name: value(name, dict(zip(header, row))[name].strip()) for name in columns} for row in rows]
+
+
+def value(column, text):
+    """One cell of a column, or None when it is empty."""
+    if not text:
+        return None
+    if column in AMOUNTS:
+        return Decimal(text)
+    if column in COUNTS:
+        return int(text)
+    return text
+
+
+def read(data):
+    """The transactions of a downloaded file: one JSON object per line, every amount a Decimal."""
+    return [json.loads(line, parse_float=Decimal) for line in data.splitlines()]
+
+
+def lines(rows):
+    """Rows that a JSON reader already parsed, as the file value_diffs reads."""
+    return "".join(json.dumps(row) + "\n" for row in rows).encode()
+
+
+def table(columns, rows):
+    """The rows of a preview as the reader holds them: each value under its column name.
+
+    A preview is a list of values per row. It is read only while every column name comes once
+    and every row is as wide as the columns: a narrower row would lose values and a repeated
+    name would overwrite one. None says that it is not.
+    """
+    if len(set(columns)) != len(columns) or any(len(row) != len(columns) for row in rows):
+        return None
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def agrees(actual, expected):
+    """Whether a downloaded value is the expected one of its kind.
+
+    A number must come as a number: a bool is not one, though Python has True == 1, and neither is a string.
+    """
+    if isinstance(expected, (int, Decimal)):
+        return type(actual) in (int, Decimal) and actual == expected
+    return type(actual) is type(expected) and actual == expected
+
+
+def value_diffs(data, expected):
+    """Name each line and value where a downloaded file differs from the expected transactions."""
+    text = data.splitlines()
+    diffs = [] if len(text) == len(expected) else [f"{len(text)} lines, expected {len(expected)}"]
+    for number, (line, row) in enumerate(zip(text, expected), 1):
+        try:
+            value = json.loads(line, parse_float=Decimal)
+        except ValueError:
+            diffs.append(f"line {number}: not JSON")
+            continue
+        if not isinstance(value, dict):
+            diffs.append(f"line {number}: not an object")
+            continue
+        for column in sorted(set(value) | set(row)):
+            if column not in value or column not in row:
+                diffs.append(f"line {number} {column}: present on one side only")
+            elif not agrees(value[column], row[column]):
+                diffs.append(f"line {number} {column}: {value[column]!r}, expected {row[column]!r}")
+    return diffs
+
+
+def holds(rows, wanted, other):
+    """Whether downloaded rows are the expected transactions in file order, and none of those of `other`."""
+    ids = [row["settlement id"] for row in rows]
+    return ids == [row["settlement id"] for row in wanted] and set(ids).isdisjoint(row["settlement id"] for row in other)
+
+
+def negative_amounts(rows):
+    """The negative amounts of each row, by column name."""
+    return [{name: row[name] for name in AMOUNTS if row[name] is not None and row[name] < 0} for row in rows]
+
+
+def nodes(graph, source, out, published):
+    """The graph of one Pipeline: a pinned report input, a select of COLUMNS and an output to another dataset."""
+    nodes = graph.graph_nodes(source, published["version"], published["transaction"], out)
+    nodes.insert(1, {"id": "project-transactions", "label": "Publish transaction amounts", "depends_on": ["input"],
+                     "transform_type": "select", "config": {"columns": COLUMNS}})
+    nodes[-1]["depends_on"] = ["project-transactions"]
+    return nodes
