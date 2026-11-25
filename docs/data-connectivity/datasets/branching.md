@@ -172,6 +172,22 @@ locally backed Parquet files with the same supported flat schema. An unreadable
 footer or incompatible file set makes that side unavailable. Comparisons of two
 branch heads also include the existing file comparison.
 
+A snapshot of one locally backed NDJSON file has no footer to read. Its schema
+is the publisher's **publish contract**: the `schema` the keyed `outputs:commit`
+declared in its formal request field, which the service sealed in the immutable
+receipt of the transaction that cut the version. The service answers that
+declared schema, matched by dataset, transaction and branch, when its
+`file_format` is `TEXT` and it lists uniquely named fields of a scalar type
+that needs no parameter. The service derives nothing from the file and never
+reads the transaction's or the file's free-form `metadata`. A version published
+without a key or without a declared schema, and any other NDJSON file set, is
+unsupported with `dataset_schema_format_unsupported` or
+`dataset_schema_unsupported` and no `fields`.
+
+The names, order, types and nullability of such a schema are the publisher's
+statement. The service keeps them as declared, and the hash and both
+preconditions below follow the declaration.
+
 Consumers can save the returned `content_hash` and supply it as
 `expected_content_hash` alongside `branch` and `version`. The service returns
 HTTP 412 with `dataset_schema_content_hash_mismatch` in both `error` and `code`

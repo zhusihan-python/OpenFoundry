@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
   and can cross-check the transaction that cut a version. Manual batched builds
   verify a pinned Parquet input's schema hash when they are created and again
   before scanning.
+- A snapshot of one NDJSON file answers the versioned schema its keyed
+  `outputs:commit` declared, read from the immutable receipt of its transaction.
 
 ### Changed
 - **BREAKING:** The bundled Iceberg catalog returns HTTP 503 for valid row appends

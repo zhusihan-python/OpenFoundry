@@ -164,6 +164,22 @@ func (f *fakeStore) GetOutputCommitReceipt(_ context.Context, scope repo.TenantS
 	return nil, nil
 }
 
+// GetTransactionOutputCommit finds the one receipt that cut a version, as the
+// real repo matches it by dataset, transaction and branch.
+func (f *fakeStore) GetTransactionOutputCommit(_ context.Context, datasetID, transactionID uuid.UUID, branch string) (*models.CommitDatasetOutputResponse, error) {
+	for key, receipt := range f.outputCommitReceipts {
+		if key.datasetID != datasetID || receipt.Transaction.ID != transactionID || receipt.Branch != branch {
+			continue
+		}
+		var response models.CommitDatasetOutputResponse
+		if err := json.Unmarshal(receipt.ResponseBody, &response); err != nil {
+			return nil, err
+		}
+		return &response, nil
+	}
+	return nil, nil
+}
+
 // keyedCommitBody builds a keyed commit carrying a zero-byte inline file —
 // the minimal P26 Connector shape (including empty content) on a local
 // backing store.
