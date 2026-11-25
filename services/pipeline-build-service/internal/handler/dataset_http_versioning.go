@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -329,6 +330,33 @@ func (d DatasetHTTPVersioning) DatasetActiveBranch(ctx context.Context, datasetR
 		return "", &DatasetHTTPError{Status: http.StatusServiceUnavailable, Code: "bad_response", Detail: "dataset response missing active_branch", Upstream: true}
 	}
 	return view.ActiveBranch, nil
+}
+
+// VerifyInputSchema implements batchedInputSchemaChecker. It asks the
+// dataset service for the committed schema of one pinned input version
+// under an expected content hash and returns the transaction that cut it.
+// The read reuses the batched dataset client's VerifyInputSchema, so the
+// CreateBuild preflight and the execution path prove the same thing; the
+// client's classification is translated to this adapter's error type.
+func (d DatasetHTTPVersioning) VerifyInputSchema(ctx context.Context, datasetRID, branch string, version int32, expectedHash string) (uuid.UUID, error) {
+	client := batchedDatasetClient{cfg: BatchedClientConfig{BaseURL: d.BaseURL, Client: d.httpClient()}}
+	txn, err := client.VerifyInputSchema(ctx, batchedScanInput{DatasetRID: datasetRID, Branch: branch, Version: version}, expectedHash)
+	if err == nil {
+		return txn, nil
+	}
+	var clientErr *batchedClientError
+	switch {
+	case errors.As(err, &clientErr):
+		// The dataset service's own answer (412 mismatch, 404, 422, …):
+		// status and machine code pass through unchanged.
+		return uuid.Nil, &DatasetHTTPError{Status: clientErr.Status, Code: clientErr.Code, Detail: clientErr.Detail, Upstream: clientErr.Status >= http.StatusInternalServerError}
+	case errors.Is(err, ErrDatasetCallerRequired), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return uuid.Nil, err
+	default:
+		// Transport failure or an unusable schema answer: the dependency
+		// is at fault, never the request.
+		return uuid.Nil, &DatasetHTTPError{Status: http.StatusServiceUnavailable, Code: "bad_response", Detail: err.Error(), Upstream: true}
+	}
 }
 
 // AbortTransaction implements TransactionAborter. The dataset service

@@ -34,7 +34,7 @@ var (
 )
 
 const batchedConfigColumns = `c.build_id, c.transform_type, c.input_dataset_rid, c.input_branch, c.input_version,
-c.input_path, c.all_files, c.predicate, c.output_dataset_rid, c.output_branch, c.logical_path,
+c.input_path, c.expected_input_schema_hash, c.all_files, c.predicate, c.output_dataset_rid, c.output_branch, c.logical_path,
 c.job_spec_rid, c.job_spec_content_hash, c.actor_subject, c.reservation_rid,
 c.stage, c.lease_owner, c.lease_expires_at, c.abort_requested,
 c.staged_object_id, c.staged_size_bytes, c.staged_sha256, c.staged_records,
@@ -94,7 +94,7 @@ type batchedConfigScanner interface {
 func scanBatchedConfig(row batchedConfigScanner) (*models.BatchedBuildConfig, error) {
 	var c models.BatchedBuildConfig
 	err := row.Scan(&c.BuildID, &c.TransformType, &c.InputDatasetRID, &c.InputBranch, &c.InputVersion,
-		&c.InputPath, &c.AllFiles, &c.Predicate, &c.OutputDatasetRID, &c.OutputBranch, &c.LogicalPath,
+		&c.InputPath, &c.ExpectedInputSchemaHash, &c.AllFiles, &c.Predicate, &c.OutputDatasetRID, &c.OutputBranch, &c.LogicalPath,
 		&c.JobSpecRID, &c.JobSpecContentHash, &c.ActorSubject, &c.ReservationRID,
 		&c.Stage, &c.LeaseOwner, &c.LeaseExpiresAt, &c.AbortRequested,
 		&c.StagedObjectID, &c.StagedSize, &c.StagedSHA256, &c.StagedRecords,
@@ -131,11 +131,11 @@ VALUES ($1,$2,$3,$4,'BUILD_RESOLUTION',$5,$6,$7,$8,$9)`,
 			return fmt.Errorf("batched_prepare_build_conflict: build %s already exists: %w", buildID, err)
 		}
 		_, err := db.Exec(ctx, `INSERT INTO build_batched_configs (
-	build_id, transform_type, input_dataset_rid, input_branch, input_version, input_path, all_files, predicate,
+	build_id, transform_type, input_dataset_rid, input_branch, input_version, input_path, expected_input_schema_hash, all_files, predicate,
 	output_dataset_rid, output_branch, logical_path, job_spec_rid, job_spec_content_hash, actor_subject,
 	stage, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'PREPARING',NOW(),NOW())`,
-			buildID, cfg.TransformType, cfg.InputDatasetRID, cfg.InputBranch, cfg.InputVersion, cfg.InputPath, cfg.AllFiles, cfg.Predicate,
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'PREPARING',NOW(),NOW())`,
+			buildID, cfg.TransformType, cfg.InputDatasetRID, cfg.InputBranch, cfg.InputVersion, cfg.InputPath, cfg.ExpectedInputSchemaHash, cfg.AllFiles, cfg.Predicate,
 			cfg.OutputDatasetRID, cfg.OutputBranch, cfg.LogicalPath, cfg.JobSpecRID, cfg.JobSpecContentHash, cfg.ActorSubject)
 		return err
 	}

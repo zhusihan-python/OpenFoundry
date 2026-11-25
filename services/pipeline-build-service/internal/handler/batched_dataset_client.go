@@ -49,6 +49,7 @@ const (
 	batchedScanCursorMaxLen    = 1024
 	batchedStageWriteBuffer    = 256 << 10
 	batchedStageResponseLimit  = 1 << 20
+	batchedSchemaResponseLimit = 1 << 20
 	batchedErrorBodyLimit      = 64 << 10
 	batchedDefaultScanPageRows = 500
 	// 8MiB raw page budget on the service side; JSON envelope overhead
@@ -134,7 +135,7 @@ func (c BatchedClientConfig) withDefaults() (BatchedClientConfig, error) {
 	return c, nil
 }
 
-// batchedDatasetClient issues the three DVS calls of a batched run.
+// batchedDatasetClient issues the DVS calls of a batched run.
 type batchedDatasetClient struct {
 	cfg BatchedClientConfig
 }
@@ -240,6 +241,56 @@ func batchedErrorFromResponse(status int, body []byte) *batchedClientError {
 		detail, _ = parsed["message"].(string)
 	}
 	return &batchedClientError{Status: status, Code: strings.TrimSpace(code), Detail: strings.TrimSpace(detail)}
+}
+
+// VerifyInputSchema checks the frozen precondition and returns the
+// transaction the scan must echo from its first page onward.
+func (c batchedDatasetClient) VerifyInputSchema(ctx context.Context, in batchedScanInput, hash string) (uuid.UUID, error) {
+	expectedDataset, err := batchedDatasetUUID(in.DatasetRID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("batched_schema_input_invalid: %w", err)
+	}
+	query := url.Values{
+		"branch":                {in.Branch},
+		"version":               {strconv.FormatInt(int64(in.Version), 10)},
+		"expected_content_hash": {hash},
+	}
+	endpoint := c.baseURL() + "/v1/datasets/" + url.PathEscape(in.DatasetRID) + "/schema?" + query.Encode()
+	req, err := c.newRequest(ctx, http.MethodGet, endpoint, nil, "")
+	if err != nil {
+		return uuid.Nil, err
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("batched_schema_lookup_failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, batchedErrorBodyLimit))
+		return uuid.Nil, batchedErrorFromResponse(resp.StatusCode, body)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, batchedSchemaResponseLimit+1))
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("batched_schema_lookup_failed: %w", err)
+	}
+	if len(body) > batchedSchemaResponseLimit {
+		return uuid.Nil, errors.New("batched_schema_response_invalid: response exceeds the size limit")
+	}
+	var schema struct {
+		DatasetID     uuid.UUID `json:"dataset_id"`
+		Branch        string    `json:"branch"`
+		Version       int32     `json:"version"`
+		TransactionID uuid.UUID `json:"transaction_id"`
+		ContentHash   string    `json:"content_hash"`
+	}
+	if err := json.Unmarshal(body, &schema); err != nil {
+		return uuid.Nil, fmt.Errorf("batched_schema_response_invalid: %w", err)
+	}
+	if schema.DatasetID != expectedDataset || schema.Branch != in.Branch || schema.Version != in.Version ||
+		schema.TransactionID == uuid.Nil || schema.ContentHash != hash {
+		return uuid.Nil, errors.New("batched_schema_binding_invalid: schema response does not match the frozen input and digest")
+	}
+	return schema.TransactionID, nil
 }
 
 // ScanStream pages through rows:scan for the pinned input, handing every

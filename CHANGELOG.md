@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
   same version binding in dataset history previews and pinned pipeline inputs.
 - Default declared `orders.v1` pipeline snapshot outputs to Parquet in graph
   runs and canonical scheduled builds.
+- Versioned dataset schemas return a content hash, can require an exact match
+  and can cross-check the transaction that cut a version. Manual batched builds
+  verify a pinned Parquet input's schema hash when they are created and again
+  before scanning.
 
 ### Changed
 - **BREAKING:** The bundled Iceberg catalog returns HTTP 503 for valid row appends

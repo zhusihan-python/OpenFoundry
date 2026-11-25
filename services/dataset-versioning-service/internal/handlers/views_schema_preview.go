@@ -391,7 +391,7 @@ func (h *Handlers) GetCurrentSchema(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if query.Has("version") {
+	if query.Has("version") || query.Has(expectedHistoricalSchemaHash) {
 		h.getHistoricalSchema(w, r, datasetID, query)
 		return
 	}

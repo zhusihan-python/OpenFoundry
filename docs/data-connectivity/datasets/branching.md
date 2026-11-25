@@ -166,11 +166,40 @@ GET /v1/datasets/{rid}/schema?branch=staging&version=2
 
 The versioned schema request requires dataset read access and resolves a committed
 snapshot on the named active branch. The response includes `dataset_id`,
-`branch`, `version`, `transaction_id`, and `fields` with name, type, and
-nullability. The service reads bounded file footers for snapshots of up to 16
+`branch`, `version`, `transaction_id`, `content_hash`, and `fields` with name,
+type, and nullability. The service reads bounded file footers for snapshots of up to 16
 locally backed Parquet files with the same supported flat schema. An unreadable
 footer or incompatible file set makes that side unavailable. Comparisons of two
 branch heads also include the existing file comparison.
+
+Consumers can save the returned `content_hash` and supply it as
+`expected_content_hash` alongside `branch` and `version`. The service returns
+HTTP 412 with `dataset_schema_content_hash_mismatch` in both `error` and `code`
+if the readable schema differs. Invalid digests or a missing version return
+HTTP 400. The precondition requires exact schema equality, including column
+order and nullability.
+
+Add `transaction_id` to cross-check a version and transaction pair, such as a
+`dataset_snapshot` pin. The service returns HTTP 409 with
+`dataset_schema_transaction_mismatch` when another transaction cut the version.
+The pair is checked before the hash. Without `version`, the request keeps its
+current-schema meaning and ignores `transaction_id`.
+
+The hash is the lowercase hexadecimal SHA-256 of the compact UTF-8 JSON
+`fields` array in column order. Each object uses the keys `name`, `field_type`,
+and `nullable` in that order. JSON strings use Go's standard JSON escaping,
+including escapes for `<`, `>`, `&`, U+2028, and U+2029. The digest covers only
+the schema, so multiple snapshots with identical fields share the same hash.
+
+For manual batched builds, set `logic_payload.input.expected_schema_hash` in
+the JobSpec to the hash returned for the pinned Parquet input version.
+CreateBuild verifies the snapshot schema before it writes the build row and
+answers HTTP 412 with `batched_input_schema_mismatch` when the schema differs.
+The build keeps that value from creation through retries. On execution it
+verifies the snapshot schema again before scanning and binds row reads to the
+verified transaction. A mismatch fails the build before an output upload begins
+and preserves the previous output version. The optional check covers the entire
+Parquet snapshot, including when the build copies a single file from it.
 
 ## Match rows by key
 
