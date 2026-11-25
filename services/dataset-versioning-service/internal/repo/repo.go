@@ -457,6 +457,32 @@ func (r *Repo) ListFiles(ctx context.Context, datasetID uuid.UUID, branch string
 	return out, rows.Err()
 }
 
+// ListTransactionFiles returns the active files of one committed transaction of a dataset, in
+// logical path order. It is what that transaction committed, whether or not a later commit
+// wrote the same path. A soft-deleted file is left out: the download would answer 410 for it.
+// The caller settles which branch the transaction is on and whether it lies before its head.
+// The prefix is text: an underscore or a percent sign in it is that character, not a wildcard.
+func (r *Repo) ListTransactionFiles(ctx context.Context, datasetID uuid.UUID, transactionID uuid.UUID, prefix string) ([]models.DatasetFile, error) {
+	prefix = strings.TrimLeft(prefix, "/")
+	rows, err := r.Pool.Query(ctx, fileSelect+`
+		WHERE df.dataset_id = $1 AND df.transaction_id = $2 AND df.deleted_at IS NULL
+		  AND t.status = $3 AND ($4 = '' OR starts_with(df.logical_path, $4))
+		ORDER BY df.logical_path ASC, df.created_at ASC`, datasetID, transactionID, models.TransactionStatusCommitted, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]models.DatasetFile, 0)
+	for rows.Next() {
+		v, err := scanFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, rows.Err()
+}
+
 func (r *Repo) GetFile(ctx context.Context, datasetID uuid.UUID, fileID uuid.UUID) (*models.DatasetFile, error) {
 	row := r.Pool.QueryRow(ctx, fileSelect+` WHERE df.dataset_id = $1 AND df.id = $2`, datasetID, fileID)
 	v, err := scanFile(row)

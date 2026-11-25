@@ -35,11 +35,19 @@ The field names are read from upstream `UNILUME-AI/unilume` at `6f3103e`,
    the length and the hash of the file.
 4. A registered file is published as the original CSV bytes through `outputs:commit`. The
    idempotency key is the scope and the `fileId`, so one month can hold several files. The
-   registration and the `fileId` are kept in the transaction metadata.
+   registration and the `fileId` are kept in the transaction metadata. The commit's `schema`
+   says where the header is: on the second record, after the `All amounts in USD` preamble. It
+   uses the CSV options the dataset service keeps with a publication. The bytes are not changed.
 5. A reported no-data month is written as one JSON record to a separate status dataset. It never
    touches the report dataset.
 6. An independent reader, who has no knowledge of the staged file or of the receipt, resolves each
    registration by version and transaction and confirms the bytes, the SHA-256 and the length.
+7. One Pipeline then reads the two published October reports, not the staged envelopes. Its graph
+   is a pinned dataset input, a `select` of the transaction identity and every amount column, and
+   an output to another dataset. The same Pipeline runs three times, pinned by dataset, branch,
+   version and transaction to v2, v3 and v2 again while v3 is the branch head. Each version holds
+   one file only, so a pin names one published report. `transactions.py` holds what a reader
+   expects of the transactions; it is not part of the publication.
 
 ## What is real, what is assembled, what is pending
 
@@ -68,9 +76,31 @@ The field names are read from upstream `UNILUME-AI/unilume` at `6f3103e`,
 - An envelope that cannot be fetched fails the connector run and confirms no month.
 - The other tenant is denied the datasets, transactions, downloads and commits, and a staged
   envelope. A record that claims the other tenant in headers stays with the signed caller.
+- Each Pipeline run is checked against its saved graph and the receipt of its input node: the
+  pinned dataset, branch, version and transaction, the CSV format, the row count and the rows
+  under their header columns. The `transaction_rid` of the run's output resource,
+  `pipeline-run:<run id>:output`, is repeated in the `metadata.transaction_rid` of the Dataset
+  transaction that cut the output version. That links a run to its output.
+- A read-only reader maps each output version to its transaction and downloads its file. The
+  rows are reconciled line by line and value by value with the report file read from its own
+  bytes: three transactions for v2, two for v3, and a replay equal to the first output. Amounts
+  are compared as decimals, so `-9.00` and the reversal fees `1.20`, `2.25` and `4.10` of the
+  refund keep their sign. A `settlement id` is a number, an `order id` is the string with its
+  leading zeroes, an empty cell is null and a bool never passes for a number. The two files of
+  one month do not mix: an output holds only the `settlement id` values of its own file, in file
+  order. The bytes and SHA256 of the first output and of the replay are equal and differ from
+  those of the second.
+- After the third run, v1 and v2 are history. The reader starts from each version number alone.
+  It takes the version to the transaction that cut it, lists the files of that transaction with
+  `transaction_id` on the files listing, and downloads the one file it holds. It also scans the
+  version by number. v1, v2 and v3 give the bytes and the hash each build published, by download
+  and by scan. Nothing of that step uses what a build recorded while its output was the head.
+- The preview of an output transaction is compared only under unique column names and rows as
+  wide as the columns.
 
 The evidence directory holds `amazon-report.json`, every staged envelope, the three published CSV
-files and the no-data record.
+files, the no-data record, the saved graph, run and Dataset transaction of each Pipeline run, the
+three downloaded outputs and their three downloads from history.
 
 ## Known limits
 
@@ -84,3 +114,7 @@ files and the no-data record.
   use the id of the listing entry that is bound to the transaction.
 - Each registration is its own snapshot version of the report dataset, so the head holds the
   latest registered file only. Reading a whole month means reading its versions.
+- The three Pipeline outputs share one logical path, `part-00000.ndjson`. The file listing
+  without `transaction_id` and the file index keep the newest file of a path. A version that is
+  not the head is reached through `transaction_id` on the files listing, which names the files
+  of the transaction that cut it. The file index does not reach it.

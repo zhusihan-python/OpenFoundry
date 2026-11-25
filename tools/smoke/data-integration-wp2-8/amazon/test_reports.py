@@ -1,10 +1,12 @@
 import base64
+import csv
+import io
 import json
 from pathlib import Path
 import re
 import unittest
 
-from reports import (STORE, RegistrationError, coverage, envelope, file_commit, no_data_commit, object_key,
+from reports import (HEADER_ROW, STORE, RegistrationError, coverage, envelope, file_commit, no_data_commit, object_key,
                      registration, unpack)
 
 HERE = Path(__file__).resolve().parent
@@ -65,6 +67,16 @@ class FixtureTest(unittest.TestCase):
         self.assertEqual(object_key("2026-09", "again"),
                          f"reports/{STORE}/amazon-us/transaction_view/2026-09/again.ndjson")
 
+    def test_each_file_opens_with_the_preamble_and_keeps_its_header_on_the_second_record(self):
+        for name in FILES:
+            with self.subTest(file=name):
+                data = fixture(name)
+                records = list(csv.reader(io.StringIO(data.decode("utf-8-sig"))))
+                self.assertTrue(data.startswith(b"\xef\xbb\xbf"))
+                self.assertEqual((records[0], records[1][0]), (["All amounts in USD"], "date/time"))
+                self.assertTrue(all(len(record) == len(records[1]) for record in records[1:]))
+        self.assertEqual(HEADER_ROW, 2)
+
 
 class FileTest(unittest.TestCase):
     def test_registered_file_round_trips_its_bytes(self):
@@ -124,6 +136,13 @@ class FileTest(unittest.TestCase):
         self.assertEqual(body["metadata"], {"registration": record, "file_id": FILE_ID})
         self.assertEqual(body["idempotency_key"], f"amazon-report:{STORE}:amazon-us:transaction_view:2026-09:{FILE_ID}")
         self.assertEqual(body, file_commit(record, file_id, published))
+
+    def test_commit_says_where_the_header_of_the_file_is(self):
+        record, file_id, published = unpack(delivered(), "2026-09")
+        self.assertEqual(file_commit(record, file_id, published)["schema"], {
+            "file_format": "TEXT", "fields": [],
+            "custom_metadata": {"csv": {"headerRow": HEADER_ROW, "charset": "UTF-8", "bom": "strip"}}})
+        self.assertNotIn("schema", no_data_commit(unpack(no_data(), "2026-08")[0]))
 
     def test_key_separates_the_files_of_one_month(self):
         keys = set()

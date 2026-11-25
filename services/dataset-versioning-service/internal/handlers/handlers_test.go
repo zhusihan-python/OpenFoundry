@@ -530,10 +530,31 @@ func (f *fakeStore) CreateBranch(_ context.Context, dataset *models.Dataset, bod
 	return &b, nil
 }
 
+// ListFiles mirrors the head listing of the real store: one file per logical path, the newest,
+// in path order.
 func (f *fakeStore) ListFiles(_ context.Context, datasetID uuid.UUID, _ string, prefix string) ([]models.DatasetFile, error) {
 	out := []models.DatasetFile{}
+	seen := map[string]struct{}{}
+	files := append([]models.DatasetFile(nil), f.files[datasetID]...)
+	sort.SliceStable(files, func(i, j int) bool {
+		if files[i].LogicalPath != files[j].LogicalPath {
+			return files[i].LogicalPath < files[j].LogicalPath
+		}
+		return files[j].CreatedAt.Before(files[i].CreatedAt)
+	})
+	for _, file := range files {
+		if _, ok := seen[file.LogicalPath]; ok || prefix != "" && !strings.HasPrefix(file.LogicalPath, prefix) {
+			continue
+		}
+		seen[file.LogicalPath] = struct{}{}
+		out = append(out, file)
+	}
+	return out, nil
+}
+func (f *fakeStore) ListTransactionFiles(_ context.Context, datasetID uuid.UUID, transactionID uuid.UUID, prefix string) ([]models.DatasetFile, error) {
+	out := []models.DatasetFile{}
 	for _, file := range f.files[datasetID] {
-		if prefix == "" || strings.HasPrefix(file.LogicalPath, prefix) {
+		if file.TransactionID == transactionID && file.DeletedAt == nil && (prefix == "" || strings.HasPrefix(file.LogicalPath, prefix)) {
 			out = append(out, file)
 		}
 	}

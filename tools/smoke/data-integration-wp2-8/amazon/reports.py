@@ -28,6 +28,8 @@ REPORT_KIND = "transaction_view"
 PERIOD = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 CHECKED_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
 SCOPE = ("storeId", "marketplace", "reportKind", "period")
+# A report opens with one preamble record, All amounts in USD. Its header is the next record.
+HEADER_ROW = 2
 
 
 class RegistrationError(ValueError):
@@ -123,15 +125,26 @@ def _commit(record, key, path, content_type, data):
                             content_base64=base64.b64encode(data).decode())])
 
 
+def csv_layout():
+    """Where the dataset service finds the header of a published report.
+
+    It reads the header of a CSV from its first record unless the publication says otherwise.
+    A report carries its header on the second record, after the preamble.
+    """
+    return {"file_format": "TEXT", "fields": [],
+            "custom_metadata": {"csv": {"headerRow": HEADER_ROW, "charset": "UTF-8", "bom": "strip"}}}
+
+
 def file_commit(record, file_id, data):
     """Publish the original CSV bytes of one registered file.
 
     The request depends only on the registration, its fileId and the bytes, so an identical
     redelivery rebuilds it and replays the first receipt. The key separates files of one month.
+    The schema says where the header of the file is; the bytes are published as they are.
     """
     return dict(_commit(record, "amazon-report:" + ":".join([*(record[name] for name in SCOPE), file_id]),
                         f"{MARKETPLACE}/{REPORT_KIND}/{record['period']}/{file_id}.csv", "text/csv", data),
-                metadata=dict(registration=record, file_id=file_id))
+                schema=csv_layout(), metadata=dict(registration=record, file_id=file_id))
 
 
 def no_data_commit(report):

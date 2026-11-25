@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +46,7 @@ type Store interface {
 	GetBranch(ctx context.Context, datasetID uuid.UUID, name string) (*models.DatasetBranch, error)
 	CreateBranch(ctx context.Context, dataset *models.Dataset, body *models.CreateDatasetBranchRequest) (*models.DatasetBranch, error)
 	ListFiles(ctx context.Context, datasetID uuid.UUID, branch string, prefix string) ([]models.DatasetFile, error)
+	ListTransactionFiles(ctx context.Context, datasetID uuid.UUID, transactionID uuid.UUID, prefix string) ([]models.DatasetFile, error)
 	GetFile(ctx context.Context, datasetID uuid.UUID, fileID uuid.UUID) (*models.DatasetFile, error)
 	GetTransactionStatus(ctx context.Context, datasetID uuid.UUID, transactionID uuid.UUID) (string, bool, error)
 	ResolveDatasetID(ctx context.Context, raw string) (uuid.UUID, error)
@@ -756,6 +758,12 @@ func writeBranchError(w http.ResponseWriter, err error) {
 	writeJSONErr(w, http.StatusInternalServerError, err.Error())
 }
 
+// ListFiles serves GET /datasets/{id}/files. Without transaction_id it lists the files of the
+// branch head, one per logical path. With transaction_id it lists the active files that one
+// committed transaction of the branch holds instead, so a version that is no longer the head
+// stays reachable by the transaction that cut it. The filter never falls back to the head: a
+// transaction that is not a committed transaction of this dataset on this branch, before the
+// head of that branch, is not found.
 func (h *Handlers) ListFiles(w http.ResponseWriter, r *http.Request) {
 	_, dataset, ok := h.ownedDataset(w, r)
 	if !ok {
@@ -766,13 +774,113 @@ func (h *Handlers) ListFiles(w http.ResponseWriter, r *http.Request) {
 		branch = "main"
 	}
 	prefix := strings.TrimLeft(strings.TrimSpace(r.URL.Query().Get("prefix")), "/")
-	files, err := h.Repo.ListFiles(r.Context(), dataset.ID, branch, prefix)
+	transactionID, err := listFilesTransaction(r)
+	if err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if transactionID != nil && !h.committedTransactionOfBranch(w, r, dataset.ID, branch, *transactionID) {
+		return
+	}
+	var files []models.DatasetFile
+	if transactionID == nil {
+		files, err = h.Repo.ListFiles(r.Context(), dataset.ID, branch, prefix)
+	} else {
+		files, err = h.Repo.ListTransactionFiles(r.Context(), dataset.ID, *transactionID, prefix)
+	}
 	if err != nil {
 		slog.Error("list files", slog.String("error", err.Error()))
 		writeJSONErr(w, http.StatusInternalServerError, "failed to list files")
 		return
 	}
 	writeJSON(w, http.StatusOK, models.ListDatasetFilesResponse{Branch: branch, Total: len(files), Files: files})
+}
+
+// listFilesTransaction reads the optional transaction_id filter of the files listing. It
+// returns nil when the request does not name a transaction, and a request without the filter
+// is read exactly as before.
+func listFilesTransaction(r *http.Request) (*uuid.UUID, error) {
+	if _, present := r.URL.Query()["transaction_id"]; !present && !namesTransactionFilter(r.URL.RawQuery) {
+		return nil, nil
+	}
+	// The convenience method silently drops a pair with an invalid percent-escape, which would
+	// turn a malformed filter into a request without one. A query that names the filter is
+	// therefore read strictly, as a whole.
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return nil, errors.New("invalid query encoding")
+	}
+	values, present := query["transaction_id"]
+	if !present || len(values) != 1 {
+		return nil, errors.New("transaction_id must appear at most once")
+	}
+	transactionID, err := uuid.Parse(strings.TrimSpace(values[0]))
+	if err != nil {
+		return nil, errors.New("transaction_id must be a UUID")
+	}
+	return &transactionID, nil
+}
+
+// namesTransactionFilter reports whether the raw query holds a transaction_id pair, with the
+// name as written or encoded, as in transaction%5Fid. URL.Query() drops a whole pair whose value
+// does not decode, so a filter named that way with such a value is found here and nowhere else.
+func namesTransactionFilter(raw string) bool {
+	for _, pair := range strings.Split(raw, "&") {
+		name, _, _ := strings.Cut(pair, "=")
+		if decoded, err := url.QueryUnescape(name); err == nil && decoded == "transaction_id" {
+			return true
+		}
+	}
+	return false
+}
+
+// committedTransactionOfBranch reports whether the transaction is a committed transaction of
+// this dataset on this branch that lies before the head of the branch. It writes the response
+// when it is not. A deleted or archived branch does not resolve, as for rows:scan. A
+// transaction of a parent branch is not one of a branch created from it, as for rows:scan:
+// the branch inherits the files to read, not the commit.
+func (h *Handlers) committedTransactionOfBranch(w http.ResponseWriter, r *http.Request, datasetID uuid.UUID, branch string, transactionID uuid.UUID) bool {
+	notFound := func() bool {
+		writeJSONErr(w, http.StatusNotFound, "transaction not found")
+		return false
+	}
+	branchRow, err := h.Repo.GetRuntimeBranch(r.Context(), datasetID, branch)
+	if err != nil && !errors.Is(err, repo.ErrNotFound) {
+		writeJSONErr(w, http.StatusInternalServerError, "failed to load branch")
+		return false
+	}
+	if err != nil || branchRow == nil {
+		return notFound()
+	}
+	txn, err := h.Repo.GetRuntimeTransaction(r.Context(), datasetID, transactionID)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, "failed to load transaction")
+		return false
+	}
+	if txn == nil || txn.Status != models.TransactionStatusCommitted || txn.BranchID != branchRow.ID {
+		return notFound()
+	}
+	// The window of a branch ends at its head. A transaction of the branch that was committed
+	// after the head is outside it, and the head listing leaves its files out as well.
+	if branchRow.HeadTransactionID != nil {
+		head, err := h.Repo.GetRuntimeTransaction(r.Context(), datasetID, *branchRow.HeadTransactionID)
+		if err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, "failed to load transaction")
+			return false
+		}
+		if head != nil && transactionAt(txn).After(transactionAt(head)) {
+			return notFound()
+		}
+	}
+	return true
+}
+
+// transactionAt is when a transaction took its place on a branch: its commit, or else its start.
+func transactionAt(txn *models.RuntimeTransaction) time.Time {
+	if txn.CommittedAt != nil {
+		return *txn.CommittedAt
+	}
+	return txn.StartedAt
 }
 
 func (h *Handlers) DownloadFile(w http.ResponseWriter, r *http.Request) {
