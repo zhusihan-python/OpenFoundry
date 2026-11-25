@@ -91,6 +91,11 @@ def columns_of(data):
     return [{"name": name, "field_type": "STRING", "nullable": name in nullable} for name in names]
 
 
+def schema_route(dataset, version, **params):
+    """The formal versioned schema request for one dataset version on main."""
+    return f"/v1/datasets/{dataset}/schema?" + urlencode({"branch": "main", "version": version, **params})
+
+
 def line_price_nodes(graph, source, out, published):
     nodes = graph.graph_nodes(source, published["version"], published["transaction"], out)
     nodes.insert(1, {"id": "project-lines", "label": "Publish order line prices", "depends_on": ["input"],
@@ -160,8 +165,7 @@ def main(state):
     declared = {}
 
     def schema_answer(version, name, **params):
-        query = urlencode({"branch": "main", "version": version, **params})
-        result = p1.http("dataset", f"/api/v1/datasets/{target}/schema?{query}", token=reader, raw=True)
+        result = p1.http("dataset", schema_route(target, version, **params), token=reader, raw=True)
         (state / f"schema-{name}.json").write_bytes(result.body)
         schema["answers"].append(dict(name=name, version=version, **params, status=result.status, artifact=f"schema-{name}.json"))
         return result
@@ -218,8 +222,7 @@ def main(state):
     stale = schema_answer(2, "v2-other-hash", expected_content_hash=hashlib.sha256(b"[]").hexdigest())
     check("order line schema of v2 refuses another content hash", stale.status == 412
           and json.loads(stale.body).get("code") == "dataset_schema_content_hash_mismatch" and b'"fields"' not in stale.body)
-    foreign = p1.http("dataset", f"/api/v1/datasets/{target}/schema?" + urlencode({"branch": "main", "version": 1}),
-                      token=ids["user_b"].token, raw=True)
+    foreign = p1.http("dataset", schema_route(target, 1), token=ids["user_b"].token, raw=True)
     check("other tenant cannot read the order line schema", foreign.status in (403, 404))
 
     before = graph.list_versions(target)
@@ -316,8 +319,7 @@ def main(state):
     # The connector's raw batch and the six-column projection are NDJSON
     # without a schema in a commit receipt. Both keep their unsupported answer.
     for name, dataset, version in (("raw-batch", raw, 1), ("projection", down, first["output_version"])):
-        result = p1.http("dataset", f"/api/v1/datasets/{dataset}/schema?" + urlencode({"branch": "main", "version": version}),
-                         token=reader, raw=True)
+        result = p1.http("dataset", schema_route(dataset, version), token=reader, raw=True)
         (state / f"schema-unsupported-{name}.json").write_bytes(result.body)
         check(f"versioned schema of the {name} without a schema in a commit receipt stays unsupported", result.status == 422
               and json.loads(result.body).get("error", "").startswith("dataset_schema_format_unsupported")

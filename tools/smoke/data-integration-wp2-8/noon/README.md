@@ -38,7 +38,7 @@ Each order-line publication is a keyed inline `outputs:commit` that declares one
 The publisher builds the field list from that constant. It rejects rows with a missing or extra column or a value that is not a string, and an empty snapshot declares the same columns.
 The dataset service seals the declaration in the immutable receipt of the transaction that cut the version. Its versioned schema route answers from that receipt, matched by dataset, transaction and branch. The service derives nothing from the file and never reads the transaction's free-form `metadata`, so the names, order, types and nullability are the publisher's statement and the content hash follows it.
 
-The reader of the first organization holds no write permission. It calls `GET /api/v1/datasets/{id}/schema` on the order-line dataset with its own token:
+The reader of the first organization holds no write permission. It calls `GET /v1/datasets/{id}/schema` on the order-line dataset with its own token:
 after v1 is published and before v2 exists, and again after v2 is published.
 
 - Each answer is bound to the version and transaction that cut it and lists the seven contract fields. The hash equals SHA-256 of the compact JSON `fields` array.
