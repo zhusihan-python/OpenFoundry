@@ -27,6 +27,8 @@ interface CompareTabProps {
   sideB: CompareSide | null;
   sideAError?: string;
   sideBError?: string;
+  sideANotice?: string;
+  sideBNotice?: string;
   selectorA: CompareSelector;
   selectorB: CompareSelector;
   loading?: boolean;
@@ -87,6 +89,8 @@ export function CompareTab({
   sideB,
   sideAError,
   sideBError,
+  sideANotice,
+  sideBNotice,
   selectorA,
   selectorB,
   loading = false,
@@ -134,8 +138,8 @@ export function CompareTab({
 
       <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
         {([
-          { key: 'A' as const, selector: selectorA, side: sideA, error: sideAError },
-          { key: 'B' as const, selector: selectorB, side: sideB, error: sideBError },
+          { key: 'A' as const, selector: selectorA, side: sideA, error: sideAError, notice: sideANotice },
+          { key: 'B' as const, selector: selectorB, side: sideB, error: sideBError, notice: sideBNotice },
         ]).map((picker) => (
           <div key={picker.key} className="of-panel" style={{ padding: 12 }}>
             <label htmlFor={`${pickerId}-${picker.key}`} style={{ fontSize: 11, color: 'var(--text-muted)' }}>
@@ -155,6 +159,9 @@ export function CompareTab({
                 <strong>Side {picker.key} unavailable</strong>
                 <div>{picker.error}</div>
               </div>
+            )}
+            {!picker.error && picker.notice && (
+              <div className="of-text-muted" style={{ marginTop: 4, fontSize: 11 }}>{picker.notice}</div>
             )}
             {!picker.error && picker.side && (
               <div className="of-text-muted" style={{ marginTop: 4, fontSize: 11 }}>

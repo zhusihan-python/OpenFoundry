@@ -235,6 +235,7 @@ def main(state):
           and (state / first["artifact"]).read_bytes() == (state / replay["artifact"]).read_bytes()
           and (state / first["artifact"]).read_bytes() != (state / latest["artifact"]).read_bytes())
     s3.write_json(state / "noon-report.json", report)
+    return dict(reader=reader, other=ids["user_b"].token, p1=p1, graph=graph)
 
 
 if __name__ == "__main__":

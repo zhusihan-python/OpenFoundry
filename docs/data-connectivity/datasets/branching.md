@@ -186,8 +186,10 @@ advances.
 GET /v1/datasets/{rid}/compare/rows?base_branch=main&base_version=1&base_transaction={base_uuid}&target_branch=main&target_version=2&target_transaction={target_uuid}&key=order_id
 ```
 
-The comparison supports locally backed `orders.v1` Parquet snapshots. It
-checks both branches, versions, and transaction IDs with dataset read access.
+The comparison supports locally backed `orders.v1` Parquet snapshots, and
+snapshots whose every file is NDJSON holding published noon order lines, by
+one of `store`, `market`, `order_nr`, `item_nr`, `unit_price`, or `currency`.
+It checks both branches, versions, and transaction IDs with dataset read access.
 Every response counts all rows after both scans reach the end. Details are
 ordered by key text. Duplicate keys, null keys, unsupported inputs, and scans
 that exceed the configured budget return an error.

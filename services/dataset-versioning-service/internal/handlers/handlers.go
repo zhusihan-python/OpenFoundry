@@ -95,7 +95,7 @@ type Store interface {
 	StageTransactionFiles(ctx context.Context, datasetID uuid.UUID, transactionID uuid.UUID, files []models.StageTransactionFile) error
 	GetTransactionStagedFile(ctx context.Context, transactionID uuid.UUID, logicalPath string) (*models.StageTransactionFile, error)
 	ListTransactionStagedFilesFrom(ctx context.Context, transactionID uuid.UUID, fromPath string, limit int) ([]models.StageTransactionFile, error)
-	TransactionStagedFileFormats(ctx context.Context, transactionID uuid.UUID) (hasParquet, hasOther, allDelimited bool, err error)
+	TransactionStagedFileFormats(ctx context.Context, transactionID uuid.UUID) (hasParquet, hasOther, allDelimited, allNDJSON bool, err error)
 	MergeTransactionMetadata(ctx context.Context, datasetID uuid.UUID, transactionID uuid.UUID, metadata models.JSONValue) error
 	GetRuntimeTransaction(ctx context.Context, datasetID uuid.UUID, txnID uuid.UUID) (*models.RuntimeTransaction, error)
 	ListRuntimeTransactions(ctx context.Context, datasetID uuid.UUID, branch *string, before *time.Time, limit int) ([]models.RuntimeTransaction, error)
