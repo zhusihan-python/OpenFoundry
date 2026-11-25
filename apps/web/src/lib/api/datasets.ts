@@ -745,8 +745,8 @@ export async function getDatasetSnapshotSchema(datasetId: string, snapshot: Data
   return schema;
 }
 
-// The versioned schema is served for Parquet snapshots only. A snapshot of
-// another format has no schema to diff, which says nothing about its rows.
+// A dataset_schema_format_unsupported answer leaves the snapshot without a
+// versioned schema to compare. Its rows can still be read.
 export function schemaFormatUnsupported(error: unknown): boolean {
   return error instanceof ApiError && error.message.startsWith('dataset_schema_format_unsupported');
 }
