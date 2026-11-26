@@ -1,4 +1,4 @@
-import api, { ApiError } from './client';
+import api, { ApiError, errorMessage } from './client';
 
 export interface Dataset {
   id: string;
@@ -887,6 +887,8 @@ export interface ListDatasetFilesParams {
   branch?: string;
   view_id?: string;
   prefix?: string;
+  /** Lists the files of that one committed transaction, not the ones the branch head shows. */
+  transaction_id?: string;
 }
 
 export function listDatasetFiles(datasetId: string, params: ListDatasetFilesParams = {}) {
@@ -907,6 +909,24 @@ export function listDatasetFiles(datasetId: string, params: ListDatasetFilesPara
  *  `<a>` or assigned to `window.location`. */
 export function datasetFileDownloadUrl(datasetId: string, fileId: string): string {
   return `/api/v1/datasets/${datasetId}/files/${fileId}/download`;
+}
+
+/** The bytes of one entry of a files listing, read with this client's credential.
+ *  The download route accepts the id of the listing entry, not the one a commit
+ *  receipt names. */
+export async function downloadDatasetFile(datasetId: string, fileId: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const authHeader = api.authorizationHeaders().Authorization;
+  if (authHeader) {
+    headers.Authorization = authHeader;
+  }
+  const response = await fetch(datasetFileDownloadUrl(datasetId, fileId), { headers });
+  if (!response.ok) {
+    const fallback = `File download failed (${response.status})`;
+    const payload = await response.json().catch(() => null);
+    throw new ApiError(response.status, errorMessage(payload, fallback) || fallback);
+  }
+  return response.blob();
 }
 
 export interface DatasetStorageDetails {

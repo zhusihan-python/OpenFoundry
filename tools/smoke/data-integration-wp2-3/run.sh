@@ -13,20 +13,22 @@ source_type=${1:-s3}
 orders_script="$here/orders.py"
 table_fixture=""
 gateway=0
+page_downloads=0
 case "$source_type" in
   s3) ;;
   noon) orders_script="$here/../data-integration-wp2-8/noon/smoke.py" ;;
   noon-preview) orders_script="$here/../data-integration-wp2-8/noon/preview.py"; gateway=1 ;;
   amazon) orders_script="$here/../data-integration-wp2-8/amazon/smoke.py" ;;
+  amazon-preview) orders_script="$here/../data-integration-wp2-8/amazon/preview.py"; gateway=1; page_downloads=1 ;;
   lingxing) orders_script="$here/../data-integration-wp2-8/smoke.py" ;;
   postgresql) table_fixture="$here/../data-integration-wp2-5" ;;
   mysql) table_fixture="$here/../data-integration-wp2-4" ;;
-  *) echo "usage: $0 [s3|postgresql|mysql|lingxing|noon|amazon|noon-preview]" >&2; exit 2 ;;
+  *) echo "usage: $0 [s3|postgresql|mysql|lingxing|noon|amazon|noon-preview|amazon-preview]" >&2; exit 2 ;;
 esac
 if (( gateway )); then
-  command -v ego-browser >/dev/null || { echo "noon-preview needs ego-browser on PATH" >&2; exit 2; }
+  command -v ego-browser >/dev/null || { echo "$source_type needs ego-browser on PATH" >&2; exit 2; }
   [[ -f "$root/apps/web/node_modules/vite/bin/vite.js" ]] ||
-    { echo "noon-preview needs the installed web workspace: pnpm install --frozen-lockfile" >&2; exit 2; }
+    { echo "$source_type needs the installed web workspace: pnpm install --frozen-lockfile" >&2; exit 2; }
 fi
 state=$(mktemp -d "${TMPDIR:-/tmp}/wp23-orders.XXXXXXXX")
 export WP23_DVS_PORT
@@ -34,13 +36,14 @@ WP23_DVS_PORT=${WP23_DVS_PORT:-$(python3 -c 'import socket; s=socket.socket(); s
 export BIN_DIR="$state/bin"
 mkdir -p "$BIN_DIR"
 project="wp23-$(openssl rand -hex 6)"
-export DB_PASSWORD JWT_SECRET CREDENTIAL_KEY STORE_ACCESS STORE_SECRET WP23_GATEWAY_CONTAINER
+export DB_PASSWORD JWT_SECRET CREDENTIAL_KEY STORE_ACCESS STORE_SECRET WP23_GATEWAY_CONTAINER WP23_FORWARDER_CONTAINER
 DB_PASSWORD=$(openssl rand -hex 20)
 JWT_SECRET=$(openssl rand -hex 32)
 CREDENTIAL_KEY=$(openssl rand -base64 32)
 STORE_ACCESS=$(openssl rand -hex 10)
 STORE_SECRET=$(openssl rand -hex 24)
 WP23_GATEWAY_CONTAINER="$project-gateway"
+WP23_FORWARDER_CONTAINER="$project-forwarder"
 compose=(docker compose -p "$project" -f "$here/compose.yaml")
 if [[ -n "$table_fixture" ]]; then
   export WP25_ADMIN_PASSWORD WP25_READER_PASSWORD WP25_OTHER_PASSWORD WP25_TLS
@@ -59,6 +62,7 @@ cleanup() {
     # Keep logs private in the run directory, separate from the handoff.
     "${compose[@]}" logs --no-color >"$state/services.log" 2>&1
   fi
+  if (( page_downloads )); then docker rm -f "$WP23_FORWARDER_CONTAINER" >/dev/null 2>&1 || true; fi
   if (( gateway )); then docker rm -f "$WP23_GATEWAY_CONTAINER" >/dev/null 2>&1 || true; fi
   "${compose[@]}" down -v --remove-orphans >/dev/null
   if [[ -n "$table_fixture" ]]; then
@@ -87,6 +91,7 @@ CERT
 fi
 build=(./services/{dataset-versioning-service,pipeline-build-service,connector-management-service}/cmd/...)
 if (( gateway )); then build+=(./services/edge-gateway-service/cmd/edge-gateway-service); fi
+if (( page_downloads )); then build+=(./tools/smoke/data-integration-wp2-3/loopback-forwarder); fi
 docker run --rm -v "$root:/src:ro" -v "$BIN_DIR:/out" \
   -v "${WP23_GO_MOD_CACHE:-wp23-go-mod}:/go/pkg/mod" \
   -v "${WP23_GO_BUILD_CACHE:-wp23-go-build}:/root/.cache/go-build" \
@@ -119,6 +124,18 @@ if (( gateway )); then
     --entrypoint /binaries/edge-gateway-service golang:1.26.3 >/dev/null
   WP23_GATEWAY="http://127.0.0.1:$WP23_GATEWAY_PORT"
   curl -fsS --retry 30 --retry-all-errors --retry-delay 1 --max-time 3 "$WP23_GATEWAY/healthz" >/dev/null
+fi
+if (( page_downloads )); then
+  # A page download goes through the gateway, which follows the dataset service's redirect to the
+  # signed address of the file: the files base URL, on the host's loopback, out of reach from the
+  # gateway's container. The forwarder answers that address in the gateway's own network namespace
+  # and connects each caller to the dataset service. It binds the loopback alone, so nothing off
+  # the container reaches it, and the signed address keeps a host other than the service's own,
+  # where a client leaves a bearer credential behind on a redirect.
+  docker run -d --name "$WP23_FORWARDER_CONTAINER" --network "container:$WP23_GATEWAY_CONTAINER" \
+    -v "$BIN_DIR:/binaries:ro" \
+    --entrypoint /binaries/loopback-forwarder golang:1.26.3 \
+    -listen-port "$WP23_DVS_PORT" -target dataset:50078 >/dev/null
 fi
 python3 -I "$orders_script" "$state"
 test "$(git -C "$root" rev-parse HEAD)" = "$revision"

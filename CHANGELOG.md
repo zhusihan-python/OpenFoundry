@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ### Added
 
+- Dataset branches download the files of a committed version from the **Compare** tab: a side lists what the version's transaction holds, each file with its own download under the signed-in user's access.
 - `GET /api/v1/datasets/{id}/files` accepts an optional `transaction_id` and then lists the active files that one committed transaction of the branch holds, so a version that is no longer the head stays downloadable by the transaction that cut it. Without the parameter the listing does not change. A transaction that is not committed on that branch before its head is `404`, never the head listing; a malformed value is `400`.
 - A Pipeline graph input pinned by `dataset_snapshot` can require the committed schema hash of that version with `expected_schema_hash`; a mismatch refuses the input before any row is read or published.
 - PostgreSQL order CDC can publish versioned datasets from Debezium and resume after a committed publish.

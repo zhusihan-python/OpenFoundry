@@ -241,6 +241,33 @@ not a change of order. When that read fails, when the schema comes back with
 the expected hash, or when no difference can be named, the error keeps the
 dataset service's code and says so in words instead.
 
+## Download the files of a committed version
+
+On the branch's **Compare** tab, select a committed version for a side. Under
+its selector the page lists the files that the version's transaction holds,
+each with its size and its own **Download**. A version with several files lists
+them all; none is picked for you. A version without files says so.
+
+```http
+GET /v1/datasets/{rid}/files?branch=main&transaction_id={transaction_uuid}
+GET /v1/datasets/{rid}/files/{file_uuid}/download
+```
+
+The page asks the listing for that one transaction, so an older version shows
+its own files and not the ones at the head of the branch. Each download uses
+the id of its listing entry, and the signed-in user's own access decides
+whether the bytes are returned. A side left on a branch names no transaction
+and downloads nothing; select a version instead. While a file downloads its
+button is disabled. A download that fails says why under its file and can be
+started again.
+
+The download route answers with a redirect to a signed address under the
+dataset service's `DATASET_FILES_BASE_URL`, and the gateway follows that
+redirect itself. The gateway must be able to resolve and reach that address.
+Left unset, the variable is the address the dataset service listens on, which
+a gateway in another container or Pod does not share. Set it to an address the
+gateway can reach.
+
 ## Match rows by key
 
 Select two committed snapshots on the **Compare** tab, enter a **Key column**,

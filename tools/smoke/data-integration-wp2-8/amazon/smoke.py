@@ -650,6 +650,7 @@ def main(state):
         last_good_output=dict(version=last_good["version"], transaction_id=last_good["transaction_id"],
                               file_id=None if len(files) != 1 else files[0]["id"], sha256=downloaded))
     s3.write_json(state / "amazon-report.json", report)
+    return dict(reader=reader, other=foreign, p1=p1)
 
 
 if __name__ == "__main__":

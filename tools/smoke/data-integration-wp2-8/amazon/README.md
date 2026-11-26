@@ -173,6 +173,50 @@ to them), the negative report `negative-transaction_view-2026-10.csv` and its pu
 saved graph and the run of the refused fourth run (`pipeline-4-graph.json`,
 `pipeline-4-run.json`), and the `schema_gate` section of `amazon-report.json`.
 
+## Version comparison in a browser
+
+The optional `amazon-preview` case runs the handoff and the checks above in the same stack, then works on
+the real Compare page as the independent reader, behind the real edge gateway:
+
+```sh
+pnpm install --frozen-lockfile
+WP23_GO_MOD_CACHE=of-go-mod WP23_GO_BUILD_CACHE=of-go-build bash tools/smoke/data-integration-wp2-3/run.sh amazon-preview
+```
+
+It needs the installed web workspace and ego-browser. Only identity bootstrap and profile use the dev stub.
+
+In one page session the reader selects report v2 with v3, then v3 with v4. Both sides of each pair must
+answer a committed schema through the gateway, bound to the selected version and transaction. v2 and v3
+are different files of one month under one field structure: the panel states `No schema changes.`, and the
+case reads from the published bytes that the data differ, three and two transactions that share no
+settlement id, with the totals 59.57 and -1.36. v3 with v4 states one row, `total` `DOUBLE → STRING`, and
+nothing else. The case cross-proves that row against the refused run of this stack, which
+`pipeline-4-run.json` and `pipeline-4-graph.json` hold: its input node was bound to the same dataset,
+version and transaction the page selected, and its own error names `total` `STRING` in the committed
+schema and `DOUBLE` in the expected schema. The page's row comparison takes no part: it reads Parquet and
+noon order-line NDJSON snapshots and refuses these CSV reports with `dataset_row_compare_key_invalid`.
+
+After the refusal the reader opens the output dataset, finds v3 in the version list of its Compare tab and
+selects it. The page lists the files of that version's transaction and offers each one for download. The
+reader clicks the download of `part-00000.ndjson`, the browser saves it, and the case reads the saved file
+alone: the SHA-256 and the net total `59.57` that `transactions.py` pins for the first October report, and
+its rows against the report file read from the fixture.
+
+A page download goes through the gateway, which follows the dataset service's redirect to the signed
+address of the file. That address is the stack's files base URL, on the host's loopback, which the
+gateway's container cannot reach. For this case `run.sh` builds `loopback-forwarder` with the services and
+starts it in the gateway's network namespace. It answers that loopback address there and connects each
+caller to the dataset service. It binds `127.0.0.1` alone, and the signed address keeps a host other than
+the dataset service's own, so the gateway leaves the reader's bearer credential behind on the redirect.
+The forwarder belongs to this acceptance stack only and changes no deployment: there, the gateway must be
+able to resolve and reach `DATASET_FILES_BASE_URL`, as `docs/data-connectivity/datasets/branching.md` states.
+
+`compare-schema-*.png`, `compare-schema-*.dom.html` and `compare-schema-v*.gateway.json` hold the two
+schema comparisons and the gateway's answers. `download-v3-ready.png`, `download-v3-saved.png` and
+`browser-download-output-v3.ndjson` hold the download. `preview-report.json` records the binaries, the
+forwarder's listening address, what the page showed and asked for each step, and the saved file's hash and
+net total. The case fails if a token or secret reaches its directory.
+
 ## Known limits
 
 - The dataset service refused a wrong declared length in this run (HTTP 400). It does not check

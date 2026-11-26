@@ -2,14 +2,29 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
-import { CompareTab, type CompareFile, type CompareSelector, type CompareSide, type SchemaField } from '@/lib/components/dataset/CompareTab';
+import {
+  CompareTab,
+  type CompareFile,
+  type CompareSelector,
+  type CompareSide,
+  type SchemaField,
+} from '@/lib/components/dataset/CompareTab';
 import { DeleteBranchDialog } from '@/lib/components/dataset/DeleteBranchDialog';
 import { SnapshotRowComparison } from '@/lib/components/dataset/SnapshotRowComparison';
 import { Tabs } from '@/lib/components/Tabs';
 import {
+  downloadFailed,
+  downloadFinished,
+  downloadStarted,
+  versionFiles,
+  type CompareVersionFile,
+  type VersionFileDownloads,
+} from '@/lib/components/dataset/versionFiles';
+import {
   committedDatasetSnapshots,
   compareBranches,
   datasetUuid,
+  downloadDatasetFile,
   getBranchMarkings,
   getDataset,
   getDatasetSchemaForBranch,
@@ -143,6 +158,21 @@ function useCompareSide(datasetId: string, selector: CompareSelector, snapshot: 
   });
 }
 
+// The files of the committed version a side selects, listed by the transaction
+// that cut it and nothing else: the head's listing would not reach an old version.
+function useVersionFiles(datasetId: string, snapshot: DatasetSnapshot | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ['dataset-version-files', datasetId, snapshot?.branch, snapshot?.version, snapshot?.id],
+    enabled: enabled && Boolean(snapshot),
+    staleTime: 0,
+    retry: false,
+    queryFn: () => {
+      if (!snapshot) throw new Error('No committed version is selected.');
+      return listDatasetFiles(datasetId, { branch: snapshot.branch, transaction_id: snapshot.id });
+    },
+  });
+}
+
 export function DatasetBranchDetailPage() {
   const { id: routeId = '', branch: branchName = '' } = useParams<{ id: string; branch: string }>();
   const id = datasetUuid(routeId);
@@ -216,6 +246,9 @@ export function DatasetBranchDetailPage() {
   const snapshotB = snapshotForSelector(selectorB, snapshots);
   const sideA = useCompareSide(id, selectorA, snapshotA, canCompare);
   const sideB = useCompareSide(id, selectorB, snapshotB, canCompare);
+  const filesOfA = useVersionFiles(id, snapshotA, canCompare);
+  const filesOfB = useVersionFiles(id, snapshotB, canCompare);
+  const [fileDownloads, setFileDownloads] = useState<VersionFileDownloads>({});
   const sidesLoading = sideA.isFetching || sideB.isFetching;
   // The versioned schema exists for Parquet snapshots only. Another format has
   // no schema to diff, while its versions stay selected and their rows compare.
@@ -291,6 +324,32 @@ export function DatasetBranchDetailPage() {
     if (which === 'A') setSelectorA(selection);
     else setSelectorB(selection);
   }
+
+  // The browser saves the bytes this client read with the signed-in user's credential.
+  // Each step reads the downloads as they stand then, so one file finishing or
+  // failing never clears what another file's download has put there.
+  async function downloadVersionFile(file: CompareVersionFile) {
+    if (file.download === null) return;
+    setFileDownloads((previous) => downloadStarted(previous, file.id));
+    try {
+      const blob = await downloadDatasetFile(id, file.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = file.path.split('/').pop() || 'download';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setFileDownloads((previous) => downloadFinished(previous, file.id));
+    } catch (cause) {
+      const error = cause instanceof Error ? cause.message : 'Download failed';
+      setFileDownloads((previous) => downloadFailed(previous, file.id, error));
+    }
+  }
+
+  const sideFiles = (snapshot: DatasetSnapshot | undefined, query: { data?: DatasetFilesResponse; error: Error | null }) =>
+    versionFiles(snapshot, query.data, query.error ? query.error.message || 'Files could not be listed.' : undefined, fileDownloads);
 
   async function saveRetention() {
     setBusy(true);
@@ -440,7 +499,10 @@ export function DatasetBranchDetailPage() {
                 error={historyError
                   ? `Committed versions unavailable. ${historyError.message}`
                   : branchCompare.error?.message}
+                filesA={sideFiles(snapshotA, filesOfA)}
+                filesB={sideFiles(snapshotB, filesOfB)}
                 onChangeSelector={changeSelector}
+                onDownloadFile={(file) => void downloadVersionFile(file)}
               />
               {/* Rows compare by key without a schema to diff, which only Parquet snapshots serve. */}
               {snapshotA && snapshotB && !sideANote.error && !sideBNote.error && (
