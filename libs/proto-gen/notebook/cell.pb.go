@@ -399,7 +399,7 @@ var File_notebook_cell_proto protoreflect.FileDescriptor
 
 const file_notebook_cell_proto_rawDesc = "" +
 	"\n" +
-	"\x13notebook/cell.proto\x12\bnotebook\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xf8\x02\n" +
+	"\x13notebook/cell.proto\x12\bnotebook\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf8\x02\n" +
 	"\x04Cell\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vnotebook_id\x18\x02 \x01(\tR\n" +

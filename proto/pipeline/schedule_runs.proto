@@ -37,7 +37,7 @@ message ScheduleRun {
   // Snapshot of the trigger's state at dispatch — which leaf fired,
   // which event observation matched, which cron clause hit, etc.
   // Format depends on trigger kind; values are JSON-encoded primitives.
-  map<string,string> trigger_snapshot = 8;
+  map<string, string> trigger_snapshot = 8;
   // Schedule version active at run time. Lets the UI pin the run to
   // the trigger/target shape that was in effect, even after later edits.
   int32 schedule_version = 9;

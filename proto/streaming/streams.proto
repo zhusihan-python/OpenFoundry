@@ -56,7 +56,7 @@ enum StreamType {
 message StreamConfig {
   StreamType type = 1;
   bool compression = 2;
-  uint32 partitions = 3;          // 1..=50
+  uint32 partitions = 3; // 1..=50
   uint32 retention_ms = 4;
   StreamConsistency ingest_consistency = 5;
   StreamConsistency pipeline_consistency = 6;
