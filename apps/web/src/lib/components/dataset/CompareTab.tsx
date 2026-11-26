@@ -2,6 +2,8 @@ import { useId, useMemo } from 'react';
 
 import type { DatasetBranch, DatasetSnapshot } from '@/lib/api/datasets';
 
+import type { CompareVersionFile, CompareVersionFiles } from './versionFiles';
+
 export interface SchemaField {
   name: string;
   type?: string;
@@ -33,7 +35,11 @@ interface CompareTabProps {
   selectorB: CompareSelector;
   loading?: boolean;
   error?: string;
+  // Absent while a side selects a branch: a branch names no transaction to list files by.
+  filesA?: CompareVersionFiles | null;
+  filesB?: CompareVersionFiles | null;
   onChangeSelector: (which: 'A' | 'B', selector: CompareSelector) => void;
+  onDownloadFile?: (file: CompareVersionFile) => void;
 }
 
 function diffSchemas(a: SchemaField[], b: SchemaField[]) {
@@ -95,7 +101,10 @@ export function CompareTab({
   selectorB,
   loading = false,
   error = '',
+  filesA,
+  filesB,
   onChangeSelector,
+  onDownloadFile,
 }: CompareTabProps) {
   const pickerId = useId();
   const comparable = selectorA.kind === selectorB.kind;
@@ -138,8 +147,8 @@ export function CompareTab({
 
       <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
         {([
-          { key: 'A' as const, selector: selectorA, side: sideA, error: sideAError, notice: sideANotice },
-          { key: 'B' as const, selector: selectorB, side: sideB, error: sideBError, notice: sideBNotice },
+          { key: 'A' as const, selector: selectorA, side: sideA, error: sideAError, notice: sideANotice, files: filesA },
+          { key: 'B' as const, selector: selectorB, side: sideB, error: sideBError, notice: sideBNotice, files: filesB },
         ]).map((picker) => (
           <div key={picker.key} className="of-panel" style={{ padding: 12 }}>
             <label htmlFor={`${pickerId}-${picker.key}`} style={{ fontSize: 11, color: 'var(--text-muted)' }}>
@@ -169,6 +178,7 @@ export function CompareTab({
                 {picker.side.files && ` · ${picker.side.files.length} file${picker.side.files.length === 1 ? '' : 's'}`}
               </div>
             )}
+            <VersionFiles side={picker.key} state={picker.files} onDownload={onDownloadFile} />
           </div>
         ))}
       </div>
@@ -209,6 +219,58 @@ export function CompareTab({
         </div>
       )}
     </section>
+  );
+}
+
+// The files of the committed version a side selects, every one of them with its
+// own download and its own state. A branch names no transaction to list files
+// by, so it says that instead of showing the files of the branch head.
+function VersionFiles({ side, state, onDownload }: {
+  side: 'A' | 'B';
+  state?: CompareVersionFiles | null;
+  onDownload?: (file: CompareVersionFile) => void;
+}) {
+  const note = { marginTop: 8, fontSize: 11 };
+  if (!state) {
+    return <p className="of-text-muted" style={note}>Files download from a committed version, not a branch. Select a version.</p>;
+  }
+  if (state.status === 'loading') return <p className="of-text-muted" style={note}>Loading files…</p>;
+  if (state.status === 'error') {
+    return (
+      <div role="alert" className="of-status-danger" style={{ marginTop: 8, padding: 8, fontSize: 12 }}>
+        <div>The files of this version could not be listed. {state.error}</div>
+      </div>
+    );
+  }
+  return (
+    <>
+      {state.files.length === 0 && <p className="of-text-muted" style={note}>This version holds no files.</p>}
+      {state.files.length > 0 && (
+        <ul aria-label={`Side ${side} files`} style={{ marginTop: 8, marginBottom: 0, paddingLeft: 0, listStyle: 'none', display: 'grid', gap: 4 }}>
+          {state.files.map((file) => (
+            <li key={file.id} style={{ display: 'grid', gap: 4 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+                <code style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.path}</code>
+                <span className="of-text-muted">{file.size_bytes.toLocaleString()} B</span>
+                <button
+                  type="button"
+                  className="of-button"
+                  style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px' }}
+                  aria-label={`Download ${file.path}`}
+                  disabled={file.download === null}
+                  onClick={() => onDownload?.(file)}
+                >
+                  {file.download === null ? 'Downloading…' : 'Download'}
+                </button>
+              </div>
+              {typeof file.download === 'string' && (
+                <div role="alert" className="of-status-danger" style={{ padding: 8, fontSize: 12 }}>{file.download}</div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 

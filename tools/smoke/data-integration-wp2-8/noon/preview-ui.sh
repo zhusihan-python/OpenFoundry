@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# The real frontend page of the run's published noon order lines, behind the run's real gateway.
+# The real frontend page of a case, behind the run's real gateway: the browser script of the
+# directory named second, or of this one (the published noon order lines).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(git -C "$here" rev-parse --show-toplevel)
 state=$1
+pages=${2:-$here}
 port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 server=""
 finish_browser() {
@@ -31,5 +33,5 @@ origin="http://127.0.0.1:$port"
 curl -fsS --retry 30 --retry-all-errors --retry-delay 1 "$origin" >/dev/null
 {
   python3 -I -c 'import json,sys; keys=("origin","state"); print("const input = " + json.dumps(dict(zip(keys, sys.argv[1:], strict=True))) + ";")' "$origin" "$state"
-  cat "$here/preview-browser.mjs"
+  cat "$pages/preview-browser.mjs"
 } | ego-browser nodejs >"$state/preview-browser.log" 2>&1

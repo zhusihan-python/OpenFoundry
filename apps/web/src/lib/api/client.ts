@@ -34,17 +34,8 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: response.statusText }));
-      const raw = error?.error ?? error?.message;
-      let message: string;
-      if (typeof raw === 'string') {
-        message = raw;
-      } else if (raw && typeof raw === 'object' && typeof raw.message === 'string') {
-        message = raw.message;
-      } else {
-        message = response.statusText || 'Unknown error';
-      }
-      throw new ApiError(response.status, message);
+      const payload = await response.json().catch(() => ({ error: response.statusText }));
+      throw new ApiError(response.status, errorMessage(payload, response.statusText || 'Unknown error'));
     }
 
     if (response.status === 204) return undefined as T;
@@ -70,6 +61,19 @@ class ApiClient {
   delete<T>(path: string) {
     return this.fetch<T>(path, { method: 'DELETE' });
   }
+}
+
+/** The message of an error the API answered: the service's own string, the
+ *  message inside the gateway's `error` envelope, or the fallback. */
+export function errorMessage(payload: unknown, fallback: string): string {
+  const raw = payload && typeof payload === 'object'
+    ? (payload as { error?: unknown }).error ?? (payload as { message?: unknown }).message
+    : null;
+  if (typeof raw === 'string') return raw;
+  if (raw && typeof raw === 'object' && typeof (raw as { message?: unknown }).message === 'string') {
+    return (raw as { message: string }).message;
+  }
+  return fallback;
 }
 
 export class ApiError extends Error {
