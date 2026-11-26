@@ -38,7 +38,7 @@ ensure_project_empty() {
   [[ -z "$containers$volumes$networks" ]] || { echo "owned project exists or was incompletely removed"; return 1; }
 }
 ensure_project_empty
-docker image inspect golang:1.26.3 alpine:3.22 postgres:16-alpine >/dev/null
+docker image inspect golang:1.26.11 alpine:3.22 postgres:16-alpine >/dev/null
 mkdir -p "$STACK/results"
 mkdir "$STACK_RESULTS"
 mkdir "$WP33C_EVIDENCE"

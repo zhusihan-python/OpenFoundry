@@ -19,7 +19,7 @@ BIN="$EVIDENCE/bin"
 ENVDIR="/private/tmp/${PROJECT}"
 DVS_URL="http://127.0.0.1:17278"
 PBS_URL="http://127.0.0.1:17281"
-GO_IMAGE="golang:1.26.3"
+GO_IMAGE="golang:1.26.11"
 GOMODCACHE="/private/tmp/of-gomodcache"
 GOCACHE="/private/tmp/of-gocache"
 

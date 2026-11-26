@@ -109,7 +109,7 @@ minter="$REPO/tools/smoke/business-platform-p1/mint_token.py"
 permissions="dataset.read,dataset:read,dataset.write,dataset:write,pipeline.write,pipeline:write"
 (umask 077; "$PYTHON" -I "$minter" --secret "$secret" --sub "$owner" --permissions "$permissions" >"$token_file")
 
-GO_IMAGE=golang:1.26.3
+GO_IMAGE=golang:1.26.11
 docker run --rm -v "$REPO:/work:ro" -w /work -v "$BIN:/out" \
   -v /private/tmp/of-gomodcache:/go/pkg/mod -v /private/tmp/of-gocache:/root/.cache/go-build \
   -e GOTOOLCHAIN=local -e GOPROXY=off -e GOFLAGS=-mod=readonly -e CGO_ENABLED=0 "$GO_IMAGE" \

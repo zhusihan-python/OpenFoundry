@@ -95,7 +95,7 @@ if (( page_downloads )); then build+=(./tools/smoke/data-integration-wp2-3/loopb
 docker run --rm -v "$root:/src:ro" -v "$BIN_DIR:/out" \
   -v "${WP23_GO_MOD_CACHE:-wp23-go-mod}:/go/pkg/mod" \
   -v "${WP23_GO_BUILD_CACHE:-wp23-go-build}:/root/.cache/go-build" \
-  -w /src -e GOTOOLCHAIN=local -e GOFLAGS=-mod=readonly -e CGO_ENABLED=0 golang:1.26.3 \
+  -w /src -e GOTOOLCHAIN=local -e GOFLAGS=-mod=readonly -e CGO_ENABLED=0 golang:1.26.11 \
   go build -trimpath -buildvcs=false -tags osusergo,netgo,static_build -ldflags '-s -w -buildid=' -o /out/ "${build[@]}"
 "${compose[@]}" up -d
 "${compose[@]}" images --format json >"$state/images.json"
@@ -121,7 +121,7 @@ if (( gateway )); then
     -v "$BIN_DIR:/binaries:ro" -p "127.0.0.1:$WP23_GATEWAY_PORT:8080" \
     -e OF_SERVER__PORT=8080 -e OF_JWT__SECRET="$JWT_SECRET" \
     -e OF_UPSTREAM__DATASET_VERSIONING_SERVICE_URL=http://dataset:50078 \
-    --entrypoint /binaries/edge-gateway-service golang:1.26.3 >/dev/null
+    --entrypoint /binaries/edge-gateway-service golang:1.26.11 >/dev/null
   WP23_GATEWAY="http://127.0.0.1:$WP23_GATEWAY_PORT"
   curl -fsS --retry 30 --retry-all-errors --retry-delay 1 --max-time 3 "$WP23_GATEWAY/healthz" >/dev/null
 fi
@@ -134,7 +134,7 @@ if (( page_downloads )); then
   # where a client leaves a bearer credential behind on a redirect.
   docker run -d --name "$WP23_FORWARDER_CONTAINER" --network "container:$WP23_GATEWAY_CONTAINER" \
     -v "$BIN_DIR:/binaries:ro" \
-    --entrypoint /binaries/loopback-forwarder golang:1.26.3 \
+    --entrypoint /binaries/loopback-forwarder golang:1.26.11 \
     -listen-port "$WP23_DVS_PORT" -target dataset:50078 >/dev/null
 fi
 python3 -I "$orders_script" "$state"

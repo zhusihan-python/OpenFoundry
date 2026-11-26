@@ -5,7 +5,7 @@
 # reproducibly acceptable with one command, in a fully disposable stack:
 #
 #   * builds dataset-versioning-service + edge-gateway-service from THIS
-#     worktree's sources inside golang:1.25 (go build -buildvcs=false, same
+#     worktree's sources inside golang:1.26.11 (go build -buildvcs=false, same
 #     package path as `make build-services`; binary sha256 recorded),
 #   * starts a per-run docker network + postgres:16 + DVS + real edge
 #     gateway (rewrites /api/v1/datasets/* -> /v1/*) on a RANDOM free host
@@ -48,7 +48,7 @@ RUN_ID="$(date -u +%Y%m%dT%H%M%S)_$RANDOM"
 RESULTS_DIR="$HERE/results/$RUN_ID"
 BIN_DIR="$RESULTS_DIR/bin"
 FIXTURE="$WEB_DIR/e2e/fixtures/orders-real.xlsx"
-GO_IMAGE="${OFEXCEL_GO_IMAGE:-golang:1.25}"
+GO_IMAGE="${OFEXCEL_GO_IMAGE:-golang:1.26.11}"
 PG_IMAGE="${OFEXCEL_PG_IMAGE:-postgres:16}"
 # Reusable (never deleted) module/build caches; created on first use.
 MODCACHE="${OFEXCEL_MODCACHE:-openfoundry-p31-gomod}"
@@ -196,7 +196,7 @@ PY
 
 # ------------------------------------------------------- [1] build binaries --
 echo
-echo "== [1/6] build DVS + edge-gateway from this worktree (golang:1.25) =="
+echo "== [1/6] build DVS + edge-gateway from this worktree (golang:1.26.11) =="
 run_step "build-dvs" "$RESULTS_DIR/build-dvs.log" \
   "$DOCKER" run --rm \
     -v "$REPO_ROOT:/work:ro" -v "$BIN_DIR:/out" \
