@@ -173,6 +173,31 @@ to them), the negative report `negative-transaction_view-2026-10.csv` and its pu
 saved graph and the run of the refused fourth run (`pipeline-4-graph.json`,
 `pipeline-4-run.json`), and the `schema_gate` section of `amazon-report.json`.
 
+## Refused inputs of the Pipeline
+
+After those runs, and before the schema gate, the same graph is refused twice at its input node, each time on a Pipeline
+of its own, so the Pipeline of the three runs keeps the pin of its last good run. Saving the graph accepts both.
+Each run fails at its input node with the Dataset service's reason in that node's own error: the two nodes after the
+input are cancelled, no output resource is committed, and the output dataset and the reports keep their versions.
+
+- The pin names report v2 together with the transaction that cut v3. The Pipeline service asks the schema of that
+  binding as the caller, and the Dataset service refuses it with HTTP 409 `dataset_schema_transaction_mismatch`.
+  The input node's own error names that status and code, `batched_dataset_409_dataset_schema_transaction_mismatch`.
+- The same user in another organization saves the pin of the second run, which succeeded for the first organization,
+  on a Pipeline of that organization over an output dataset of its own. The Dataset service answers that organization
+  with a denial, HTTP 403 or 404, and not with the dataset. That Pipeline publishes nothing, and its output dataset
+  holds no version.
+
+Before each refusal and after it, the independent reader of the first organization lists the versions and the heads of
+both datasets, takes the last good output v3 to the transaction that cut it and to its one file, downloads the file and
+scans the version. The four views are the same. The bytes equal the replay downloaded above and the SHA256 is the one
+recorded for the third run. The view also holds what the refusals must leave alone: the tenant of each dataset, and the
+Pipeline of the three runs with its tenant, its owner and the pin its last good run was saved with.
+`refused-crossed-transaction-*` and `refused-other-organization-*` hold the saved graph and the run of each refusal,
+and the output v3 the reader downloaded after it (`-readback-v3.ndjson`).
+The report's `pipeline.refusals` section records the saved input, tenant and owner, node states and errors of both,
+and the reader's views before and after each.
+
 ## Version comparison in a browser
 
 The optional `amazon-preview` case runs the handoff and the checks above in the same stack, then works on

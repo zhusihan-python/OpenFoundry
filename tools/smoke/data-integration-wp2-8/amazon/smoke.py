@@ -550,6 +550,136 @@ def main(state):
           != (state / latest_seen["artifact"]).read_bytes()
           and len({h["transaction"] for h in history}) == 3 and len({h["listed_files"][0]["file_id"] for h in history}) == 3)
 
+    # Two refusals of the bound input, after the three runs and before the schema gate below. Each saves and runs a
+    # Pipeline of its own, so the Pipeline of the three runs keeps the pin of its last good run. Each must fail at its
+    # input node before a row is read and publish nothing. Before each refusal and after it, the read-only reader of the
+    # first organization lists both datasets, takes the last good output v3 to the transaction that cut it and to its
+    # one file, downloads the file and scans the version. Nothing of that view is taken from what a build recorded.
+    refusals = pipeline["refusals"] = {}
+
+    def input_of(saved):
+        """The input config of a saved graph: the dataset and the pin."""
+        return next(n["config"] for n in saved["dag"]["nodes"] if n["id"] == "input")
+
+    def org_of(dataset):
+        """The tenant of a dataset, as the reader sees it."""
+        result = p1.api("dataset", "ds_get", path_args={"id": dataset}, token=reader)
+        assert result.status == 200, result.status
+        return result.body["org_id"]
+
+    def view():
+        """The reader's view of both datasets and of the last good output, and the Pipeline as its owner saved it."""
+        # Versions are held by number, so the view does not depend on the order a listing answers them in.
+        listed_outputs, listed_reports = dict(versions(down)), dict(versions(files_ds))
+        version, transaction = max(listed_outputs.items())
+        cut = graph.get_output_transaction(down, transaction)
+        files = files_of(down, transaction)
+        response = p1.download_file(reader, down, files[0]["id"]) if len(files) == 1 else None
+        graph.TOKEN = owner
+        try:
+            _, saved = graph.http("GET", f"{graph.PBS}/api/v1/pipelines/{pid}")
+        finally:
+            graph.TOKEN = reader
+        return dict(output_versions=listed_outputs, output_head=head_of(down), output_org=org_of(down),
+                    report_versions=listed_reports, report_head=head_of(files_ds), report_org=org_of(files_ds),
+                    pipeline=dict(tenant=saved["tenant_id"], owner=saved["owner_id"], input=input_of(saved)),
+                    version=version, transaction=transaction, status=cut["status"], dataset=cut["dataset_id"],
+                    branch=cut["branch_name"], run=cut["metadata"].get("transaction_rid"),
+                    file=None if len(files) != 1 else files[0]["id"],
+                    download=None if response is None else response.status,
+                    scan=graph.scan_all(down, version)["rendered_sha256"],
+                    sha256=None if response is None or response.status != 200 else reports.sha256(response.body),
+                    bytes=None if response is None else response.body)
+
+    def recorded(seen):
+        """The reader's view for the report, the downloaded bytes aside."""
+        return {key: value for key, value in seen.items() if key != "bytes"}
+
+    def control(tag, nodes, token, out=None):
+        """Save and run one graph as a token, on a Pipeline of its own. Return the saved input, the run and the versions
+        of the output dataset `out` as that token lists them."""
+        graph.TOKEN = token
+        try:
+            own = graph.create_pipeline(f"amazon-transaction-amounts-{tag}", nodes)
+            _, saved = graph.http("GET", f"{graph.PBS}/api/v1/pipelines/{own}")
+            run = graph.run_pipeline(own)
+            published = None if out is None else {v["version"]: v["transaction_id"] for v in graph.list_versions(out)}
+        finally:
+            graph.TOKEN = reader
+        s3.write_json(state / f"refused-{tag}-graph.json", saved)
+        s3.write_json(state / f"refused-{tag}-run.json", run)
+        results = run.get("node_results") or []
+        return dict(pipeline_id=own, status=run["status"], tenant=saved["tenant_id"], owner=saved["owner_id"],
+                    saved_input=input_of(saved), published=published,
+                    error=next((n.get("error") or "" for n in results if n["node_id"] == "input"), ""),
+                    nodes=[dict(node_id=n["node_id"], status=n["status"], error=n.get("error"),
+                                output_resources=[r["status"] for r in n.get("output_resources") or []]) for n in results])
+
+    # What the three runs left, as they recorded it. The reader's view is held against this, never against itself.
+    replay_graph = json.loads((state / "pipeline-3-graph.json").read_text())
+    wanted = dict(output_versions={b["output_version"]: b["output_transaction"] for b in builds},
+                  output_head=heads["output_after"], output_org=ids["org_a"],
+                  report_versions=input_versions,
+                  report_head=second["transaction"], report_org=ids["org_a"],
+                  pipeline=dict(tenant=ids["org_a"], owner=ids["dual_sub"], input=input_of(replay_graph)),
+                  version=replay["output_version"], transaction=replay["output_transaction"], status="COMMITTED",
+                  dataset=down, branch="main", run=replay["pipeline_output_transaction_rid"], file=replay["output_file_id"],
+                  download=200, scan=replay_seen["scan_sha256"], sha256=replay["sha256"],
+                  bytes=(state / replay["artifact"]).read_bytes())
+
+    def refuse(tag, why, nodes, holds, what, token=owner, out=None):
+        """The reader's view, one run of a Pipeline of its own saved with `nodes`, and the reader's view again.
+
+        `holds(outcome)` says whether the run was refused as this case expects.
+        """
+        baseline = view()
+        check(f"before the run refused for {why} the read-only reader takes output v3 to the transaction of the third run, "
+              "its one file, and the bytes and the hash that run published",
+              baseline == wanted)
+        outcome = control(tag, nodes, token, out)
+        check(f"the run refused for {why} {what}", holds(outcome))
+        after = view()
+        outcome.update(baseline=recorded(baseline), after=recorded(after))
+        check(f"after the run refused for {why} the read-only reader takes output v3 to the same transaction, file, bytes "
+              "and hash, and the versions, the heads, the tenants and the saved pin of the Pipeline are as before",
+              after == baseline)
+        (state / f"refused-{tag}-readback-v3.ndjson").write_bytes(after["bytes"])
+        return outcome
+
+    # The pin names report v2 together with the transaction that cut v3.
+    v2_schema = schemas[first_build["input_version"]]
+    crossed = refusals["crossed_transaction"] = refuse(
+        "crossed-transaction", "the transaction",
+        transactions.nodes(graph, files_ds, down, dict(second, version=first_build["input_version"]), v2_schema),
+        lambda outcome: transactions.refused_at_input(outcome, "batched_dataset_409_dataset_schema_transaction_mismatch"),
+        "is refused on its input node by an explicit 409 dataset_schema_transaction_mismatch: project-transactions and "
+        "output are cancelled, and no resource is committed")
+    check("the pin that names report v2 with the transaction of report v3 is saved as declared, on a Pipeline of the "
+          "first organization",
+          crossed["saved_input"]["dataset_id"] == files_ds
+          and crossed["saved_input"]["dataset_snapshot"] == pin_of(second, first_build["input_version"], v2_schema)
+          and (crossed["tenant"], crossed["owner"]) == (ids["org_a"], ids["dual_sub"]))
+
+    # The same user in another organization saves the pin of the second run, which succeeded here, over an output dataset
+    # of its own. The Dataset service answers that organization with a denial, not with the dataset.
+    other_down = p1.create_dataset(foreign, "Amazon US transaction amounts of another organization", "json")["id"]
+    latest_graph = json.loads((state / "pipeline-2-graph.json").read_text())
+    foreign_run = refusals["other_organization"] = refuse(
+        "other-organization", "the organization",
+        transactions.nodes(graph, files_ds, other_down, dict(second, version=latest["input_version"]),
+                           schemas[latest["input_version"]]),
+        lambda outcome: transactions.refused_at_input(outcome)
+        and any(f"batched_dataset_{status}" in outcome["error"] for status in p1.DENY)
+        and outcome["published"] == {},
+        "is refused on its input node by 403 or 404: project-transactions and output are cancelled, no resource is "
+        "committed, and its output dataset holds no version",
+        token=foreign, out=other_down)
+    foreign_run["output_dataset"] = other_down
+    check("the same user in another organization saves the pin of the second run, over an output dataset of its own, on a "
+          "Pipeline of that organization",
+          foreign_run["saved_input"] == input_of(latest_graph)
+          and (foreign_run["tenant"], foreign_run["owner"]) == (ids["org_b"], ids["dual_sub"]))
+
     # A report whose total holds text in one row must not pass the Pipeline. It is the second October file with that
     # one cell as N/A, and it goes the way of every other file: envelope, connector commit, handoff, registration and
     # publication. Nothing marks it. The schema the Pipeline expects is what refuses it.
