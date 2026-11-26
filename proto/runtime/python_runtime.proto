@@ -20,18 +20,15 @@ package runtime;
 service PythonRuntimeService {
   // ExecuteInlineFunction runs an ontology inline Python function.
   // Mirrors `execute_inline_python_function` in the Rust kernel.
-  rpc ExecuteInlineFunction(ExecuteInlineFunctionRequest)
-      returns (ExecuteInlineFunctionResponse);
+  rpc ExecuteInlineFunction(ExecuteInlineFunctionRequest) returns (ExecuteInlineFunctionResponse);
 
   // ExecutePipelineTransform runs a pipeline node's Python transform.
   // Mirrors `execute_python_transform` in pipeline-build-service.
-  rpc ExecutePipelineTransform(ExecutePipelineTransformRequest)
-      returns (ExecutePipelineTransformResponse);
+  rpc ExecutePipelineTransform(ExecutePipelineTransformRequest) returns (ExecutePipelineTransformResponse);
 
   // ExecuteNotebookCell runs one notebook cell against a (maybe new)
   // session. Mirrors `domain::kernel::python::execute`.
-  rpc ExecuteNotebookCell(ExecuteNotebookCellRequest)
-      returns (ExecuteNotebookCellResponse);
+  rpc ExecuteNotebookCell(ExecuteNotebookCellRequest) returns (ExecuteNotebookCellResponse);
 
   // EnsureSession is a no-op for non-stateful runtimes; the notebook
   // runtime materialises a session globals dict on first call.

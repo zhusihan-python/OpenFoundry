@@ -69,7 +69,7 @@ foreign_token="$("$PYTHON" -I "$minter" --secret "$secret" --org "$(uuidgen | tr
 WP33C_TOKEN="$(cat "$token_file")" WP314_FOREIGN_TOKEN="$foreign_token" "$PYTHON" -I "$HERE/acceptance.py"
 unset foreign_token
 
-GO_IMAGE=golang:1.26.3
+GO_IMAGE=golang:1.26.11
 docker run --rm -v "$REPO:/work:ro" -w /work -v "$BIN:/out" \
   -v /private/tmp/of-gomodcache:/go/pkg/mod -v /private/tmp/of-gocache:/root/.cache/go-build \
   -e GOTOOLCHAIN=local -e GOPROXY=off -e GOFLAGS=-mod=readonly -e CGO_ENABLED=0 "$GO_IMAGE" \

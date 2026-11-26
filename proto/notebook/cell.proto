@@ -1,8 +1,8 @@
 syntax = "proto3";
 package notebook;
 
-import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
 
 message Cell {
   string id = 1;

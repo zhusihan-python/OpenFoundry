@@ -13,7 +13,7 @@
 #     evidence (see negative_controls.sh).
 #
 # Creates ONLY disposable, uniquely-named resources per run (docker network,
-# postgres:16 container with synthetic credentials, golang:1.25 harness with
+# postgres:16 container with synthetic credentials, golang:1.26.11 harness with
 # cached modules). Never touches existing services/DBs/volumes/.env; removes
 # exactly what it created on exit.
 #
@@ -81,7 +81,7 @@ echo
 echo "== [1/4] WP2.1 unit + tenant-matrix regression =="
 run_step "wp21-unit" "$RESULTS_DIR/wp21-unit.log" \
   docker run --rm "${GO_MOUNTS[@]}" -w "/work/services/connector-management-service" \
-  -e GOFLAGS=-trimpath golang:1.25 \
+  -e GOFLAGS=-trimpath golang:1.26.11 \
   go test ./internal/handlers/ ./internal/config/ ./internal/domain/ ./internal/server/ -count=1
 
 echo
@@ -91,7 +91,7 @@ run_step "wp21-http-pg" "$RESULTS_DIR/wp21-http-pg.log" \
   -w "/work/services/connector-management-service" \
   -e GOFLAGS=-trimpath -e S1SEC_PG_DSN="$DSN" -e S1SEC_RUN_ID="$RUN_ID" \
   -e S1SEC_RESULTS_JSON="/work/tools/smoke/data-integration-s1-security/results/$RUN_ID/wp21-http-pg.json" \
-  golang:1.25 \
+  golang:1.26.11 \
   go test ./internal/handlers/ -count=1 -run TestS1SecWebhookTenantIsolationHTTPAgainstPG -v
 verify_step "wp21-http-pg-verify" http \
   "$RESULTS_DIR/wp21-http-pg.json" "$RESULTS_DIR/wp21-http-pg.log" "$RUN_ID"
@@ -102,7 +102,7 @@ run_step "wp22-binary-gate" "$RESULTS_DIR/wp22-binary-gate.log" \
   docker run --rm "${GO_MOUNTS[@]}" --network "$NET" \
   -e S1SEC_PG_DSN="$DSN" -e S1SEC_RUN_ID="$RUN_ID" \
   -e S1SEC_RESULTS_JSON="/work/tools/smoke/data-integration-s1-security/results/$RUN_ID/wp22-binary-gate.json" \
-  golang:1.25 bash /work/tools/smoke/data-integration-s1-security/wp22-binary-gate.sh
+  golang:1.26.11 bash /work/tools/smoke/data-integration-s1-security/wp22-binary-gate.sh
 verify_step "wp22-binary-gate-verify" gate \
   "$RESULTS_DIR/wp22-binary-gate.json" "$RUN_ID"
 

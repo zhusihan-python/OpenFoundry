@@ -9,8 +9,8 @@
 #
 # Build context MUST be the repo root.
 #
-ARG GO_VERSION=1.26.3
-ARG ALPINE_VERSION=3.22
+ARG GO_VERSION=1.26.11
+ARG ALPINE_VERSION=3.23
 
 FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS test-runner
 

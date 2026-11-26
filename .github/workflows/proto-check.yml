@@ -17,7 +17,7 @@ on:
       - "go.sum"
       - ".github/workflows/proto-check.yml"
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "proto/**"
       - "tools/of-cli/**"
@@ -40,6 +40,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: bufbuild/buf-action@v1
         with:
+          pr_comment: false
           lint: true
           input: proto
 

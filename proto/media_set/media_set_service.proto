@@ -25,14 +25,11 @@ service MediaSetService {
   rpc DeleteMediaItem(DeleteMediaItemRequest) returns (DeleteMediaItemResponse);
 
   // ----- Upload / download (S3-compatible presigned URLs) -----
-  rpc GeneratePresignedUploadUrl(GeneratePresignedUploadUrlRequest)
-      returns (PresignedUrlResponse);
-  rpc GeneratePresignedDownloadUrl(GeneratePresignedDownloadUrlRequest)
-      returns (PresignedUrlResponse);
+  rpc GeneratePresignedUploadUrl(GeneratePresignedUploadUrlRequest) returns (PresignedUrlResponse);
+  rpc GeneratePresignedDownloadUrl(GeneratePresignedDownloadUrlRequest) returns (PresignedUrlResponse);
 
   // ----- Virtual media sets -----
-  rpc RegisterVirtualMediaItem(RegisterVirtualMediaItemRequest)
-      returns (MediaItem);
+  rpc RegisterVirtualMediaItem(RegisterVirtualMediaItemRequest) returns (MediaItem);
 }
 
 // ---------------------------------------------------------------------------

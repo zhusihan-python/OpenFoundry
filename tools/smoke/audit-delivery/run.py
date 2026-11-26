@@ -24,7 +24,7 @@ CONNECTOR = "checkpoint-audit-outbox"
 TOPIC = "audit.events.v1"
 GROUP = "audit-sink"
 KIND = "purpose_checkpoint.evaluated"
-BUILD_IMAGE = "golang:1.25.14"
+BUILD_IMAGE = "golang:1.26.11"
 
 
 def check(condition, message):

@@ -7,7 +7,7 @@ on:
       - "infra/observability/prometheus-rules/**"
       - ".github/workflows/prometheus-rules.yml"
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "infra/observability/prometheus-rules/**"
       - ".github/workflows/prometheus-rules.yml"

@@ -7,7 +7,7 @@ on:
       - "infra/terraform/**"
       - ".github/workflows/terraform-check.yml"
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "infra/terraform/**"
       - ".github/workflows/terraform-check.yml"

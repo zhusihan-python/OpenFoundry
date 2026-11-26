@@ -45,7 +45,7 @@ trap cleanup EXIT
 docker run --rm -v "$WP314_REPO":/src:ro -v /private/tmp/of-gomodcache:/go/pkg/mod \
   -v /private/tmp/of-gocache:/root/.cache/go-build -v "$WP314_BIN":/out -w /src \
   -e GOTOOLCHAIN=local -e GOPROXY=off -e GOFLAGS=-mod=readonly -e CGO_ENABLED=0 \
-  golang:1.26.3 go build -trimpath -buildvcs=false -o /out/schedules-tick ./libs/event-scheduler/cmd/schedules-tick
+  golang:1.26.11 go build -trimpath -buildvcs=false -o /out/schedules-tick ./libs/event-scheduler/cmd/schedules-tick
 shasum -a 256 "$WP314_BIN/schedules-tick" > "$WP33C_EVIDENCE/tick-build-sha256.txt"
 python3 "$HERE/../data-integration-wp3-2/test_fault_proxy.py" 2>&1 | tee "$WP33C_EVIDENCE/proxy-selftest.log"
 compose up -d postgres dvs kafka registry faultproxy

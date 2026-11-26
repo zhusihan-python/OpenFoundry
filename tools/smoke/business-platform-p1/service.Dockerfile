@@ -15,8 +15,8 @@
 # the runtime image at /etc/openfoundry/config.yaml (pipeline-build
 # needs it).
 #
-ARG GO_VERSION=1.26.3
-ARG ALPINE_VERSION=3.22
+ARG GO_VERSION=1.26.11
+ARG ALPINE_VERSION=3.23
 
 ############################################################
 # Stage 1 — modules: pre-warmed Go module graph.

@@ -14,8 +14,8 @@
 #       --build-arg VERSION=$(git describe --tags --always) \
 #       -t openfoundry/schedules-tick:$VERSION .
 
-ARG GO_VERSION=1.26.3
-ARG ALPINE_VERSION=3.22
+ARG GO_VERSION=1.26.11
+ARG ALPINE_VERSION=3.23
 ARG DISTROLESS_IMAGE=gcr.io/distroless/static-debian12:nonroot
 
 ############################################################

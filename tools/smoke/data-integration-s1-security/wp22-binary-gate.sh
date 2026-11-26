@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # WP2.2 acceptance: the PRODUCTION BINARY must fail closed at startup without
 # an independent CREDENTIAL_ENCRYPTION_KEY, and must start when one is
-# provided (or in explicit dev fallback). Runs inside the golang:1.25 harness
+# provided (or in explicit dev fallback). Runs inside the golang:1.26.11 harness
 # container against the isolated PG16 instance from run.sh.
 #
 # The result JSON uses REAL booleans (true/false) for pass/all_passed; the

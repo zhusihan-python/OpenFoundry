@@ -41,7 +41,7 @@ trap cleanup EXIT
 # The incompatible sample: the same orders rows with amount as a string.
 docker run --rm -v "$REPO":/src:ro -v /private/tmp/of-gomodcache:/go/pkg/mod \
   -v /private/tmp/of-gocache:/root/.cache/go-build -v "$WP33C_EVIDENCE/fixture":/out -w /src \
-  -e GOTOOLCHAIN=local -e GOPROXY=off -e GOFLAGS=-mod=readonly -e CGO_ENABLED=0 golang:1.26.3 \
+  -e GOTOOLCHAIN=local -e GOPROXY=off -e GOFLAGS=-mod=readonly -e CGO_ENABLED=0 golang:1.26.11 \
   go run ./tools/smoke/data-integration-wp3-6 tools/smoke/data-integration-wp3-12/orders.json /out/orders-amount-string.parquet
 "$STACK/run3c.sh" proxy-selftest 2>&1 | tee "$WP33C_EVIDENCE/proxy-selftest.log"
 docker compose --project-directory "$OF33C_ENVDIR" \

@@ -24,7 +24,7 @@ ENVDIR="${OF33C_ENVDIR:-/private/tmp/${PROJECT}}"
 DVS_URL="http://127.0.0.1:17178"
 PBS_URL="http://127.0.0.1:17181"
 PROXY_CTL="http://127.0.0.1:17179"
-GO_IMAGE="golang:1.26.3"
+GO_IMAGE="golang:1.26.11"
 GOMODCACHE="/private/tmp/of-gomodcache"
 GOCACHE="/private/tmp/of-gocache"
 
@@ -326,7 +326,7 @@ cmd_wait_3b_then_full() {
     if docker run --rm -v "$REPO":/src:ro -v "$GOMODCACHE":/go/pkg/mod \
         -v "$GOCACHE":/root/.cache/go-build -w /src -e GOTOOLCHAIN=local \
         -e GOPROXY=off -e GOFLAGS=-mod=readonly -e CGO_ENABLED=0 \
-        golang:1.26.3 go build -o /dev/null ./services/pipeline-build-service/... 2>/dev/null; then
+        golang:1.26.11 go build -o /dev/null ./services/pipeline-build-service/... 2>/dev/null; then
       last="$(find services/pipeline-build-service libs -name '*.go' -newermt '-180 seconds' 2>/dev/null | head -1)"
       if [[ -z "$last" ]]; then
         echo "3B quiescent (compiles, no edits for 180s) — starting full run"

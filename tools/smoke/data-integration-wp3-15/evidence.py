@@ -100,7 +100,7 @@ def runtime():
     return {
         "project": project,
         "services": containers,
-        "build_image_id": command("docker", "image", "inspect", "--format", "{{.Id}}", "golang:1.26.3"),
+        "build_image_id": command("docker", "image", "inspect", "--format", "{{.Id}}", "golang:1.26.11"),
         "postgres": command("docker", "exec", f"{project}-postgres", "psql", "-AtU", "openfoundry",
                             "-d", "wp33c_dvs", "-c", "SHOW server_version"),
         "reader": {"name": "DuckDB", "version": version, "source_id": source_id, "codename": codename},

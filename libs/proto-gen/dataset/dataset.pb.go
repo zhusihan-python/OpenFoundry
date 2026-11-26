@@ -971,7 +971,7 @@ var File_dataset_dataset_proto protoreflect.FileDescriptor
 
 const file_dataset_dataset_proto_rawDesc = "" +
 	"\n" +
-	"\x15dataset/dataset.proto\x12\x14open_foundry.dataset\x1a\x12common/types.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x14dataset/schema.proto\"\xa5\x04\n" +
+	"\x15dataset/dataset.proto\x12\x14open_foundry.dataset\x1a\x12common/types.proto\x1a\x14dataset/schema.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa5\x04\n" +
 	"\aDataset\x12)\n" +
 	"\x02id\x18\x01 \x01(\v2\x19.open_foundry.common.UuidR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +

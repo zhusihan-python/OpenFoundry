@@ -2,8 +2,8 @@ syntax = "proto3";
 package open_foundry.dataset;
 
 import "common/types.proto";
-import "google/protobuf/timestamp.proto";
 import "dataset/schema.proto";
+import "google/protobuf/timestamp.proto";
 
 service DatasetService {
   rpc CreateDataset(CreateDatasetRequest) returns (Dataset);
