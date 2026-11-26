@@ -70,6 +70,26 @@ and the report's `schema_gate` section records the two snapshots.
 This stack has no recorder between the Pipeline service and the dataset service, so the run shows the refusal and its reason.
 That a refused schema reads no row is proven by the unit tests of the Pipeline service.
 
+## Refused inputs of the Pipeline
+
+After those runs the same graph is refused twice at its input node, each time on a Pipeline of its own,
+so the Pipeline of the three runs keeps the pin of its last good run. Saving the graph accepts both.
+Each run fails at its input node with the Dataset service's reason in that node's own error: the two nodes after the input are cancelled,
+no output resource is committed, and the output dataset and the order lines keep their versions.
+
+- The pin names v1 together with the transaction that cut v2. The Pipeline service asks the schema of that binding as the caller,
+  and the Dataset service refuses it with HTTP 409 `dataset_schema_transaction_mismatch`.
+  The input node's own error names that status and code, `batched_dataset_409_dataset_schema_transaction_mismatch`.
+- The same user in another organization saves the pin of the second run, which succeeded for the first organization,
+  on a Pipeline of that organization over an output dataset of its own. The Dataset service answers that organization
+  with a denial, HTTP 403 or 404, and not with the dataset. That Pipeline publishes nothing, and its output dataset keeps no version.
+
+Before the first refusal and after each one, the independent reader of the first organization lists the versions and heads of both datasets,
+maps the last good output v3 to its transaction and file, rescans the version and downloads the file. The three views are the same.
+The bytes equal the v1 replay downloaded above and the SHA256 is the one recorded for that run.
+`refused-crossed-transaction-*.json` and `refused-other-organization-*.json` hold the saved graph and the run of each refusal.
+The report's `pipeline.refusals` section records the saved input, tenant and owner, node states and errors of both, and the reader's three views.
+
 ## Version comparison preview
 
 The optional `noon-preview` case runs the checks above in the same stack, then compares the three published output versions of that one Pipeline dataset by `item_nr`:

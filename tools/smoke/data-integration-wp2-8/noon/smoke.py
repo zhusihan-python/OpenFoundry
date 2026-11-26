@@ -127,6 +127,20 @@ def line_price_nodes(graph, source, out, published, expected_schema_hash=None):
     return nodes
 
 
+def refused_at_input(outcome, *codes):
+    """A run the Dataset service refused at its input node, at the schema proof of the pinned version.
+
+    The run failed, its input node failed with every code, the two nodes
+    after it were cancelled, and no node committed an output resource.
+    """
+    nodes = outcome["nodes"]
+    error = next((n["error"] or "" for n in nodes if n["node_id"] == "input"), "")
+    return (outcome["status"] == "failed"
+            and {n["node_id"]: n["status"] for n in nodes} == {"input": "failed", "project-lines": "cancelled", "output": "cancelled"}
+            and all(code in error for code in ("dataset_input_load_failed", "dataset_input_schema_rejected", *codes))
+            and not [status for n in nodes for status in n["output_resources"] if status == "committed"])
+
+
 def main(state):
     p1 = s3.module("noon_p1", SMOKE / "business-platform-p1/smoke/smoke.py")
     p1.BASES.update(dataset=os.environ["WP23_DVS"], pipeline=os.environ["WP23_PBS"], connector=os.environ["WP23_CONNECTOR"])
@@ -342,6 +356,109 @@ def main(state):
           and first["sha256"] == replay["sha256"] != latest["sha256"]
           and (state / first["artifact"]).read_bytes() == (state / replay["artifact"]).read_bytes()
               and (state / first["artifact"]).read_bytes() != (state / latest["artifact"]).read_bytes())
+
+    # Two refusals of the bound input, after the three runs. Each saves and
+    # runs a Pipeline of its own, so the graph of those runs keeps its last
+    # good pin. Each must fail at the input before a row is read and commit
+    # no output, and the reader must find the last good output as before.
+    good_build, second_run = pipeline["builds"][-1], pipeline["builds"][1]
+    oracle = projection(good_build["input_version"])
+    refusals = pipeline["refusals"] = {}
+    outputs_before, inputs_before = graph.list_versions(down), graph.list_versions(target)
+
+    def control(tag, nodes, token=owner, out=None):
+        """Save and run one graph as a token. Return the saved input, the run
+        and the versions of the output dataset `out` that token lists."""
+        graph.TOKEN = token
+        try:
+            own = graph.create_pipeline(f"noon-line-prices-{tag}", nodes)
+            _, saved = graph.http("GET", f"{graph.PBS}/api/v1/pipelines/{own}")
+            run = graph.run_pipeline(own)
+            published = graph.list_versions(out) if out else None
+        finally:
+            graph.TOKEN = reader
+        s3.write_json(state / f"refused-{tag}-graph.json", saved)
+        s3.write_json(state / f"refused-{tag}-run.json", run)
+        return dict(pipeline_id=own, status=run["status"],
+                    saved_input=next(n["config"] for n in saved["dag"]["nodes"] if n["id"] == "input"),
+                    nodes=[dict(node_id=n["node_id"], status=n["status"], error=n.get("error"),
+                                output_resources=[r["status"] for r in n.get("output_resources") or []])
+                           for n in run.get("node_results") or []],
+                    published=published, tenant=saved["tenant_id"], owner=saved["owner_id"])
+
+    def head(dataset):
+        result = p1.api("dataset", "ds_branch_get", token=reader, path_args={"id": dataset, "branch": "main"})
+        return result.status, (result.body or {}).get("head_transaction_id")
+
+    def last_success():
+        """The reader lists the versions of both datasets, maps the last
+        output version to its transaction and file, scans the version and
+        downloads the file."""
+        listed = graph.list_versions(down)
+        version = max(v["version"] for v in listed)
+        transaction = next(v["transaction_id"] for v in listed if v["version"] == version)
+        file, = [f for f in p1.list_files(reader, down) if f.get("transaction_id") == transaction]
+        response = p1.download_file(reader, down, file["id"])
+        return dict(output_versions={v["version"]: v["transaction_id"] for v in listed}, output_head=head(down),
+                    input_versions={v["version"]: v["transaction_id"] for v in graph.list_versions(target)}, input_head=head(target),
+                    version=version, transaction=transaction, file=file["id"], status=response.status,
+                    rows=graph.scan_all(down, version)["rows"], sha256=hashlib.sha256(response.body).hexdigest(),
+                    bytes=response.body)
+
+    def readers_view(after):
+        """The reader's view of one refusal for the report, the downloaded bytes aside."""
+        return {key: value for key, value in after.items() if key != "bytes"}
+
+    good = last_success()
+    refusals["last_good"] = readers_view(good)
+    check(f"before the refusals the reader maps the last good output v{good_build['output_version']} to its transaction and file and downloads it",
+          good == dict(output_versions=versions, output_head=(200, good_build["output_transaction"]),
+                       input_versions={b["version"]: b["transaction"] for b in report["batches"]},
+                       input_head=(200, second_batch["transaction"]), version=good_build["output_version"],
+                       transaction=good_build["output_transaction"], file=good_build["output_file_id"], status=200,
+                       rows=oracle, sha256=good_build["sha256"], bytes=encode(oracle))
+          and good["bytes"] == (state / good_build["artifact"]).read_bytes())
+
+    # The pin names v1 together with the transaction that cut v2.
+    crossed = refusals["crossed_transaction"] = control(
+        "crossed-transaction", line_price_nodes(graph, target, down, dict(second_batch, version=first_batch["version"]), digest))
+    check("the pin that names v1 with the transaction of v2 is saved as declared on a Pipeline of the first organization",
+          crossed["tenant"] == ids["org_a"] and crossed["saved_input"]["dataset_id"] == target
+          and crossed["saved_input"]["dataset_snapshot"] == dict(
+              branch="main", version=first_batch["version"],
+              transaction_id="ri.foundry.main.transaction." + second_batch["transaction"], expected_schema_hash=digest))
+    check("the run bound to v1 with the transaction of v2 is refused at the input by an explicit 409 and publishes nothing",
+          refused_at_input(crossed, "batched_dataset_409_dataset_schema_transaction_mismatch")
+          and graph.list_versions(down) == outputs_before and graph.list_versions(target) == inputs_before)
+    after = last_success()
+    crossed["last_good"] = readers_view(after)
+    check("after the run refused for the transaction the reader maps and downloads the same last good output", after == good)
+
+    # The same user in another organization saves the pin of the second run,
+    # which succeeded here, over an output dataset of its own. The Dataset
+    # service answers that organization with a denial, not with the dataset.
+    other_down = p1.create_dataset(ids["user_b"].token, "noon AE order line prices of another organization", "json")["id"]
+    foreign = refusals["other_organization"] = control(
+        "other-organization", line_price_nodes(graph, target, other_down, second_batch, digest),
+        token=ids["user_b"].token, out=other_down)
+    foreign["output_dataset"] = other_down
+    error = next((n["error"] or "" for n in foreign["nodes"] if n["node_id"] == "input"), "")
+    check("the same user in another organization saves the pin of the second run over an output dataset of its own",
+          foreign["saved_input"]["dataset_id"] == target and foreign["saved_input"]["dataset_snapshot"] == dict(
+              branch="main", version=second_run["input_version"],
+              transaction_id="ri.foundry.main.transaction." + second_run["input_transaction"],
+              expected_schema_hash=second_run["input_schema_hash"])
+          and (second_run["input_version"], second_run["input_transaction"]) == (second_batch["version"], second_batch["transaction"])
+          and foreign["owner"] == ids["dual_sub"] and foreign["tenant"] == ids["org_b"])
+    check("the same user in another organization is refused at the input of the order lines and publishes nothing",
+          ("batched_dataset_403" in error or "batched_dataset_404" in error) and refused_at_input(foreign)
+          and foreign["published"] == []
+          and graph.list_versions(down) == outputs_before and graph.list_versions(target) == inputs_before)
+    after = last_success()
+    foreign["last_good"] = readers_view(after)
+    check("after the run refused for the organization the reader maps and downloads the same last good output", after == good)
+    refusals["versions_around"] = dict(output_before=outputs_before, output_after=graph.list_versions(down),
+                                       input_before=inputs_before, input_after=graph.list_versions(target))
 
     # The connector's raw batch and the six-column projection are NDJSON
     # without a schema in a commit receipt. Both keep their unsupported answer.
