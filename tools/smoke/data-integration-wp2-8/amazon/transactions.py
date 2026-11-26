@@ -167,3 +167,18 @@ def nodes(graph, source, out, published, expected_schema=None):
                      "transform_type": "select", "config": {"columns": COLUMNS}})
     nodes[-1]["depends_on"] = ["project-transactions"]
     return nodes
+
+
+def refused_at_input(outcome, *codes):
+    """Whether a run was refused at its input node, its own error naming every code.
+
+    The run failed, its input node failed with the codes, the two nodes after it were
+    cancelled, and no node committed an output resource.
+    """
+    nodes = outcome["nodes"]
+    error = next((n["error"] or "" for n in nodes if n["node_id"] == "input"), "")
+    return (outcome["status"] == "failed"
+            and {n["node_id"]: n["status"] for n in nodes}
+            == {"input": "failed", "project-transactions": "cancelled", "output": "cancelled"}
+            and all(code in error for code in ("dataset_input_load_failed", "dataset_input_schema_rejected", *codes))
+            and not [status for n in nodes for status in n["output_resources"] if status == "committed"])

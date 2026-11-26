@@ -10,7 +10,8 @@ import unittest
 from unittest import mock
 
 from transactions import (AMOUNTS, COLUMNS, COUNTS, IDENTITY, NEGATIVE_AMOUNTS, NET_TOTAL, OUTPUT_SHA256, agrees, expected,
-                          holds, lines, negative_amounts, net, nodes, read, table, text_total, value_diffs, with_total)
+                          holds, lines, negative_amounts, net, nodes, read, refused_at_input, table, text_total,
+                          value_diffs, with_total)
 
 HERE = Path(__file__).resolve().parent
 DESCRIPTIVE = {"marketplace", "account type", "fulfillment", "order city", "order state", "order postal",
@@ -311,6 +312,53 @@ class TransactionPipeline(unittest.TestCase):
         for built in (nodes(Graph(), "reports", "amounts", dict(version=2, transaction="txn-2")),
                       nodes(Graph(), "reports", "amounts", dict(version=2, transaction="txn-2"), None)):
             self.assertEqual(sorted(built[0]["config"]["dataset_snapshot"]), ["branch", "transaction_id", "version"])
+
+
+CROSSED = "batched_dataset_409_dataset_schema_transaction_mismatch"
+REFUSED = ('dataset_input_load_failed: node "input" failed to load dataset ri.foundry.main.dataset.0: '
+           'dataset_input_schema_rejected: ' + CROSSED + ': not the transaction of v2')
+
+
+def outcome(status="failed", error=REFUSED, later=("cancelled", "cancelled"), resources=()):
+    """One saved run as the report summarizes it: its status and its nodes."""
+    return dict(status=status, nodes=[
+        dict(node_id="input", status="failed", error=error, output_resources=list(resources)),
+        dict(node_id="project-transactions", status=later[0], output_resources=[]),
+        dict(node_id="output", status=later[1], output_resources=[])])
+
+
+class RefusedAtInput(unittest.TestCase):
+    def test_accepts_a_run_refused_at_its_input_with_the_named_code(self):
+        self.assertTrue(refused_at_input(outcome(), CROSSED))
+        # Without a named code the refusal of another organization needs no status of its own.
+        self.assertTrue(refused_at_input(outcome(error=REFUSED.replace(CROSSED, "batched_dataset_404: no such dataset"))))
+
+    def test_requires_the_explicit_status_next_to_the_code(self):
+        for code in ("batched_dataset_404_dataset_schema_transaction_mismatch", "dataset_schema_transaction_mismatch"):
+            with self.subTest(code=code):
+                self.assertFalse(refused_at_input(outcome(error=REFUSED.replace(CROSSED, code)), CROSSED))
+
+    def test_requires_the_refusal_in_the_error_of_the_input_node(self):
+        for name, before, after in (("not the load", "dataset_input_load_failed", "dataset_input_pipeline_failed"),
+                                    ("not the schema", "dataset_input_schema_rejected", "dataset_input_rows_invalid")):
+            with self.subTest(name=name):
+                self.assertFalse(refused_at_input(outcome(error=REFUSED.replace(before, after)), CROSSED))
+
+    def test_requires_the_two_nodes_after_the_input_by_name(self):
+        # The order-line Pipeline of noon cuts its input by project-lines, which is not a node here.
+        other = dict(status="failed", nodes=[outcome()["nodes"][0],
+                                             dict(node_id="project-lines", status="cancelled", output_resources=[]),
+                                             outcome()["nodes"][2]])
+        self.assertFalse(refused_at_input(other, CROSSED))
+
+    def test_refuses_a_run_that_committed_an_output_or_whose_later_node_ran(self):
+        for name, run in (("committed", outcome(resources=("committed",))),
+                          ("later node succeeded", outcome(later=("cancelled", "succeeded"))),
+                          ("later node failed", outcome(later=("failed", "cancelled"))),
+                          ("run succeeded", outcome(status="succeeded")),
+                          ("no node result", dict(status="failed", nodes=[]))):
+            with self.subTest(run=name):
+                self.assertFalse(refused_at_input(run, CROSSED))
 
 
 if __name__ == "__main__":
