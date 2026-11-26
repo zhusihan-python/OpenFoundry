@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,6 +34,74 @@ func TestCSVCellValuePreservesLeadingZeros(t *testing.T) {
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, string(csvCellValue(tc.cell)), "cell %q", tc.cell)
 	}
+}
+
+// The schema a CSV publication declares mirrors this predicate cell for cell,
+// so each of these literals must keep its type.
+func TestCSVCellValueKeepsTheInferenceMirrorLiterals(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		cell string
+		want string
+	}{
+		{"1e3", `"1e3"`},           // exponent notation
+		{"+1", `"+1"`},             // explicit sign
+		{"001.00", `"001.00"`},     // leading zeros
+		{"NaN", `"NaN"`},           // not a JSON number
+		{"Infinity", `"Infinity"`}, // not a JSON number
+		{"9223372036854775808", `"9223372036854775808"`}, // one past int64
+		{"1234567890123456.5", `"1234567890123456.5"`},   // 16 integer digits
+		{"007", `"007"`}, // SKU keeps leading zeros as a string
+		{"-0", `-0`},     // negative zero is an int64
+		{"9223372036854775807", `9223372036854775807`}, // the largest int64
+		{"123456789012345.5", `123456789012345.5`},     // 15 integer digits
+		{" 12 ", `12`}, // surrounding whitespace trimmed
+		{"  ", `null`}, // whitespace-only cell is null
+	} {
+		assert.Equal(t, tc.want, string(csvCellValue(tc.cell)), "cell %q", tc.cell)
+	}
+}
+
+// The Amazon smoke's reports.column_names mirrors this function.
+func TestCSVColumnNamesKeepTheInferenceMirrorRule(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		header  []string
+		want    []string
+		refused string
+	}{
+		{"padded cell", []string{" \torder postal\r\n"}, []string{"order postal"}, ""},
+		{"non-breaking space and NEL", []string{"\u00a0total\u0085"}, []string{"total"}, ""},
+		{"em space and ideographic space", []string{"\u2003total\u3000"}, []string{"total"}, ""},
+		{"a separator outside the set is kept", []string{"\x1cstring\x1c"}, []string{"\x1cstring\x1c"}, ""},
+		{"empty once trimmed, counted from 1", []string{"", " ", "\t\n"}, []string{"column_1", "column_2", "column_3"}, ""},
+		{"a generated name met again", []string{"column_2", " "}, nil, `duplicate column "column_2"`},
+		{"the first repeat met is named", []string{"a", "b", "b", "c", "c"}, nil, `duplicate column "b"`},
+	} {
+		columns, err := csvColumnNames(tc.header)
+		if tc.refused != "" {
+			assert.EqualError(t, err, tc.refused, tc.name)
+			continue
+		}
+		assert.NoError(t, err, tc.name)
+		assert.Equal(t, tc.want, columns, tc.name)
+	}
+
+	// The bound is 256 columns, and a repeated name is refused before it.
+	assert.Equal(t, 256, datasetFileRowsMaxColumns)
+	wide := make([]string, datasetFileRowsMaxColumns+1)
+	for i := range wide {
+		wide[i] = fmt.Sprintf("c%d", i)
+	}
+	columns, err := csvColumnNames(wide[:datasetFileRowsMaxColumns])
+	assert.NoError(t, err)
+	assert.Len(t, columns, datasetFileRowsMaxColumns)
+	_, err = csvColumnNames(wide)
+	assert.EqualError(t, err, "file has 257 columns, max 256")
+	wide[1] = wide[0]
+	_, err = csvColumnNames(wide)
+	assert.EqualError(t, err, `duplicate column "c0"`)
 }
 
 func TestParseDelimitedRows(t *testing.T) {

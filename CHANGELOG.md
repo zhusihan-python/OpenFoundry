@@ -53,6 +53,13 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
   before scanning.
 - A snapshot of one NDJSON file answers the versioned schema its keyed
   `outputs:commit` declared, read from the immutable receipt of its transaction.
+- A snapshot of one CSV file answers the versioned schema its keyed
+  `outputs:commit` declared, read from the immutable receipt of its transaction,
+  as a snapshot of one NDJSON file does.
+- A Pipeline graph input pinned by `dataset_snapshot` can carry the fields that
+  `expected_schema_hash` covers with `expected_schema`. A refused schema then
+  names at most eight differences from the committed schema of the pinned
+  version, and a changed field order.
 
 ### Changed
 - **BREAKING:** The bundled Iceberg catalog returns HTTP 503 for valid row appends

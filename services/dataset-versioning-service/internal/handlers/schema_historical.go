@@ -109,11 +109,11 @@ func (h *Handlers) getHistoricalSchema(w http.ResponseWriter, r *http.Request, d
 		return
 	}
 	var fields []historicalSchemaField
-	// NDJSON has no footer. One NDJSON output answers from the schema its
-	// keyed commit sealed in the receipt of the transaction that cut the
-	// version; any other non-Parquet version stays unsupported.
-	if textOutput := len(files) == 1 && datasetRowsFormat(files[0].LogicalPath) == "ndjson" &&
-		files[0].Operation == models.FileOperationAdd; textOutput {
+	// NDJSON and CSV carry no schema footer. One such output answers from
+	// the schema its keyed commit sealed in the receipt of the transaction
+	// that cut the version; any other non-Parquet version stays unsupported.
+	if textOutput := len(files) == 1 && files[0].Operation == models.FileOperationAdd &&
+		(datasetRowsFormat(files[0].LogicalPath) == "ndjson" || datasetRowsFormat(files[0].LogicalPath) == "csv"); textOutput {
 		var ok bool
 		fields, ok = h.readHistoricalReceiptFields(w, ctx, opener, datasetID, branch, target.txn, files[0])
 		if !ok {
@@ -123,7 +123,7 @@ func (h *Handlers) getHistoricalSchema(w http.ResponseWriter, r *http.Request, d
 		for _, file := range files {
 			if !validStagedParquetPath(file.LogicalPath) || file.Operation != models.FileOperationAdd {
 				writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity,
-					"dataset_schema_format_unsupported: versioned schemas require Parquet ADD files or one NDJSON output with a schema in its commit receipt"))
+					"dataset_schema_format_unsupported: versioned schemas require Parquet ADD files or one NDJSON or CSV output with a schema in its commit receipt"))
 				return
 			}
 			if !h.validateScanStagedObject(w, ctx, datasetID, target.txn, file.LogicalPath, &file) {

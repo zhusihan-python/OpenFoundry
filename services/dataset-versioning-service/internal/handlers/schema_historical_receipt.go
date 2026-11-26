@@ -10,11 +10,11 @@ import (
 )
 
 // readHistoricalReceiptFields answers the schema of a version that is one
-// NDJSON output. NDJSON carries no footer, so the schema is the one the
-// publisher declared in the formal schema field of its keyed commit, which
-// the service serialized into the immutable receipt of that transaction.
-// Transaction and file metadata are never read: a caller's free-form
-// metadata can carry a schema key.
+// NDJSON or CSV output. Neither carries a schema footer, so the schema is the
+// one the publisher declared in the formal schema field of its keyed commit,
+// which the service serialized into the immutable receipt of that
+// transaction. Transaction and file metadata are never read: a caller's
+// free-form metadata can carry a schema key.
 func (h *Handlers) readHistoricalReceiptFields(w http.ResponseWriter, ctx context.Context, opener localObjectOpener,
 	datasetID uuid.UUID, branch string, txn *models.RuntimeTransaction, file models.StageTransactionFile) ([]historicalSchemaField, bool) {
 	commit, err := h.Repo.GetTransactionOutputCommit(ctx, datasetID, txn.ID, branch)
@@ -26,7 +26,7 @@ func (h *Handlers) readHistoricalReceiptFields(w http.ResponseWriter, ctx contex
 		commit.DatasetID != datasetID || commit.Transaction.ID != txn.ID ||
 		len(commit.Files) != 1 || commit.Files[0].Path != file.LogicalPath || commit.Files[0].SizeBytes != file.SizeBytes {
 		writeDatasetRowsError(w, datasetRowsErr(http.StatusUnprocessableEntity,
-			"dataset_schema_format_unsupported: the NDJSON output of this version has no schema in its commit receipt"))
+			"dataset_schema_format_unsupported: the NDJSON or CSV output of this version has no schema in its commit receipt"))
 		return nil, false
 	}
 	fields, err := historicalReceiptFields(commit.Schema.Fields)

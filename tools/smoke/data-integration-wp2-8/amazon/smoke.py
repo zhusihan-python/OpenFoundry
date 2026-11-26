@@ -1,6 +1,7 @@
 """Simulated Amazon monthly transaction_view handoff through S3 Connector and versioned Dataset APIs."""
 import base64
 from datetime import datetime, timezone
+import hashlib
 import importlib.util
 import json
 import os
@@ -9,6 +10,7 @@ import re
 import subprocess
 import sys
 import uuid
+from urllib.parse import urlencode
 
 HERE = Path(__file__).resolve().parent
 SMOKE = HERE.parents[1]
@@ -20,8 +22,12 @@ transactions = s3.module("amazon_transactions", HERE / "transactions.py")
 BUCKET = "amazon-monthly"
 # (period, fixture): October holds two files, as one upstream row can.
 FILES = (("2026-09", "2026-09"), ("2026-10", "2026-10"), ("2026-10", "2026-10-2"))
+# The negative report of the schema gate, derived at the end from the second October file. It has its own
+# fileId like any file, and is not one of FILES.
+NEGATIVE = "2026-10-text-total"
 # The fileIds of the simulated upload receipts. One month is not one file.
-FILE_IDS = {name: str(uuid.uuid5(uuid.NAMESPACE_URL, f"openfoundry-smoke/amazon/{name}")) for _, name in FILES}
+FILE_IDS = {name: str(uuid.uuid5(uuid.NAMESPACE_URL, f"openfoundry-smoke/amazon/{name}"))
+            for _, name in (*FILES, ("2026-10", NEGATIVE))}
 
 
 def main(state):
@@ -259,6 +265,25 @@ def main(state):
     first, second = report["files"][1:]
     # A build of one October file must hold none of the transactions of the other.
     other = {first["file"]: second["file"], second["file"]: first["file"]}
+    # What the reader asked of the schema of each report version: the route's answers, by version.
+    schemas = {}
+
+    def schema_route(version, **params):
+        """The formal versioned schema request for one report version on main."""
+        return f"/v1/datasets/{files_ds}/schema?" + urlencode({"branch": "main", "version": version, **params})
+
+    def schema_answer(name, version, **params):
+        """The reader's versioned schema request for one report version. The answer is kept as it came."""
+        result = p1.http("dataset", schema_route(version, **params), token=reader, raw=True)
+        (state / f"schema-{name}.json").write_bytes(result.body)
+        return result
+
+    def pin_of(entry, version, schema):
+        """What a run is pinned to: the version and transaction the reader listed, and the schema it expects of them."""
+        return {"branch": "main", "version": version,
+                "transaction_id": "ri.foundry.main.transaction." + entry["transaction"],
+                "expected_schema_hash": schema["content_hash"], "expected_schema": schema["fields"]}
+
     for entry in (first, second):
         data = originals[entry["file"]]
         # One read, as the reader makes it: the version of the transaction, the file bound to it and its bytes.
@@ -275,9 +300,42 @@ def main(state):
               and seen["body"] == data and reports.sha256(seen["body"]) == record["sha256"]
               and seen["file"]["size_bytes"] == record["byteSize"] == len(data))
         check(f"{entry['file']} is published with its header on record {reports.HEADER_ROW}, after the amounts preamble",
-              published.get("file_format") == "TEXT" and published.get("fields") == []
+              published.get("file_format") == "TEXT" and published.get("fields") == reports.csv_schema(data)
               and {name: options.get(name) for name in ("headerRow", "charset", "bom")}
               == {"headerRow": reports.HEADER_ROW, "charset": "UTF-8", "bom": "strip"})
+        # The reader holds no write permission. It asks the formal versioned schema route for the version it lists for
+        # the transaction, not for the number the handoff counted, and holds the answer against the schema the
+        # publication declared, which it reads from the transaction metadata. The hash it takes is the one the route
+        # answers: it encodes nothing to get one.
+        version = graph.version_by_txn(files_ds, entry["transaction"])
+        result = schema_answer(f"v{version}", version, transaction_id=entry["transaction"])
+        answer = json.loads(result.body) if result.status == 200 else {}
+        # The route names the type of a field field_type; the schema kept with the commit names it type.
+        declared = [dict(name=field["name"], field_type=field["type"], nullable=field["nullable"])
+                    for field in seen["metadata"]["schema"]["fields"]]
+        check(f"independent reader reads the schema of report v{version}: bound to its version and transaction, "
+              f"total DOUBLE and the {len(declared)} fields the publication declared",
+              result.status == 200
+              and (answer.get("dataset_id"), answer.get("branch"), answer.get("version"), answer.get("transaction_id"))
+              == (files_ds, "main", version, entry["transaction"])
+              and next((field["field_type"] for field in answer.get("fields") or [] if field["name"] == "total"), None)
+              == "DOUBLE"
+              and answer.get("fields") == declared)
+        schemas[version] = answer
+        own = schema_answer(f"v{version}-own-hash", version, transaction_id=entry["transaction"],
+                            expected_content_hash=answer.get("content_hash"))
+        check(f"the schema of report v{version} answers 200 under its own content hash",
+              own.status == 200 and own.body == result.body)
+        # Another hash is refused. It is a fixed digest, not a schema the test encodes.
+        other_hash = schema_answer(f"v{version}-other-hash", version, transaction_id=entry["transaction"],
+                                   expected_content_hash=hashlib.sha256(b"another schema").hexdigest())
+        check(f"the schema of report v{version} refuses another content hash "
+              f"(HTTP {other_hash.status}, dataset_schema_content_hash_mismatch)",
+              other_hash.status == 412
+              and json.loads(other_hash.body).get("code") == "dataset_schema_content_hash_mismatch")
+    check(f"report v{first['version']} and v{second['version']} answer the same fields and the same schema hash",
+          schemas[first["version"]]["fields"] == schemas[second["version"]]["fields"]
+          and schemas[first["version"]]["content_hash"] == schemas[second["version"]]["content_hash"])
 
     def head_of(dataset):
         result = p1.api("dataset", "ds_branch_get", token=reader, path_args={"id": dataset, "branch": "main"})
@@ -310,9 +368,10 @@ def main(state):
         version = graph.version_by_txn(files_ds, entry["transaction"])
         report_rows = transactions.expected(originals[name])
         wanted = transactions.expected(originals[name], transactions.COLUMNS)
-        pin = {"branch": "main", "version": version,
-               "transaction_id": "ri.foundry.main.transaction." + entry["transaction"]}
-        nodes = transactions.nodes(graph, files_ds, down, dict(entry, version=version))
+        # The pin also requires the schema the reader asked of that version: its hash and its fields.
+        schema = schemas[version]
+        pin = pin_of(entry, version, schema)
+        nodes = transactions.nodes(graph, files_ds, down, dict(entry, version=version), schema)
         graph.TOKEN = owner
         try:
             pid = pipeline["pipeline_id"]
@@ -376,6 +435,11 @@ def main(state):
               f"the {len(wanted)} transactions of report v{version}" + ("" if not diffs else ": " + "; ".join(diffs)),
               response.status == 200 and output_txns[produced_version] == produced["transaction_id"] and not diffs
               and reports.sha256(response.body) == transactions.OUTPUT_SHA256[name])
+        # The amounts are summed as decimals on both sides: in what was downloaded, and in the report file itself.
+        net = transactions.net(transactions.read(response.body))
+        check(f"the {len(wanted)} transactions of report v{version} sum to total {net} in the download "
+              f"and in the report file",
+              net == transactions.net(transactions.expected(originals[name])) == transactions.NET_TOTAL[name])
         # The preview is compared only under unique column names and rows as wide as the columns.
         preview = transactions.table(metadata["preview_columns"], metadata["preview_rows"])
         check(f"dataset transaction of output v{produced_version} carries the run's output hash, "
@@ -402,7 +466,7 @@ def main(state):
                                        pipeline_output_transaction_rid=handle,
                                        pipeline_content_hash=metadata.get("output_content_hash"),
                                        settlement_ids=[row["settlement id"] for row in held],
-                                       negative_amounts=sum(map(len, negatives)),
+                                       negative_amounts=sum(map(len, negatives)), net_total=str(net),
                                        output_file_id=bound["id"], artifact=artifact, row_count=len(wanted),
                                        size_bytes=len(response.body), sha256=reports.sha256(response.body)))
 
@@ -485,6 +549,106 @@ def main(state):
           and (state / replay_seen["artifact"]).read_bytes() == (state / first_seen["artifact"]).read_bytes()
           != (state / latest_seen["artifact"]).read_bytes()
           and len({h["transaction"] for h in history}) == 3 and len({h["listed_files"][0]["file_id"] for h in history}) == 3)
+
+    # A report whose total holds text in one row must not pass the Pipeline. It is the second October file with that
+    # one cell as N/A, and it goes the way of every other file: envelope, connector commit, handoff, registration and
+    # publication. Nothing marks it. The schema the Pipeline expects is what refuses it.
+    name, period = NEGATIVE, "2026-10"
+    bad = transactions.text_total(originals["2026-10-2"])
+    (state / "negative-transaction_view-2026-10.csv").write_bytes(bad)
+    run = deliver(period, "text-total", file_envelope(period, bad, uploaded(name)))
+    result = register(run, period)
+    check(f"{name} is registered under its own fileId, as every other file", result.status == 201)
+    negative = dict(file=name, period=period, file_id=FILE_IDS[name], sha256=reports.sha256(bad), byte_size=len(bad),
+                    transaction=result.body["transaction"]["id"], received_transaction=run["dataset_version_id"],
+                    sync_run=run["id"], version=len(report["files"]) + 1)
+    negative["dataset_file"] = confirm(negative, bad, "when registered")
+
+    # The reader asks the schema of that report as it did of v2 and v3, for the version it lists. Its total is text
+    # now, so the column is a string, and its hash is not the one the Pipeline expects. The route says so to a caller
+    # that names that hash. The expected schema is the reader's own answer for the version of the second October file.
+    version = graph.version_by_txn(files_ds, negative["transaction"])
+    good = graph.version_by_txn(files_ds, second["transaction"])
+    expected = schemas[good]
+    digest = expected["content_hash"]
+    asked = schema_answer(f"v{version}", version, transaction_id=negative["transaction"])
+    committed = json.loads(asked.body) if asked.status == 200 else {}
+    check(f"the schema of report v{version} answers total as STRING and every other field as v{good}, "
+          "under another hash",
+          asked.status == 200
+          and (committed.get("dataset_id"), committed.get("branch"), committed.get("version"), committed.get("transaction_id"))
+          == (files_ds, "main", version, negative["transaction"])
+          and committed.get("fields") == [{**field, "field_type": "STRING"} if field["name"] == "total" else field
+                                          for field in expected["fields"]]
+          and bool(committed.get("content_hash")) and committed["content_hash"] != digest)
+    stale = schema_answer(f"v{version}-expected-hash", version, transaction_id=negative["transaction"],
+                          expected_content_hash=digest)
+    check(f"the schema of report v{version} refuses the content hash the Pipeline expects "
+          f"(HTTP {stale.status}, dataset_schema_content_hash_mismatch)",
+          stale.status == 412 and json.loads(stale.body).get("code") == "dataset_schema_content_hash_mismatch")
+
+    # What the reader lists before the refused run.
+    before = dict(outputs=graph.list_versions(down), head=head_of(down), reports=graph.list_versions(files_ds))
+
+    # The same Pipeline, pinned to that report with the same expected schema as the three runs before it. It is the
+    # fourth run of this Pipeline.
+    pin = pin_of(negative, version, expected)
+    nodes = transactions.nodes(graph, files_ds, down, dict(negative, version=version), expected)
+    graph.TOKEN = owner
+    try:
+        graph.http("PATCH", f"{graph.PBS}/api/v1/pipelines/{pid}", {"nodes": nodes})
+        refusal = graph.run_pipeline(pid)
+        # The graph as it stands after the run: the pin the run was saved with.
+        _, saved = graph.http("GET", f"{graph.PBS}/api/v1/pipelines/{pid}")
+    finally:
+        graph.TOKEN = reader
+    s3.write_json(state / "pipeline-4-graph.json", saved)
+    s3.write_json(state / "pipeline-4-run.json", refusal)
+    saved_pin = {n["id"]: n for n in saved["dag"]["nodes"]}["input"]["config"]
+    results = refusal.get("node_results") or []
+    statuses = {n["node_id"]: n["status"] for n in results}
+    # The run only says failed. The reason is in the input node's own error, and the Pipeline service writes it.
+    error = next((n.get("error") or "" for n in results if n["node_id"] == "input"), "")
+    reason = 'field "total" is STRING in the committed schema and DOUBLE in the expected schema'
+    after = dict(outputs=graph.list_versions(down), head=head_of(down))
+    check(f"the same graph, bound to report v{version}, keeps the schema hash and the fields of the runs before it",
+          saved_pin["dataset_id"] == files_ds and saved_pin["dataset_snapshot"] == pin)
+    check(f"the run bound to report v{version} is refused on its input node, and project-transactions and output "
+          "are cancelled",
+          refusal["status"] == "failed"
+          and statuses == {"input": "failed", "project-transactions": "cancelled", "output": "cancelled"})
+    check(f"the input node names the refusal: dataset_input_schema_rejected, dataset_schema_content_hash_mismatch "
+          f"and {reason}",
+          "dataset_input_schema_rejected" in error and "dataset_schema_content_hash_mismatch" in error and reason in error)
+    check("the refused run commits no resource and leaves the output versions, the output head and the report versions "
+          "as they were",
+          not [resource for n in results for resource in n.get("output_resources") or [] if resource["status"] == "committed"]
+          and after["outputs"] == before["outputs"] and after["head"] == before["head"]
+          and graph.list_versions(files_ds) == before["reports"])
+
+    # The last good output is still there for a reader that starts from the version list it lists after the refusal:
+    # output v3 is resolved there, then the transaction that cut it, the files of that transaction and its one file.
+    # What the forward build recorded is read only after the download, to cross-check what the reader resolved.
+    last_good = next(v for v in after["outputs"] if v["version"] == 3)
+    transaction = graph.get_output_transaction(down, last_good["transaction_id"])
+    files = files_of(down, last_good["transaction_id"])
+    response = p1.download_file(reader, down, files[0]["id"]) if len(files) == 1 else None
+    downloaded = None if response is None or response.status != 200 else reports.sha256(response.body)
+    check(f"after the refusal the read-only reader resolves output v{last_good['version']} from the version list it "
+          f"lists: the transaction that cut it, its one file, and the bytes and the hash that forward build "
+          f"{replay['ordinal']} published",
+          transaction["status"] == "COMMITTED" and len(files) == 1
+          and files[0]["transaction_id"] == last_good["transaction_id"]
+          and last_good["transaction_id"] == replay["output_transaction"] and files[0]["id"] == replay["output_file_id"]
+          and downloaded == replay["sha256"] and response.body == (state / replay["artifact"]).read_bytes())
+    report["schema_gate"] = dict(
+        negative=negative, expected_schema_hash=digest, committed_schema_hash=committed.get("content_hash"),
+        refused_run_id=refusal["id"],
+        nodes=[dict(node_id=n["node_id"], status=n["status"], error=n.get("error")) for n in results],
+        outputs=dict(before=before["outputs"], after=after["outputs"]),
+        output_head=dict(before=before["head"], after=after["head"]),
+        last_good_output=dict(version=last_good["version"], transaction_id=last_good["transaction_id"],
+                              file_id=None if len(files) != 1 else files[0]["id"], sha256=downloaded))
     s3.write_json(state / "amazon-report.json", report)
 
 

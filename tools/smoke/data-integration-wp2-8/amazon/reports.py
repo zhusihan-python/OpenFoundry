@@ -15,8 +15,10 @@ Neither a registration nor a report names a tenant: that comes from the signed c
 import base64
 import binascii
 import calendar
+import csv
 from datetime import datetime
 import hashlib
+import io
 import json
 import re
 import uuid
@@ -30,6 +32,20 @@ CHECKED_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
 SCOPE = ("storeId", "marketplace", "reportKind", "period")
 # A report opens with one preamble record, All amounts in USD. Its header is the next record.
 HEADER_ROW = 2
+# The business columns of the report kind. They name the type a column may hold; the cells of one
+# file decide whether it holds (csv_schema). The same lists as transactions.AMOUNTS and COUNTS,
+# written out again: the publication does not import what a reader expects of a report.
+AMOUNTS = ["product sales", "product sales tax", "shipping credits", "shipping credits tax", "gift wrap credits",
+           "giftwrap credits tax", "regulatory fee", "tax on regulatory fee", "promotional rebates",
+           "promotional rebates tax", "marketplace withheld tax", "selling fees", "fba fees",
+           "other transaction fees", "other", "total"]
+COUNTS = ("settlement id", "quantity")
+# The characters Go's strings.TrimSpace removes. They are named here, so the trim does not follow
+# what the Python version strips.
+GO_SPACE = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+NUMBER = re.compile(r"-?(0|[1-9][0-9]*)(\.[0-9]+)?")
+# What the Dataset CSV reader reads at most in one record (datasetFileRowsMaxColumns, file_rows.go).
+MAX_COLUMNS = 256
 
 
 class RegistrationError(ValueError):
@@ -125,13 +141,93 @@ def _commit(record, key, path, content_type, data):
                             content_base64=base64.b64encode(data).decode())])
 
 
-def csv_layout():
-    """Where the dataset service finds the header of a published report.
+def reader_number(cell):
+    r"""One cell as the Dataset CSV reader gives it (csvCellValue, file_rows.go).
+
+    Returns the trimmed text of a number, None for a cell that is empty once trimmed, and False
+    for a string. The reader trims whitespace and takes -?(0|[1-9][0-9]*)(\.[0-9]+)? as a number
+    when it is an int64 or has at most 15 integer digits. Decimal would also parse 1e3, +1 and
+    001.00, so whether a column is a number does not follow Decimal.
+    """
+    text = cell.strip(GO_SPACE)
+    if not text:
+        return None
+    if not NUMBER.fullmatch(text):
+        return False
+    whole, _, fraction = text.partition(".")
+    digits = len(whole.removeprefix("-"))
+    if digits <= 15:
+        return text
+    if fraction or digits > 19:
+        return False
+    # The length is known before int() runs: Python refuses an integer string of thousands of digits,
+    # and a cell that long is a string here as it is for the reader.
+    return text if -(1 << 63) <= int(whole) <= (1 << 63) - 1 else False
+
+
+def column_names(header):
+    """The names the Dataset CSV reader gives the columns of a record (csvColumnNames, file_rows.go).
+
+    Each header cell is trimmed. A cell that is empty once trimmed is column_<position>, counted
+    from 1. A name that comes twice is refused as it is met, and a header with more than
+    MAX_COLUMNS columns is refused after it: the reader refuses such a file, so a column of it
+    cannot be read or typed.
+    """
+    names, seen = [], set()
+    for position, cell in enumerate(header, 1):
+        name = cell.strip(GO_SPACE) or f"column_{position}"
+        if name in seen:
+            raise ValueError(f"the report names the column {name!r} twice")
+        seen.add(name)
+        names.append(name)
+    if len(names) > MAX_COLUMNS:
+        raise ValueError(f"the report has {len(names)} columns, more than the {MAX_COLUMNS} the Dataset CSV reader reads")
+    return names
+
+
+def field_type(name, cells):
+    """The type of one column: the one its business role names, if the cells of this file hold it."""
+    if name not in AMOUNTS and name not in COUNTS:
+        return "STRING"
+    numbers = [reader_number(cell) for cell in cells]
+    if any(number is False for number in numbers):
+        return "STRING"
+    if name in COUNTS and any("." in number for number in numbers if number is not None):
+        return "STRING"
+    return "LONG" if name in COUNTS else "DOUBLE"
+
+
+def csv_schema(data):
+    """The schema of a published report: one field per header column, in header order.
+
+    A field is named as the Dataset CSV reader names the column (column_names), and the business
+    role of a column follows that name: a header cell padded with spaces is still the column it
+    names. The role names the type the column may hold and the cells of this file decide whether
+    it holds: an amount is DOUBLE and a count is LONG while every cell that is not empty is a
+    number the Dataset CSV reader gives as one. Any other column is STRING, and so is an amount
+    or a count that holds text in this file. Every field is nullable, because an empty cell is
+    null in any column. Nullability is not read from one file's cells, or two files of one month
+    would carry two schemas.
+    """
+    records = [record for record in csv.reader(io.StringIO(data.decode("utf-8-sig"), newline="")) if record]
+    if len(records) < HEADER_ROW:
+        raise ValueError("the report has no header record")
+    header, rows = column_names(records[HEADER_ROW - 1]), records[HEADER_ROW:]
+    if any(len(row) != len(header) for row in rows):
+        raise ValueError("a record of the report does not match its header")
+    return [dict(name=name, type=field_type(name, [row[at] for row in rows]), nullable=True)
+            for at, name in enumerate(header)]
+
+
+def csv_layout(data):
+    """Where the dataset service finds the header of a published report, and the schema of its columns.
 
     It reads the header of a CSV from its first record unless the publication says otherwise.
-    A report carries its header on the second record, after the preamble.
+    A report carries its header on the second record, after the preamble. The schema is declared
+    by the publication, from the committed bytes: the dataset service derives none of it, and its
+    versioned schema route answers it to a reader that asks by version and transaction.
     """
-    return {"file_format": "TEXT", "fields": [],
+    return {"file_format": "TEXT", "fields": csv_schema(data),
             "custom_metadata": {"csv": {"headerRow": HEADER_ROW, "charset": "UTF-8", "bom": "strip"}}}
 
 
@@ -140,11 +236,12 @@ def file_commit(record, file_id, data):
 
     The request depends only on the registration, its fileId and the bytes, so an identical
     redelivery rebuilds it and replays the first receipt. The key separates files of one month.
-    The schema says where the header of the file is; the bytes are published as they are.
+    The schema says where the header of the file is and the type of each column; the bytes are
+    published as they are.
     """
     return dict(_commit(record, "amazon-report:" + ":".join([*(record[name] for name in SCOPE), file_id]),
                         f"{MARKETPLACE}/{REPORT_KIND}/{record['period']}/{file_id}.csv", "text/csv", data),
-                schema=csv_layout(), metadata=dict(registration=record, file_id=file_id))
+                schema=csv_layout(data), metadata=dict(registration=record, file_id=file_id))
 
 
 def no_data_commit(report):

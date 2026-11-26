@@ -243,6 +243,64 @@ func batchedErrorFromResponse(status int, body []byte) *batchedClientError {
 	return &batchedClientError{Status: status, Code: strings.TrimSpace(code), Detail: strings.TrimSpace(detail)}
 }
 
+// batchedSchemaAnswer is the binding part of the dataset service's answer to
+// its versioned schema route.
+type batchedSchemaAnswer struct {
+	DatasetID     uuid.UUID `json:"dataset_id"`
+	Branch        string    `json:"branch"`
+	Version       int32     `json:"version"`
+	TransactionID uuid.UUID `json:"transaction_id"`
+	ContentHash   string    `json:"content_hash"`
+}
+
+// boundTo reports whether the answer names the requested dataset, branch,
+// version and, when the caller pinned one, transaction.
+func (a batchedSchemaAnswer) boundTo(dataset uuid.UUID, in batchedScanInput) bool {
+	return a.DatasetID == dataset && a.Branch == in.Branch && a.Version == in.Version && a.TransactionID != uuid.Nil &&
+		(in.ExpectedTransactionID == nil || a.TransactionID == *in.ExpectedTransactionID)
+}
+
+// versionedSchema GETs the versioned schema route of the frozen input, as the
+// caller, and decodes the answer into out. expectedHash, when set, is sent
+// as expected_content_hash: the route then answers 412 instead of a schema
+// with another hash. A non-200 answer is the service's own error.
+func (c batchedDatasetClient) versionedSchema(ctx context.Context, in batchedScanInput, expectedHash string, out any) error {
+	query := url.Values{}
+	if expectedHash != "" {
+		query.Set("expected_content_hash", expectedHash)
+	}
+	query.Set("branch", in.Branch)
+	query.Set("version", strconv.FormatInt(int64(in.Version), 10))
+	if in.ExpectedTransactionID != nil {
+		query.Set("transaction_id", in.ExpectedTransactionID.String())
+	}
+	endpoint := c.baseURL() + "/v1/datasets/" + url.PathEscape(in.DatasetRID) + "/schema?" + query.Encode()
+	req, err := c.newRequest(ctx, http.MethodGet, endpoint, nil, "")
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("batched_schema_lookup_failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, batchedErrorBodyLimit))
+		return batchedErrorFromResponse(resp.StatusCode, body)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, batchedSchemaResponseLimit+1))
+	if err != nil {
+		return fmt.Errorf("batched_schema_lookup_failed: %w", err)
+	}
+	if len(body) > batchedSchemaResponseLimit {
+		return errors.New("batched_schema_response_invalid: response exceeds the size limit")
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("batched_schema_response_invalid: %w", err)
+	}
+	return nil
+}
+
 // VerifyInputSchema checks the frozen precondition and returns the
 // transaction the scan must echo from its first page onward. A caller
 // that sets ExpectedTransactionID (a dataset_snapshot pin) also sends it,
@@ -253,51 +311,41 @@ func (c batchedDatasetClient) VerifyInputSchema(ctx context.Context, in batchedS
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("batched_schema_input_invalid: %w", err)
 	}
-	query := url.Values{
-		"branch":                {in.Branch},
-		"version":               {strconv.FormatInt(int64(in.Version), 10)},
-		"expected_content_hash": {hash},
-	}
-	if in.ExpectedTransactionID != nil {
-		query.Set("transaction_id", in.ExpectedTransactionID.String())
-	}
-	endpoint := c.baseURL() + "/v1/datasets/" + url.PathEscape(in.DatasetRID) + "/schema?" + query.Encode()
-	req, err := c.newRequest(ctx, http.MethodGet, endpoint, nil, "")
-	if err != nil {
+	var schema batchedSchemaAnswer
+	if err := c.versionedSchema(ctx, in, hash, &schema); err != nil {
 		return uuid.Nil, err
 	}
-	resp, err := c.httpClient().Do(req)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("batched_schema_lookup_failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, batchedErrorBodyLimit))
-		return uuid.Nil, batchedErrorFromResponse(resp.StatusCode, body)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, batchedSchemaResponseLimit+1))
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("batched_schema_lookup_failed: %w", err)
-	}
-	if len(body) > batchedSchemaResponseLimit {
-		return uuid.Nil, errors.New("batched_schema_response_invalid: response exceeds the size limit")
-	}
-	var schema struct {
-		DatasetID     uuid.UUID `json:"dataset_id"`
-		Branch        string    `json:"branch"`
-		Version       int32     `json:"version"`
-		TransactionID uuid.UUID `json:"transaction_id"`
-		ContentHash   string    `json:"content_hash"`
-	}
-	if err := json.Unmarshal(body, &schema); err != nil {
-		return uuid.Nil, fmt.Errorf("batched_schema_response_invalid: %w", err)
-	}
-	if schema.DatasetID != expectedDataset || schema.Branch != in.Branch || schema.Version != in.Version ||
-		schema.TransactionID == uuid.Nil || schema.ContentHash != hash ||
-		(in.ExpectedTransactionID != nil && schema.TransactionID != *in.ExpectedTransactionID) {
+	if !schema.boundTo(expectedDataset, in) || schema.ContentHash != hash {
 		return uuid.Nil, errors.New("batched_schema_binding_invalid: schema response does not match the frozen input and digest")
 	}
 	return schema.TransactionID, nil
+}
+
+// committedInputSchema reads the committed schema of the frozen input's
+// version. The route is asked without expected_content_hash, so it answers
+// the schema of the pinned version instead of comparing it. The answer is
+// unusable unless it is bound to the pin and its fields hash to its own
+// content_hash.
+func (c batchedDatasetClient) committedInputSchema(ctx context.Context, in batchedScanInput) ([]snapshotSchemaField, error) {
+	expectedDataset, err := batchedDatasetUUID(in.DatasetRID)
+	if err != nil {
+		return nil, fmt.Errorf("batched_schema_input_invalid: %w", err)
+	}
+	var schema struct {
+		batchedSchemaAnswer
+		Fields []snapshotSchemaField `json:"fields"`
+	}
+	if err := c.versionedSchema(ctx, in, "", &schema); err != nil {
+		return nil, err
+	}
+	if !schema.boundTo(expectedDataset, in) {
+		return nil, errors.New("batched_schema_binding_invalid: schema response does not match the frozen input")
+	}
+	digest, err := snapshotSchemaDigest(schema.Fields)
+	if err != nil || digest != schema.ContentHash {
+		return nil, errors.New("batched_schema_binding_invalid: the fields of the schema response do not hash to its content_hash")
+	}
+	return schema.Fields, nil
 }
 
 // ScanStream pages through rows:scan for the pinned input, handing every

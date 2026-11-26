@@ -27,6 +27,16 @@ const noonOrderLinesFields = `[{"name":"currency","field_type":"STRING","nullabl
 	`{"name":"order_nr","field_type":"STRING","nullable":false},{"name":"sku","field_type":"STRING","nullable":false},` +
 	`{"name":"store","field_type":"STRING","nullable":false},{"name":"unit_price","field_type":"STRING","nullable":false}]`
 
+// The publish contract of one monthly report file: three nullable columns of
+// a CSV output, in header order. The second constant is the public field
+// list the versioned schema answers for it.
+const reportCSVSchema = `{"file_format":"TEXT","fields":[` +
+	`{"name":"order postal","type":"STRING","nullable":true},{"name":"quantity","type":"LONG","nullable":true},` +
+	`{"name":"total","type":"DOUBLE","nullable":true}]}`
+
+const reportCSVFields = `[{"name":"order postal","field_type":"STRING","nullable":true},` +
+	`{"name":"quantity","field_type":"LONG","nullable":true},{"name":"total","field_type":"DOUBLE","nullable":true}]`
+
 type receiptEdit func(*models.CommitDatasetOutputResponse)
 
 type historicalSchemaAnswer struct {
@@ -39,6 +49,13 @@ func noonSchema(t *testing.T) *models.DatasetSchema {
 	t.Helper()
 	var schema models.DatasetSchema
 	require.NoError(t, json.Unmarshal([]byte(noonOrderLinesSchema), &schema))
+	return &schema
+}
+
+func reportCSVSchemaValue(t *testing.T) *models.DatasetSchema {
+	t.Helper()
+	var schema models.DatasetSchema
+	require.NoError(t, json.Unmarshal([]byte(reportCSVSchema), &schema))
 	return &schema
 }
 
@@ -167,6 +184,66 @@ func TestHistoricalSchemaRefusesNDJSONWithoutAUsableReceiptSchema(t *testing.T) 
 			require.Equal(t, http.StatusUnprocessableEntity, rec.Code, rec.Body.String())
 			require.Contains(t, rec.Body.String(), tc.code)
 			require.NotContains(t, rec.Body.String(), `"fields"`)
+		})
+	}
+}
+
+func TestHistoricalSchemaReadsCSVSchemaFromTheVersionReceipt(t *testing.T) {
+	hs := newScanHarness(t)
+	// The bytes hold text where the receipt declares a DOUBLE, and a BOM
+	// and CRLF line ends: none of it is read.
+	version := hs.commitSnapshotVersion(t, "transaction_view.csv",
+		[]byte("\xef\xbb\xbforder postal,quantity,total\r\n00123,2,N/A\r\n"))
+
+	// A CSV version without a keyed receipt is unsupported, as before.
+	rec := historicalSchemaRequest(hs, fmt.Sprintf("branch=main&version=%d", version), hs.ownerID)
+	require.Equal(t, http.StatusUnprocessableEntity, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "dataset_schema_format_unsupported")
+	require.NotContains(t, rec.Body.String(), `"fields"`)
+
+	txn := hs.sealReceipt(t, version, reportCSVSchemaValue(t))
+	answer := historicalSchemaRequest(hs, fmt.Sprintf("branch=main&version=%d", version), hs.ownerID)
+	require.Equal(t, http.StatusOK, answer.Code, answer.Body.String())
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(reportCSVFields)))
+	require.JSONEq(t, fmt.Sprintf(`{"dataset_id":%q,"branch":"main","version":%d,"transaction_id":%q,"content_hash":%q,"fields":%s}`,
+		hs.dataset.ID, version, txn, digest, reportCSVFields), answer.Body.String())
+
+	// The binding is proved through the route: the version's own hash is
+	// accepted, alone and with its transaction, and another hash is refused.
+	for _, query := range []string{
+		fmt.Sprintf("branch=main&version=%d&expected_content_hash=%s", version, digest),
+		fmt.Sprintf("branch=main&version=%d&expected_content_hash=%s&transaction_id=%s", version, digest, txn),
+	} {
+		rec := historicalSchemaRequest(hs, query, hs.ownerID)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.JSONEq(t, answer.Body.String(), rec.Body.String())
+	}
+	other := fmt.Sprintf("%x", sha256.Sum256([]byte(`[]`)))
+	mismatch := historicalSchemaRequest(hs, fmt.Sprintf("branch=main&version=%d&expected_content_hash=%s", version, other), hs.ownerID)
+	require.Equal(t, http.StatusPreconditionFailed, mismatch.Code, mismatch.Body.String())
+	require.JSONEq(t, `{"error": "dataset_schema_content_hash_mismatch: the committed schema does not match expected_content_hash",
+		"code": "dataset_schema_content_hash_mismatch"}`, mismatch.Body.String())
+}
+
+func TestHistoricalSchemaRefusesCSVWithoutAUsableReceiptSchema(t *testing.T) {
+	noFields := &models.DatasetSchema{FileFormat: models.FileFormatText}
+	for _, tc := range []struct {
+		name    string
+		path    string
+		schema  *models.DatasetSchema
+		refusal string
+	}{
+		{"absent schema", "transaction_view.csv", nil, "the NDJSON or CSV output of this version has no schema in its commit receipt"},
+		{"null fields", "transaction_view.csv", noFields, "the NDJSON or CSV output of this version has no schema in its commit receipt"},
+		{"tsv output", "transaction_view.tsv", reportCSVSchemaValue(t), "versioned schemas require Parquet ADD files or one NDJSON or CSV output with a schema in its commit receipt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := newScanHarness(t)
+			version := hs.commitSnapshotVersion(t, tc.path, []byte("order postal,quantity,total\n00123,2,1.5\n"))
+			hs.sealReceipt(t, version, tc.schema)
+			rec := historicalSchemaRequest(hs, fmt.Sprintf("branch=main&version=%d", version), hs.ownerID)
+			require.Equal(t, http.StatusUnprocessableEntity, rec.Code, rec.Body.String())
+			require.JSONEq(t, fmt.Sprintf(`{"error":"dataset_schema_format_unsupported: %s"}`, tc.refusal), rec.Body.String())
 		})
 	}
 }
