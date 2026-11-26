@@ -2,7 +2,8 @@ name: Contribution policy
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, develop]
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read

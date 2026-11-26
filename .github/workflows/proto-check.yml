@@ -17,7 +17,7 @@ on:
       - "go.sum"
       - ".github/workflows/proto-check.yml"
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "proto/**"
       - "tools/of-cli/**"

@@ -8,7 +8,7 @@ on:
       - "tools/ceph-lint/**"
       - ".github/workflows/ceph-lint.yml"
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "infra/helm/infra/ceph-cluster/**"
       - "tools/ceph-lint/**"

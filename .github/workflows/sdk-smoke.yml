@@ -9,7 +9,7 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "sdks/**"
       - ".github/workflows/sdk-smoke.yml"
