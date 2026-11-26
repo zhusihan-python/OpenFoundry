@@ -144,3 +144,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 )
+
+replace github.com/hamba/avro/v2 => github.com/zhusihan-python/avro/v2 v2.31.1-openfoundry.1
