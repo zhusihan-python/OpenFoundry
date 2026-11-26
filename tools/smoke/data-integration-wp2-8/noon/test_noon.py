@@ -2,7 +2,8 @@ import json
 import unittest
 
 from smoke import (COLUMNS, HERE, ORDER_LINE_COLUMNS, ORDER_LINE_SCHEMA, columns_of, encode, expected, line_price_nodes,
-                   materialize, numeric_unit_price, numeric_unit_price_schema, projection, published_schema)
+                   materialize, numeric_unit_price, numeric_unit_price_schema, projection, published_schema,
+                   refused_at_input)
 
 
 class OrderLiveReplay(unittest.TestCase):
@@ -124,3 +125,43 @@ class NumericUnitPrice(unittest.TestCase):
                                      [{key: value for key, value in row.items() if key != "sku"} for row in numeric_unit_price(2)])):
             with self.subTest(rows=name), self.assertRaises(ValueError):
                 declare(rows)
+
+
+CROSSED = "batched_dataset_409_dataset_schema_transaction_mismatch"
+REFUSED = ('dataset_input_load_failed: node "input" failed to load dataset ri.foundry.main.dataset.0: '
+           'dataset_input_schema_rejected: ' + CROSSED + ': not the transaction of v1')
+
+
+def outcome(status="failed", error=REFUSED, later=("cancelled", "cancelled"), resources=()):
+    """One saved run as the report summarizes it: its status and its nodes."""
+    return dict(status=status, nodes=[
+        dict(node_id="input", status="failed", error=error, output_resources=list(resources)),
+        dict(node_id="project-lines", status=later[0], output_resources=[]),
+        dict(node_id="output", status=later[1], output_resources=[])])
+
+
+class RefusedAtInput(unittest.TestCase):
+    def test_accepts_a_run_refused_at_its_input_with_the_named_code(self):
+        self.assertTrue(refused_at_input(outcome(), CROSSED))
+        # Without a named code the refusal of another organization needs no status of its own.
+        self.assertTrue(refused_at_input(outcome(error=REFUSED.replace(CROSSED, "batched_dataset_404: no such dataset"))))
+
+    def test_requires_the_explicit_status_next_to_the_code(self):
+        for code in ("batched_dataset_404_dataset_schema_transaction_mismatch", "dataset_schema_transaction_mismatch"):
+            with self.subTest(code=code):
+                self.assertFalse(refused_at_input(outcome(error=REFUSED.replace(CROSSED, code)), CROSSED))
+
+    def test_requires_the_refusal_in_the_error_of_the_input_node(self):
+        for name, before, after in (("not the load", "dataset_input_load_failed", "dataset_input_pipeline_failed"),
+                                    ("not the schema", "dataset_input_schema_rejected", "dataset_input_rows_invalid")):
+            with self.subTest(name=name):
+                self.assertFalse(refused_at_input(outcome(error=REFUSED.replace(before, after)), CROSSED))
+
+    def test_refuses_a_run_that_committed_an_output_or_whose_later_node_ran(self):
+        for name, run in (("committed", outcome(resources=("committed",))),
+                          ("later node succeeded", outcome(later=("succeeded", "succeeded"))),
+                          ("later node failed", outcome(later=("cancelled", "failed"))),
+                          ("run succeeded", outcome(status="succeeded")),
+                          ("no node result", dict(status="failed", nodes=[]))):
+            with self.subTest(run=name):
+                self.assertFalse(refused_at_input(run, CROSSED))
