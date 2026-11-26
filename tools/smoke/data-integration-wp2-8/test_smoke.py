@@ -3,12 +3,18 @@ import json
 import os
 import unittest
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 import smoke
-from smoke import COSTS, COST_SHA256, cost_nodes, costs, value_diffs
+from smoke import (CONTRACT, COSTS, COST_SHA256, PRODUCT_SCHEMA_SHA256, commit_request, contract_of, cost_nodes, costs,
+                   schema_route, value_diffs)
 
 V1 = b'{"cg_price":"0.00","sku":"0007"}\n{"cg_price":"9.25","sku":"W-2"}\n{"cg_price":"17.40","sku":"D3"}\n'
 V2 = b'{"cg_price":"2.50","sku":"0007"}\n{"cg_price":"10.75","sku":"N4"}\n'
+
+
+def wire(body):
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
 
 
 class CostOracle(unittest.TestCase):
@@ -93,6 +99,73 @@ class CostPipeline(unittest.TestCase):
         self.assertEqual(pins, [{"branch": "main", "version": 1, "transaction_id": "ri.foundry.main.transaction.txn-1"},
                                 {"branch": "main", "version": 2, "transaction_id": "ri.foundry.main.transaction.txn-2"},
                                 pins[0]])
+
+    def test_the_input_is_bound_to_the_schema_hash_only_when_asked(self):
+        bound = cost_nodes(Graph(), "products", "costs", dict(output_version=2, output_transaction="txn-2"),
+                           expected_schema_hash=PRODUCT_SCHEMA_SHA256)[0]["config"]["dataset_snapshot"]
+        self.assertEqual(bound, {"branch": "main", "version": 2, "transaction_id": "ri.foundry.main.transaction.txn-2",
+                                 "expected_schema_hash": PRODUCT_SCHEMA_SHA256})
+        loose = cost_nodes(Graph(), "products", "costs", dict(output_version=2, output_transaction="txn-2"))
+        self.assertNotIn("expected_schema_hash", loose[0]["config"]["dataset_snapshot"])
+
+
+class InputContract(unittest.TestCase):
+    """The product contract a downstream reader verifies by version and transaction."""
+
+    FIRST = smoke.products.ndjson(smoke.FIRST)
+    SECOND = smoke.products.ndjson(smoke.SECOND)
+
+    def test_the_contract_hash_is_the_hash_of_the_stated_fields(self):
+        self.assertEqual(hashlib.sha256(json.dumps(CONTRACT, separators=(",", ":")).encode()).hexdigest(),
+                         PRODUCT_SCHEMA_SHA256)
+        self.assertEqual(PRODUCT_SCHEMA_SHA256,
+                         "90fc93dc51e09666772df81377d9c2642d5e444008a7fc65c089193efb6aee4b")
+        self.assertEqual(CONTRACT, [
+            {"name": "cg_price", "field_type": "STRING", "nullable": False}, {"name": "id", "field_type": "LONG", "nullable": False},
+            {"name": "product_name", "field_type": "STRING", "nullable": False}, {"name": "sku", "field_type": "STRING", "nullable": False}])
+
+    def test_a_reader_derives_the_same_contract_from_the_bytes_of_each_snapshot(self):
+        self.assertEqual(contract_of(self.FIRST), CONTRACT)
+        self.assertEqual(contract_of(self.SECOND), CONTRACT)
+
+    def test_bytes_that_do_not_hold_the_contract_are_not_a_contract(self):
+        numeric = b'{"cg_price":0.0,"id":11,"product_name":"x","sku":7}\n'
+        for data in (numeric, b'{"id":11,"sku":"0007"}\n', b'{"cg_price":"0.00","id":11,"product_name":"x","sku":"0007","x":1}\n',
+                     b'{"cg_price":"0.00","id":11,"product_name":"x","sku":"0007"}\n{"sku":"W-2","id":12,"product_name":"y","cg_price":"9.25"}\n'):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                contract_of(data)
+
+    def test_the_schema_request_names_branch_version_transaction_and_hash(self):
+        route = schema_route("products", 2, transaction_id="txn-2", expected_content_hash=PRODUCT_SCHEMA_SHA256)
+        self.assertEqual(urlsplit(route).path, "/v1/datasets/products/schema")
+        self.assertEqual(parse_qs(urlsplit(route).query), {"branch": ["main"], "version": ["2"], "transaction_id": ["txn-2"],
+                                                           "expected_content_hash": [PRODUCT_SCHEMA_SHA256]})
+        self.assertEqual(parse_qs(urlsplit(schema_route("products", 1)).query), {"branch": ["main"], "version": ["1"]})
+
+
+class Redelivery(unittest.TestCase):
+    """The request of a delivery follows the publication of its batch, not the call that redelivers it."""
+
+    DATA = smoke.products.ndjson(smoke.FIRST)
+    ROWS = [json.loads(line) for line in DATA.splitlines()]
+
+    def test_a_batch_published_under_the_contract_is_redelivered_with_its_schema(self):
+        batch = dict(source_batch="batch-1", contract=True)
+        first = wire(commit_request(batch, "raw", self.DATA, self.ROWS))
+        again = wire(commit_request(batch, "raw", self.DATA, self.ROWS))
+        self.assertEqual(again, first)
+        self.assertEqual(hashlib.sha256(first).hexdigest(), hashlib.sha256(again).hexdigest())
+        self.assertEqual(json.loads(first)["schema"], {"file_format": "TEXT", "fields": smoke.products.PRODUCT_SCHEMA})
+        self.assertNotEqual(first, wire(smoke.products.commit_body("raw", "batch-1", self.DATA)))
+
+    def test_a_batch_published_before_the_contract_is_redelivered_as_it_was_sent(self):
+        batch = dict(source_batch="batch-1")
+        sent = wire(commit_request(batch, "raw", self.DATA, self.ROWS))
+        self.assertEqual(sent, wire(commit_request(batch, "raw", self.DATA, self.ROWS)))
+        self.assertEqual(sent, wire(smoke.products.commit_body("raw", "batch-1", self.DATA)))
+        self.assertNotIn("schema", json.loads(sent))
+        # Under the same batch key the contract is another request.
+        self.assertNotEqual(sent, wire(commit_request(dict(batch, contract=True), "raw", self.DATA, self.ROWS)))
 
 
 if __name__ == "__main__":

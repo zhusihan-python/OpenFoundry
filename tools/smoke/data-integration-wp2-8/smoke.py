@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 import subprocess
 import sys
+from urllib.parse import urlencode
 import uuid
 
 HERE = Path(__file__).resolve().parent
@@ -32,6 +33,29 @@ COSTS = ["sku", "cg_price"]
 # SHA256 of the NDJSON a downstream consumer downloads for the costs of each product version.
 COST_SHA256 = {1: "846c2b4dbd3314a84f67c36031a06547f7c60341970fde512aa6afd975c0d6e8",
                2: "62a109d34eb2d53871b72ab6eee8e63a60a12a2ac543f9c9a783500bf5630420"}
+# The product contract as the versioned schema states it, and the SHA256 of
+# that field list: the content hash every product version published under it
+# answers, whatever its rows.
+CONTRACT = [{"name": field["name"], "field_type": field["type"], "nullable": field["nullable"]}
+            for field in products.PRODUCT_SCHEMA]
+PRODUCT_SCHEMA_SHA256 = hashlib.sha256(json.dumps(CONTRACT, separators=(",", ":")).encode()).hexdigest()
+
+
+def contract_of(data):
+    """The ordered typed columns an independent reader finds in published NDJSON bytes."""
+    rows = [json.loads(line) for line in data.splitlines()]
+    names = list(rows[0])
+    if any(list(row) != names for row in rows) or set(names) != products.PRODUCT_COLUMNS:
+        raise ValueError("published products have other columns or a different column order")
+    if not all(type(row["id"]) is int and isinstance(row["sku"], str) and isinstance(row["product_name"], str)
+               and isinstance(row["cg_price"], str) for row in rows):
+        raise ValueError("published products do not keep the id an integer and the SKU, name and cost strings")
+    return [{"name": name, "field_type": "LONG" if name == "id" else "STRING", "nullable": False} for name in names]
+
+
+def schema_route(dataset, version, **params):
+    """The formal versioned schema request for one dataset version on main."""
+    return f"/v1/datasets/{dataset}/schema?" + urlencode({"branch": "main", "version": version, **params})
 
 
 def costs(version):
@@ -61,8 +85,25 @@ def value_diffs(data, expected):
     return diffs
 
 
-def cost_nodes(graph, source, out, published):
+def commit_request(batch, dataset, data, rows):
+    """The Dataset request for one delivery of a batch, in the shape its first publication used.
+
+    The Dataset service fingerprints the exact request, so a redelivery has to
+    rebuild the request of the first publication. A batch carries the contract
+    it was first published under: one published with it declares the schema of
+    its rows, and one published before it is sent as it was then, without one.
+    """
+    schema = products.published_schema(rows) if batch.get("contract") else None
+    return products.commit_body(dataset, batch["source_batch"], data, schema=schema)
+
+
+def cost_nodes(graph, source, out, published, expected_schema_hash=None):
     nodes = graph.graph_nodes(source, published["output_version"], published["output_transaction"], out)
+    if expected_schema_hash is not None:
+        # The pin also requires the committed schema of that version to
+        # have this content hash. The pipeline service proves it against
+        # the dataset service as the caller before it reads any row.
+        nodes[0]["config"]["dataset_snapshot"]["expected_schema_hash"] = expected_schema_hash
     nodes.insert(1, {"id": "project-costs", "label": "Publish product costs", "depends_on": ["input"],
                      "transform_type": "select", "config": {"columns": COSTS}})
     nodes[-1]["depends_on"] = ["project-costs"]
@@ -133,7 +174,7 @@ def main(state):
                 "raw_transaction": run["dataset_version_id"], "export_sha256": sha(export.read_bytes()),
                 "row_count": len(rows)}
 
-    def deliver(batch):
+    def deliver(batch, dataset=target):
         response = p1.api("connector", "sync_run_get", token=owner,
                           path_args={"id": batch["sync_id"], "run_id": batch["sync_run"]})
         assert response.status == 200 and response.body["status"] == "succeeded"
@@ -144,24 +185,32 @@ def main(state):
             "source_id": batch["source_id"], "sync_def_id": batch["sync_id"], "sync_run_id": batch["sync_run"]}
         rows, _, data = p1.download_run_artifact(reader, raw, response.body)
         assert len(rows) == batch["row_count"] and sha(data) == batch["export_sha256"]
-        body = products.commit_body(raw, batch["source_batch"], data)
+        body = commit_request(batch, raw, data, rows)
         wire = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
-        result = p1.http("dataset", f"/api/v1/datasets/{target}/outputs:commit", token=owner, payload=wire)
+        result = p1.http("dataset", f"/api/v1/datasets/{dataset}/outputs:commit", token=owner, payload=wire)
         if result.status in (200, 201):
             receipt = result.body
             assert (receipt["dataset_id"], receipt["branch"], receipt["idempotency_key"],
                     receipt["request_fingerprint"], receipt["transaction"]["status"]) == (
-                        target, "main", body["idempotency_key"], sha(wire), "COMMITTED")
+                        dataset, "main", body["idempotency_key"], sha(wire), "COMMITTED")
         return result
+
+    def head_of(dataset):
+        result = p1.api("dataset", "ds_branch_get", token=reader, path_args={"id": dataset, "branch": "main"})
+        assert result.status == 200, result.status
+        return result.body["head_transaction_id"]
 
     check("create private export bucket", s3.s3_request("PUT", BUCKET) in (200, 201))
     for i, expected in enumerate((FIRST, SECOND), 1):
         fetch, offsets = pages(expected)
         batch = receive(str(uuid.uuid4()), fetch)
         check(f"v{i} page offsets", offsets == ([0, 2] if i == 1 else [0]))
+        # Published under the input contract: every later delivery of this batch rebuilds that request.
+        batch["contract"] = True
         result = deliver(batch)
         check(f"v{i} first publish", result.status == 201)
         txn = result.body["transaction"]["id"]
+        batch["request_fingerprint"] = result.body["request_fingerprint"]
         version = graph.version_by_txn(target, txn)
         file, = [f for f in p1.list_files(reader, target) if f["transaction_id"] == txn]
         batch.update(output_version=version, output_transaction=txn, output_file_id=file["id"], offsets=offsets)
@@ -174,9 +223,43 @@ def main(state):
     replay = deliver(first)
     check("v1 redelivery after v2 returns original receipt", replay.status == 200 and
           replay.body["transaction"]["id"] == first["output_transaction"])
+    check("v1 redelivery rebuilds the request of its first publication, the schema included",
+          replay.status == 200 and replay.body["request_fingerprint"] == first["request_fingerprint"])
     conflict = deliver(dict(second, source_batch=first["source_batch"]))
     check("changed content under existing batch rejected", conflict.status == 409)
     report["replay_transaction"] = replay.body["transaction"]["id"]
+
+    # Compatibility boundary of the input contract. A batch published before it
+    # existed was sent without a schema, and that request is not rewritten: its
+    # bytes still replay to the original receipt, while the same batch key sent
+    # with the contract schema is another request, which the key refuses. Such a
+    # version keeps its rows readable by version and answers no versioned schema.
+    legacy = report["legacy"] = dict(
+        dataset=p1.create_dataset(owner, "Lingxing product snapshots before the input contract", "json")["id"])
+    before_contract = dict(first, contract=False)
+    old = deliver(before_contract, dataset=legacy["dataset"])
+    check("a batch published as before the contract commits without a schema", old.status == 201)
+    old_txn = legacy["transaction"] = old.body["transaction"]["id"]
+    old_versions = graph.list_versions(legacy["dataset"])
+    same = deliver(before_contract, dataset=legacy["dataset"])
+    check("the request of a batch published before the contract still replays to its original receipt",
+          same.status == 200 and same.body["transaction"]["id"] == old_txn
+          and same.body["request_fingerprint"] == old.body["request_fingerprint"])
+    rewritten = deliver(first, dataset=legacy["dataset"])
+    s3.write_json(state / "legacy-rewritten-replay.json",
+                  dict(status=rewritten.status, body=rewritten.body, versions_after=graph.list_versions(legacy["dataset"])))
+    legacy.update(rewritten_replay_status=rewritten.status, rewritten_replay_code=rewritten.body.get("code"),
+                  request_fingerprint=old.body["request_fingerprint"])
+    check("the same batch key sent with the contract schema is refused and creates no version",
+          rewritten.status == 409 and rewritten.body.get("code") == "IDEMPOTENCY_KEY_CONFLICT"
+          and graph.list_versions(legacy["dataset"]) == old_versions and head_of(legacy["dataset"]) == old_txn)
+    unsupported = p1.http("dataset", schema_route(legacy["dataset"], 1, transaction_id=old_txn), token=reader, raw=True)
+    (state / "schema-legacy-unsupported.json").write_bytes(unsupported.body)
+    legacy["schema_status"] = unsupported.status
+    check("the version published before the contract answers no versioned schema and keeps its rows readable",
+          unsupported.status == 422
+          and json.loads(unsupported.body).get("error", "").startswith("dataset_schema_format_unsupported")
+          and b'"fields"' not in unsupported.body and graph.scan_all(legacy["dataset"], 1)["rows"] == FIRST)
     failed_batch = str(uuid.uuid4())
     fetch, offsets = pages(FIRST, fail_at=2)
     try:
@@ -211,16 +294,60 @@ def main(state):
                      token=foreign)
     check("foreign tenant denied version scan", denied.status in (403, 404))
 
-    # One pipeline reads the published product snapshots, not the raw batches: v1, then v2, then v1 again.
-    def head_of(dataset):
-        result = p1.api("dataset", "ds_branch_get", token=reader, path_args={"id": dataset, "branch": "main"})
-        assert result.status == 200, result.status
-        return result.body["head_transaction_id"]
+    # An independent reader holds no write permission. It asks the formal versioned
+    # schema of each published version, bound to the transaction that cut it, and
+    # verifies the hash itself.
+    schema = report["schema"] = dict(dataset=target, fields=CONTRACT, content_hash=PRODUCT_SCHEMA_SHA256, reads=[], answers=[])
+    answered = {}
 
+    def schema_answer(version, name, **params):
+        result = p1.http("dataset", schema_route(target, version, **params), token=reader, raw=True)
+        (state / f"schema-{name}.json").write_bytes(result.body)
+        schema["answers"].append(dict(name=name, version=version, **params, status=result.status, artifact=f"schema-{name}.json"))
+        return result
+
+    for batch in report["batches"]:
+        version, txn = batch["output_version"], batch["output_transaction"]
+        read = schema_answer(version, f"v{version}-bound", transaction_id=txn, expected_content_hash=PRODUCT_SCHEMA_SHA256)
+        answered[version] = read.body
+        body = json.loads(read.body) if read.status == 200 else {}
+        check(f"independent reader reads the contract of product v{version} bound to its transaction and hash",
+              read.status == 200
+              and (body.get("dataset_id"), body.get("branch"), body.get("version"), body.get("transaction_id")) == (
+                  target, "main", version, txn)
+              and body.get("fields") == CONTRACT
+              and body.get("content_hash") == hashlib.sha256(
+                  json.dumps(body["fields"], separators=(",", ":")).encode()).hexdigest() == PRODUCT_SCHEMA_SHA256)
+        check(f"the contract declares the SKU and the cost of product v{version} as strings",
+              {field["name"]: field["field_type"] for field in body.get("fields", [])}
+              == {"cg_price": "STRING", "id": "LONG", "product_name": "STRING", "sku": "STRING"})
+        check(f"the contract a reader derives from the bytes of product v{version} is the schema it was answered",
+              contract_of((state / f"published-v{version}.ndjson").read_bytes()) == body.get("fields"))
+        schema["reads"].append(dict(version=version, transaction=txn, content_hash=body.get("content_hash")))
+    again = schema_answer(1, "v1-again")
+    check("the schema of v1 answers as before while v2 is the head", again.status == 200 and again.body == answered[1])
+    for version, other in ((1, second), (2, first)):
+        crossed = schema_answer(version, f"v{version}-with-v{other['output_version']}-transaction",
+                                transaction_id=other["output_transaction"], expected_content_hash=PRODUCT_SCHEMA_SHA256)
+        check(f"the schema of v{version} refuses the transaction of v{other['output_version']}", crossed.status == 409
+              and json.loads(crossed.body).get("code") == "dataset_schema_transaction_mismatch"
+              and b'"fields"' not in crossed.body)
+    stale = schema_answer(2, "v2-other-hash", transaction_id=second["output_transaction"],
+                          expected_content_hash=hashlib.sha256(b"[]").hexdigest())
+    check("the schema of v2 refuses another content hash", stale.status == 412
+          and json.loads(stale.body).get("code") == "dataset_schema_content_hash_mismatch"
+          and b'"fields"' not in stale.body)
+    foreign_schema = p1.http("dataset", schema_route(target, 1, transaction_id=first["output_transaction"]),
+                             token=foreign, raw=True)
+    schema["other_tenant_status"] = foreign_schema.status
+    check("the same user in another tenant cannot read the product schema", foreign_schema.status in (403, 404))
+
+    # One pipeline reads the published product snapshots, not the raw batches: v1, then v2, then v1 again.
     down = p1.create_dataset(owner, "Lingxing product costs", "json")["id"]
     # Two different identifiers name one published output. Every build records both.
     pipeline = report["pipeline"] = dict(
-        pipeline_id=None, output_dataset=down, columns=COSTS, expected_sha256=COST_SHA256, builds=[],
+        pipeline_id=None, output_dataset=down, columns=COSTS, expected_sha256=COST_SHA256,
+        expected_schema_hash=PRODUCT_SCHEMA_SHA256, builds=[],
         transaction_ids={
             "input_transaction": "Dataset Versioning transaction id of the product snapshot version the run read",
             "output_transaction": "Dataset Versioning transaction id of the output version, as the reader lists it",
@@ -232,9 +359,10 @@ def main(state):
     for ordinal, batch in enumerate((first, second, first), 1):
         version = batch["output_version"]
         pin = {"branch": "main", "version": version,
-               "transaction_id": "ri.foundry.main.transaction." + batch["output_transaction"]}
+               "transaction_id": "ri.foundry.main.transaction." + batch["output_transaction"],
+               "expected_schema_hash": PRODUCT_SCHEMA_SHA256}
         heads = dict(input=head_of(target), output=head_of(down) if pipeline["builds"] else None)
-        nodes = cost_nodes(graph, target, down, batch)
+        nodes = cost_nodes(graph, target, down, batch, expected_schema_hash=PRODUCT_SCHEMA_SHA256)
         graph.TOKEN = owner
         try:
             pid = pipeline["pipeline_id"]
@@ -255,6 +383,10 @@ def main(state):
               config["dataset_id"] == target and config["dataset_snapshot"] == pin
               and saved_nodes["project-costs"]["config"] == {"columns": COSTS}
               and saved_nodes["output"]["output_dataset_id"] == down)
+        check(f"pipeline run {ordinal} binds its input to the schema hash the reader verified for product v{version}",
+              config["dataset_snapshot"].get("expected_schema_hash") == PRODUCT_SCHEMA_SHA256
+              and next(r for r in schema["reads"] if r["version"] == version) == dict(
+                  version=version, transaction=batch["output_transaction"], content_hash=PRODUCT_SCHEMA_SHA256))
         observed = next(n["output"] for n in run["node_results"] if n["node_id"] == "input")
         check(f"pipeline run {ordinal} input node receipt read product v{version} on main through the pinned transaction",
               run["pipeline_id"] == pid and run["id"] == run["run_id"]
@@ -300,6 +432,7 @@ def main(state):
         pipeline["builds"].append(dict(ordinal=ordinal, pipeline_run_id=run["id"], input_dataset=target,
                                        input_branch=observed["dataset_branch"], input_version=version,
                                        input_transaction=batch["output_transaction"], input_head=heads["input"],
+                                       input_schema_hash=config["dataset_snapshot"].get("expected_schema_hash"),
                                        output_dataset=down, output_version=produced["version"],
                                        output_transaction=produced["transaction_id"], output_head=heads["output"],
                                        pipeline_output_transaction_rid=handle,
@@ -328,6 +461,73 @@ def main(state):
           and replay["sha256"] == first_build["sha256"] == COST_SHA256[1] != latest["sha256"] == COST_SHA256[2]
           and (state / replay["artifact"]).read_bytes() == (state / first_build["artifact"]).read_bytes()
           != (state / latest["artifact"]).read_bytes())
+    # Negative controls of the bound input. Each saves and runs a Pipeline of
+    # its own, so the graph of the three runs keeps its last good pin, and each
+    # must fail at the input before a row is read and publish no version.
+    refusals = pipeline["refusals"] = {}
+    outputs_before, inputs_before = graph.list_versions(down), graph.list_versions(target)
+
+    def control(tag, nodes, token=owner, out=None):
+        """Save and run one graph as a token. Return the saved input, the run and the output versions."""
+        graph.TOKEN = token
+        try:
+            control_id = graph.create_pipeline(f"lingxing-product-costs-{tag}", nodes)
+            _, saved = graph.http("GET", f"{graph.PBS}/api/v1/pipelines/{control_id}")
+            run = graph.run_pipeline(control_id)
+            versions = graph.list_versions(out) if out else None
+        finally:
+            graph.TOKEN = reader
+        s3.write_json(state / f"refused-{tag}-graph.json", saved)
+        s3.write_json(state / f"refused-{tag}-run.json", run)
+        results = run.get("node_results") or []
+        return dict(pipeline_id=control_id, status=run["status"],
+                    saved_input=next(n["config"] for n in saved["dag"]["nodes"] if n["id"] == "input"),
+                    nodes=[dict(node_id=n["node_id"], status=n["status"], error=n.get("error")) for n in results],
+                    committed=[resource for n in results for resource in n.get("output_resources") or []
+                               if resource["status"] == "committed"],
+                    output_versions=versions)
+
+    def refused_at_input(outcome, *codes):
+        """The input node failed with these codes; the nodes after it never ran and nothing was committed."""
+        states = {n["node_id"]: n["status"] for n in outcome["nodes"]}
+        error = next((n["error"] or "" for n in outcome["nodes"] if n["node_id"] == "input"), "")
+        return (outcome["status"] == "failed"
+                and states == {"input": "failed", "project-costs": "cancelled", "output": "cancelled"}
+                and all(code in error for code in ("dataset_input_load_failed", "dataset_input_schema_rejected", *codes))
+                and not outcome["committed"])
+
+    # The pin names v1 together with the transaction that cut v2.
+    crossed = refusals["crossed_transaction"] = control(
+        "crossed-transaction", cost_nodes(graph, target, down, dict(second, output_version=first["output_version"]),
+                                          expected_schema_hash=PRODUCT_SCHEMA_SHA256))
+    check("the pin that names v1 with the transaction of v2 is saved as declared",
+          crossed["saved_input"]["dataset_id"] == target and crossed["saved_input"]["dataset_snapshot"] == {
+              "branch": "main", "version": first["output_version"],
+              "transaction_id": "ri.foundry.main.transaction." + second["output_transaction"],
+              "expected_schema_hash": PRODUCT_SCHEMA_SHA256})
+    check("the run bound to v1 with the transaction of v2 is refused at the input and publishes nothing",
+          refused_at_input(crossed, "dataset_schema_transaction_mismatch")
+          and graph.list_versions(down) == outputs_before and graph.list_versions(target) == inputs_before)
+
+    # The same user in another organization saves the same graph over an output dataset of its own.
+    other_down = p1.create_dataset(foreign, "Lingxing product costs of another tenant", "json")["id"]
+    other = refusals["other_tenant"] = control(
+        "other-tenant", cost_nodes(graph, target, other_down, second, expected_schema_hash=PRODUCT_SCHEMA_SHA256),
+        token=foreign, out=other_down)
+    other["output_dataset"] = other_down
+    # The Dataset service answers the other organization with a denial, not with the dataset.
+    other_error = next((n["error"] or "" for n in other["nodes"] if n["node_id"] == "input"), "")
+    check("the same user in another organization is refused at the input of this product dataset and publishes nothing",
+          other["saved_input"]["dataset_id"] == target and other["saved_input"]["dataset_snapshot"] == {
+              "branch": "main", "version": second["output_version"],
+              "transaction_id": "ri.foundry.main.transaction." + second["output_transaction"],
+              "expected_schema_hash": PRODUCT_SCHEMA_SHA256}
+          and ("batched_dataset_403" in other_error or "batched_dataset_404" in other_error)
+          and refused_at_input(other) and other["output_versions"] == []
+          and graph.list_versions(down) == outputs_before and graph.list_versions(target) == inputs_before)
+    pipeline["versions_around_refusals"] = dict(
+        output_before=outputs_before, output_after=graph.list_versions(down),
+        input_before=inputs_before, input_after=graph.list_versions(target))
     s3.write_json(state / "product-report.json", report)
 
 
