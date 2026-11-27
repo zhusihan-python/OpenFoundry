@@ -111,8 +111,9 @@ def stored(tenant, raw, source, kind=entry.PRODUCT_COST):
     """The readback of a tenant that holds one object per line of ``raw``, each with its complete ``_source``."""
     objects = []
     for number, line in enumerate(raw.splitlines(), 1):
-        row = json.loads(line)
-        objects.append({"id": stable_object_id(tenant, kind.type_id, source["transaction"], {kind.key: row[kind.key]}),
+        row = kind.row(line)
+        objects.append({"id": stable_object_id(tenant, kind.type_id, source["transaction"],
+                                               kind.key_of(source, kind.name(number, row))),
                         "object_type_id": kind.type_id, "properties": {**row, "_source": {**source, "line": number}}})
     return {"total": len(objects), "objects": objects}
 
