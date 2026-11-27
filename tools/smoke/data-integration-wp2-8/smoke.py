@@ -530,6 +530,12 @@ def main(state):
         input_before=inputs_before, input_after=graph.list_versions(target))
     s3.write_json(state / "product-report.json", report)
 
+    # This round's v3, located from its run receipt by the read-only reader and delivered to a Cassandra store.
+    published = s3.module("wp28_published", HERE / "ontology_sync_published.py")
+    report["downstream"] = published.run(state, report, dataset=p1.BASES["dataset"], reader=reader,
+                                         bin_dir=os.environ["BIN_DIR"])
+    s3.write_json(state / "product-report.json", report)
+
 
 if __name__ == "__main__":
     main(Path(sys.argv[1]))
