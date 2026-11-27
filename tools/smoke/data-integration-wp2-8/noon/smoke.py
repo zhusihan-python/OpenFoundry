@@ -155,6 +155,8 @@ def main(state):
     target = p1.create_dataset(owner, "noon AE order lines", "json")["id"]
     report = dict(revision=subprocess.check_output(["git", "-C", str(HERE), "rev-parse", "HEAD"], text=True).strip(),
                   source="synthetic order_live QA replay + constructed second batch", source_dataset=raw,
+                  # The organization that publishes this round; its OrderLinePrice objects are delivered under it.
+                  organization=ids["org_a"],
                   dataset=target, store=STORE, upstream_revision="6f3103e82248bcd33cd375be5338c207298ae04b",
                   batches=[], checks=[])
 
@@ -301,6 +303,8 @@ def main(state):
             run = graph.run_pipeline(pipeline["pipeline_id"])
         finally:
             graph.TOKEN = reader
+        # The receipt names the output of this run. The delivery entry below follows it to v3.
+        s3.write_json(state / f"pipeline-{ordinal}-run.json", run)
         if run["status"] != "succeeded":
             print(json.dumps(run, indent=2), file=sys.stderr)
         pid = pipeline["pipeline_id"]
@@ -330,14 +334,17 @@ def main(state):
               and graph.scan_all(down, produced["version"])["rows"] == rows)
         artifact = f"pipeline-{ordinal}-input-v{batch['version']}.ndjson"
         (state / artifact).write_bytes(response.body)
-        pipeline["builds"].append(dict(pipeline_run_id=run["id"], input_branch=observed["dataset_branch"],
+        pipeline["builds"].append(dict(ordinal=ordinal, pipeline_run_id=run["id"],
+                                       input_branch=observed["dataset_branch"],
                                        input_dataset=target, input_version=observed["dataset_version"],
                                        input_transaction=batch["transaction"], input_schema_hash=config["dataset_snapshot"].get("expected_schema_hash"),
-                                       output_version=produced["version"],
+                                       output_dataset=down, output_version=produced["version"],
                                        output_transaction=produced["transaction_id"],
                                        pipeline_output_transaction_rid=resource["transaction_rid"],
+                                       pipeline_content_hash=metadata.get("output_content_hash"),
                                        output_file_id=file["id"], artifact=artifact, rows=rows,
-                                       row_count=len(rows), sha256=hashlib.sha256(response.body).hexdigest()))
+                                       row_count=len(rows), size_bytes=len(response.body),
+                                       sha256=hashlib.sha256(response.body).hexdigest()))
 
     first, latest, replay = pipeline["builds"]
     versions = {v["version"]: v["transaction_id"] for v in graph.list_versions(down)}
@@ -569,5 +576,23 @@ def main(state):
     return dict(reader=reader, other=ids["user_b"].token, p1=p1, graph=graph)
 
 
+def downstream(state, handles):
+    """This round's v3, located from its run receipt by the read-only reader and delivered to a Cassandra store.
+
+    Only the command of ``run.sh noon`` runs this, after the handoff and while its Dataset
+    service is up. ``main`` alone is the entry of ``noon-preview`` and needs no object service.
+    The three order lines are delivered twice, by two processes running the same entry, and
+    three other sources are refused by the same assertion; the summary goes under
+    ``downstream`` in noon-report.json. An AssertionError is raised when a check failed, after
+    the evidence was written.
+    """
+    published = s3.module("noon_published", SMOKE / "data-integration-wp2-8/ontology_sync_published.py")
+    report = json.loads((state / "noon-report.json").read_text())
+    report["downstream"] = published.run(state, report, dataset=os.environ["WP23_DVS"], reader=handles["reader"],
+                                         bin_dir=os.environ["BIN_DIR"], type_id="OrderLinePrice")
+    s3.write_json(state / "noon-report.json", report)
+
+
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    state = Path(sys.argv[1])
+    downstream(state, main(state))

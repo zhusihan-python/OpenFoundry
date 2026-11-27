@@ -1,42 +1,47 @@
 """Deliver the v3 that a Pipeline run of this round published, located from its run receipt.
 
 The copies embedded in ``ontology_sync.py`` are the v3 outputs of one earlier run, at
-revision c48a709f9. They hold the same SKUs, costs and SHA256 as the v3 of every later
-round, and so does the v1 of each round, which replays the same input: neither the values
-nor the hash of the bytes tells this round's v3 from the archived transaction or from
-another file. What names it is the receipt of its own run. A read-only reader starts from
-the run receipt the lingxing smoke saved, finds the one transaction of the output dataset
-whose ``metadata.transaction_rid`` repeats the ``transaction_rid`` of the committed
-resource of that run, the version that cut it and its one file, downloads the file and
-hashes the bytes itself. The rows are delivered once through the conditional put of
-``ontology_sync.py`` and the tenant is read back through the list route and then the
-detail route of each listed object.
+revision c48a709f9. They hold the same rows and SHA256 as the v3 of every later round, and so
+does the v1 of each round, which replays the same input: neither the values nor the hash of the
+bytes tells this round's v3 from the archived transaction or from another file. What names it is
+the receipt of its own run. A read-only reader starts from the run receipt the smoke saved, finds
+the one transaction of the output dataset whose ``metadata.transaction_rid`` repeats the
+``transaction_rid`` of the committed resource of that run, the version that cut it and its one
+file, downloads the file and hashes the bytes itself. The rows are delivered once through the
+conditional put of ``ontology_sync.py`` and the tenant is read back through the list route and
+then the detail route of each listed object.
 
-One assertion accepts or refuses what a tenant holds. It accepts a tenant that holds
-exactly the three objects whose ids the client derives from the tenant, the type, the
-transaction of the receipt and each SKU, each with the cost of its row and an ``_source``
-that repeats the dataset, version, transaction, file and SHA256 of that read and the line
-of its SKU in that file. The id of an object is the one derived for the SKU it holds, so
-two objects that swapped their complete properties are refused. Given another source and
-its rows, the same assertion tells whether a tenant holds exactly that source. That must
-hold before the refusal of the three other sources counts: the archived transaction, and
-the v1 and v2 this round published, of which v1 has the bytes and the hash of v3.
+One assertion accepts or refuses what a tenant holds. It accepts a tenant that holds exactly the
+three objects whose ids the client derives from the tenant, the type, the transaction of the
+receipt and each key of its file, each with the values of its row and an ``_source`` that
+repeats the dataset, version, transaction, file and SHA256 of that read and the line of its key
+in that file. The id of an object is the one derived for the key it holds, so two objects that
+swapped their complete properties are refused. Given another source and its rows, the same
+assertion tells whether a tenant holds exactly that source. That must hold before the refusal of
+the three other sources counts: the archived transaction, and the v1 and v2 this round
+published, of which v1 has the bytes and the hash of v3.
 
-    python3 ontology_sync_published.py --state DIR --dataset-base URL --endpoint URL [--tenant ID]
-    python3 ontology_sync_published.py --state DIR --endpoint URL --tenant ID --verify-only
+    python3 ontology_sync_published.py --state DIR --dataset-base URL --endpoint URL [--tenant ID] [--type TYPE]
+    python3 ontology_sync_published.py --state DIR --endpoint URL --tenant ID --verify-only [--type TYPE]
 
-``--state`` is the evidence directory the lingxing smoke of this round printed. The
-read-only account is the bearer in ``WP34_TOKEN`` and ``--dataset-base`` defaults to
-``WP34_DVS``. The first form is the entry of a downstream consumer. Each run delivers once
-and writes product-cost-source.json, the source the receipt names, and product-cost-v3.ndjson,
-the bytes it downloaded. The first run creates the three objects; the same command run again,
-after a restart of the downstream process, creates none and is accepted the same way, because
-a redelivery of the same key and content succeeds by #90. The second form reads a tenant back
-and judges it against product-cost-source.json: nothing is synced and the Dataset service is
-not asked. Both print one JSON report with the readback and return 0 only when the assertion
-accepts the tenant. ``run.sh lingxing`` runs the first form twice, as two processes with the
-same command, and the second on three tenants that received the other sources, against a
-Cassandra store it starts and stops itself.
+``--state`` is the evidence directory the smoke of this round printed. The read-only account is
+the bearer in ``WP34_TOKEN`` and ``--dataset-base`` defaults to ``WP34_DVS``. The first form is
+the entry of a downstream consumer. Each run delivers once and writes ``<prefix>-source.json``,
+the source the receipt names, and ``<prefix>-v3.ndjson``, the bytes it downloaded. The first run
+creates the three objects; the same command run again, after a restart of the downstream process,
+creates none and is accepted the same way, because a redelivery of the same key and content
+succeeds by #90. The second form reads a tenant back and judges it against the source file:
+nothing is synced and the Dataset service is not asked. Both print one JSON report with the
+readback and return 0 only when the assertion accepts the tenant. ``run.sh lingxing`` and
+``run.sh noon`` run the first form twice, as two processes with the same command, and the second
+on three tenants that received the other sources, against a Cassandra store each smoke starts and
+stops itself.
+
+``--type`` selects the synced type and with it the smoke whose report names the round, the key
+and the values of its rows and the prefix of its files: ``ProductCost``, the default, is a SKU
+and its cost under ``product-cost``, and ``OrderLinePrice`` an order line number with its
+currency and unit price under ``order-line-price``. ``Kind`` holds what differs between the two;
+every function below is theirs in common.
 """
 
 import argparse
@@ -49,6 +54,9 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
+from collections import defaultdict
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -63,19 +71,17 @@ def _sibling(name):
     return sys.modules[name]
 
 
-_sibling("ontology_sync"), _sibling("ontology_sync_replay")
-from ontology_sync import (SOURCE_ATTRIBUTES, SyncError, archived_transaction, rows_of, stable_object_id,  # noqa: E402
-                           sync_product_costs)
-from ontology_sync_replay import ROUTE, Stack, backend_is_cassandra, call  # noqa: E402
+_sibling("ontology_sync"), _sibling("ontology_sync_replay"), _sibling("ontology_sync_noon")
+from ontology_sync import (ENTRIES, SOURCE_ATTRIBUTES, SyncError, archived_transaction, rows_of,  # noqa: E402
+                           stable_object_id)
+from ontology_sync_noon import EXPECTED_VALUES  # noqa: E402
+from ontology_sync_replay import Stack, backend_is_cassandra, call  # noqa: E402
 
-# The costs this round's v3 holds, each a string: SKU and cost.
-EXPECTED_COSTS = {"0007": "0.00", "W-2": "9.25", "D3": "17.40"}
-# The lingxing smoke publishes the costs of product v1, v2 and v1 again as output v1, v2 and v3.
+# The lingxing smoke publishes the costs of product v1, v2 and v1 again as output v1, v2 and v3,
+# the noon smoke the order lines of its v1, v2 and v1 again.
 VERSION = 3
 TOKEN = "WP34_TOKEN"  # the bearer of the read-only account
-SOURCE_FILE = "product-cost-source.json"
-DOWNLOADED_FILE = "product-cost-v3.ndjson"
-DOWNSTREAM_FILE = "product-cost-downstream.json"
+DEFAULT = "ProductCost"  # the type of the commands that name none
 # What the smoke recorded of one build, by the name of the source the reader located.
 RECORDED = {"run_id": "pipeline_run_id", "pipeline_output_transaction_rid": "pipeline_output_transaction_rid",
             "content_hash": "pipeline_content_hash", "dataset": "output_dataset", "version": "output_version",
@@ -86,6 +92,75 @@ RECORDED = {"run_id": "pipeline_run_id", "pipeline_output_transaction_rid": "pip
 OTHER_SOURCES = (("archived_transaction", None, ("dataset", "transaction", "file")),
                  ("first_output", 1, ("version", "transaction", "file")),
                  ("second_output", 2, ("version", "transaction", "file", "sha256")))
+
+
+@dataclass(frozen=True)
+class Kind:
+    """One synced type: what differs between the ProductCost rows of lingxing and the
+    OrderLinePrice rows of noon. Everything else in this module is theirs in common.
+
+    A row of the file is named by ``key`` and known by the values ``values`` reads beside that
+    key: a cost, or a currency and a unit price. ``expected`` holds them for each key of the v3
+    this round published and ``value_name`` is how a problem names them. ``report`` is the report
+    of that round, whose ``organization``, the publisher of the round, is the tenant of the
+    delivery. The evidence of a run is written to ``<prefix>-<name>`` in its state directory.
+    """
+
+    type_id: str
+    expected: dict
+    values: Callable[[dict], object]
+    value_name: str
+    report: str
+    prefix: str
+
+    @property
+    def key(self):
+        """The property that identifies one row of this type in its transaction."""
+        return ENTRIES[self.type_id][0]
+
+    @property
+    def sync(self):
+        """The entry of ``ontology_sync.py`` that delivers the rows of this type."""
+        return ENTRIES[self.type_id][1]
+
+    @property
+    def route(self):
+        """The ontology route of this type's objects: the list, and one object by its id."""
+        return f"/api/v1/ontology/types/{self.type_id}/objects/"
+
+    @property
+    def source_file(self):
+        return f"{self.prefix}-source.json"
+
+    @property
+    def downloaded_file(self):
+        return f"{self.prefix}-v3.ndjson"
+
+    @property
+    def downstream_file(self):
+        return f"{self.prefix}-downstream.json"
+
+
+def _cost(row):
+    """The values of a ProductCost row beside its SKU."""
+    return row["cg_price"]
+
+
+def _price(row):
+    """The values of an OrderLinePrice row beside its order line number."""
+    return [row["currency"], row["unit_price"]]
+
+
+PRODUCT_COST = Kind(type_id="ProductCost", expected={"0007": "0.00", "W-2": "9.25", "D3": "17.40"},
+                    values=_cost, value_name="cg_price", report="product-report.json", prefix="product-cost")
+ORDER_LINE_PRICE = Kind(type_id="OrderLinePrice", expected=EXPECTED_VALUES, values=_price,
+                        value_name="currency and unit_price", report="noon-report.json", prefix="order-line-price")
+KINDS = {kind.type_id: kind for kind in (PRODUCT_COST, ORDER_LINE_PRICE)}
+# The lingxing evidence keeps the names of #95: what this round's v3 holds, each a string, and its files.
+EXPECTED_COSTS = PRODUCT_COST.expected
+SOURCE_FILE = PRODUCT_COST.source_file
+DOWNLOADED_FILE = PRODUCT_COST.downloaded_file
+DOWNSTREAM_FILE = PRODUCT_COST.downstream_file
 
 
 class ReceiptError(Exception):
@@ -162,7 +237,7 @@ def source_of(binding):
     return {name: binding[name] for name in SOURCE_ATTRIBUTES if name != "line"}
 
 
-def locate(reader, receipt):
+def locate(reader, receipt, kind=PRODUCT_COST):
     """The source one Pipeline run published, as the read-only reader finds it from its run receipt.
 
     Returns the source and the bytes of its file. The receipt is the answer the Pipeline
@@ -170,6 +245,7 @@ def locate(reader, receipt):
     and, in ``transaction_rid``, the handle the Pipeline gave the transaction. One
     transaction of the output dataset repeats that handle in ``metadata.transaction_rid``:
     the version that cut it holds one file, whose bytes are downloaded and hashed here.
+    ``lines`` of the source is the line of each key of ``kind`` in that file.
     """
     run_id, pipeline_id = receipt.get("id"), receipt.get("pipeline_id")
 
@@ -218,7 +294,7 @@ def locate(reader, receipt):
     try:
         rows = [json.loads(line) for line in raw.splitlines()]
         preview = [dict(zip(metadata["preview_columns"], values)) for values in metadata["preview_rows"]]
-        lines, _ = lines_and_values(rows)
+        lines, _ = lines_and_values(rows, kind)
     except (ValueError, KeyError, TypeError) as error:
         refuse(f"file {file['id']} or its transaction does not parse: {error!r}")
     if (metadata["size_bytes"], metadata["row_count"]) != (len(raw), len(rows)) or preview != rows:
@@ -230,11 +306,12 @@ def locate(reader, receipt):
             "content_hash": content_hash, "size_bytes": len(raw), "row_count": len(rows), "lines": lines}, raw
 
 
-def read_back(endpoint, tenant):
-    """The ProductCost objects of one tenant: the list, then each listed object by id."""
-    listed = call(endpoint, "GET", ROUTE + "?per_page=50", tenant)
+def read_back(endpoint, tenant, kind=PRODUCT_COST):
+    """The objects of one type that one tenant holds: the list, then each listed object by id."""
+    route = kind.route
+    listed = call(endpoint, "GET", route + "?per_page=50", tenant)
     return {"total": listed["total"],
-            "objects": [call(endpoint, "GET", ROUTE + item["id"], tenant) for item in listed["data"]]}
+            "objects": [call(endpoint, "GET", route + item["id"], tenant) for item in listed["data"]]}
 
 
 def _same(left, right):
@@ -242,68 +319,75 @@ def _same(left, right):
     return type(left) is type(right) and left == right
 
 
-def lines_and_values(rows):
-    """The line and the cost of each SKU in one file, by SKU."""
-    return ({row["sku"]: number for number, row in enumerate(rows, 1)},
-            {row["sku"]: row["cg_price"] for row in rows})
+def lines_and_values(rows, kind=PRODUCT_COST):
+    """The line and the values of each key in one file, by key."""
+    return ({row[kind.key]: number for number, row in enumerate(rows, 1)},
+            {row[kind.key]: kind.values(row) for row in rows})
 
 
-def row_differences(source, lines, values, tenant, store):
-    """Where the ProductCost objects a tenant holds differ from the rows of one file.
+def _lenient(properties):
+    """The properties of a read-back object, read as None where the object lacks one."""
+    return defaultdict(lambda: None, properties)
+
+
+def row_differences(source, lines, values, tenant, store, kind=PRODUCT_COST):
+    """Where the objects a tenant holds differ from the rows of one file.
 
     ``source`` names the dataset, version, transaction, file and SHA256 of the file, ``lines``
-    the line of each SKU in it and ``values`` the cost of each SKU. The tenant holds exactly
-    that file when it holds one object per SKU and nothing else, when the id of each object is
-    the id the client derives from the tenant, the type, the transaction of the file and its
-    SKU, and when the object keeps the cost of its SKU and an ``_source`` that repeats the
-    source and the line of its SKU. An empty list accepts the tenant.
+    the line of each key in it and ``values`` the values of each key. The tenant holds exactly
+    that file when it holds one object per key and nothing else, when the id of each object is
+    the id the client derives from the tenant, the type, the transaction of the file and the key
+    it holds, and when the object keeps the values of its row and an ``_source`` that repeats
+    the source and the line of its key. An empty list accepts the tenant.
     """
     problems = []
+    key, type_id = kind.key, kind.type_id
     ids = sorted(obj["id"] for obj in store["objects"])
-    expected = sorted(stable_object_id(tenant, "ProductCost", source["transaction"], {"sku": sku}) for sku in values)
+    expected = sorted(stable_object_id(tenant, type_id, source["transaction"], {key: name}) for name in values)
     if store["total"] != len(values) or ids != expected:
         problems.append(f"{store['total']} listed and {len(ids)} read back, expected the {len(values)} objects of "
                         f"transaction {source['transaction']}: {ids} is not {expected}")
     for obj in store["objects"]:
         properties = obj["properties"]
         where = f"object {obj['id']}"
-        if obj["object_type_id"] != "ProductCost":
+        if obj["object_type_id"] != type_id:
             problems.append(f"{where} is a {obj['object_type_id']}")
-        sku = properties.get("sku")
-        if sku not in values:
-            problems.append(f"{where}: sku {sku!r} is not one of {sorted(values)}")
+        name = properties.get(key)
+        if name not in values:
+            problems.append(f"{where}: {key} {name!r} is not one of {sorted(values)}")
             continue
-        # The row agrees with the SKU it names, so the id is what places it: without this a
+        # The row agrees with the key it names, so the id is what places it: without this a
         # tenant that swapped the complete properties of two objects would be accepted.
-        if obj["id"] != stable_object_id(tenant, "ProductCost", source["transaction"], {"sku": sku}):
-            problems.append(f"{where}: is the id of another row, expected the id of sku {sku!r}")
-        if properties.get("cg_price") != values[sku]:
-            problems.append(f"{where}: cg_price {properties.get('cg_price')!r}, expected {values[sku]!r}")
-        want = {**source, "line": lines[sku]}
+        if obj["id"] != stable_object_id(tenant, type_id, source["transaction"], {key: name}):
+            problems.append(f"{where}: is the id of another row, expected the id of {key} {name!r}")
+        held = kind.values(_lenient(properties))
+        if held != values[name]:
+            problems.append(f"{where}: {kind.value_name} {held!r}, expected {values[name]!r}")
+        want = {**source, "line": lines[name]}
         got = properties.get("_source")
-        for name in SOURCE_ATTRIBUTES:
-            if not isinstance(got, dict) or not _same(got.get(name), want[name]):
-                problems.append(f"{where} _source.{name}: {got.get(name) if isinstance(got, dict) else got!r}, "
-                                f"its file reads {want[name]!r}")
+        for attribute in SOURCE_ATTRIBUTES:
+            if not isinstance(got, dict) or not _same(got.get(attribute), want[attribute]):
+                problems.append(f"{where} _source.{attribute}: {got.get(attribute) if isinstance(got, dict) else got!r}, "
+                                f"its file reads {want[attribute]!r}")
     return problems
 
 
-def differences(binding, tenant, store):
-    """Where the ProductCost objects a tenant holds differ from the rows of the source ``binding`` names.
+def differences(binding, tenant, store, kind=PRODUCT_COST):
+    """Where the objects a tenant holds differ from the rows of the source ``binding`` names.
 
-    This is the one acceptance of a delivery: ``row_differences`` for the three costs this
+    This is the one acceptance of a delivery: ``row_differences`` for the values this
     round's v3 holds. It is run against the store after each delivery of this round's v3 and
     against a store that received another source. An empty list accepts the tenant.
     """
-    return row_differences(source_of(binding), binding["lines"], EXPECTED_COSTS, tenant, store)
+    return row_differences(source_of(binding), binding["lines"], kind.expected, tenant, store, kind)
 
 
-def deliver(endpoint, tenant, source, raw):
+def deliver(endpoint, tenant, source, raw, kind=PRODUCT_COST):
     """The rows of one source, delivered once through the sync client."""
     rows = rows_of(raw, source)
-    results = sync_product_costs(endpoint, tenant, rows)
+    results = kind.sync(endpoint, tenant, rows)
     return {"created": sum(result.created for result in results),
-            "results": [{"line": row["_source"]["line"], "sku": row["sku"], "object_id": result.object_id,
+            "results": [{"line": row["_source"]["line"], kind.key: row[kind.key], "object_id": result.object_id,
                          "created": result.created} for row, result in zip(rows, results)]}
 
 
@@ -313,9 +397,9 @@ def build_of(report, version):
     return build
 
 
-def this_round(state):
+def this_round(state, kind=PRODUCT_COST):
     """The report of this round and the saved run receipt of the v3 it published."""
-    report = json.loads((state / "product-report.json").read_text())
+    report = json.loads((state / kind.report).read_text())
     return report, json.loads((state / f"pipeline-{build_of(report, VERSION)['ordinal']}-run.json").read_text())
 
 
@@ -335,13 +419,13 @@ def _json(text):
         return None
 
 
-def _held(store):
-    """What the objects of a readback hold: their count, the ``_source`` they share and each SKU's cost."""
+def _held(store, kind=PRODUCT_COST):
+    """What the objects of a readback hold: their count, the ``_source`` they share and each key's values."""
     objects = store.get("objects") or []
     sources = {json.dumps({key: value for key, value in (obj["properties"].get("_source") or {}).items() if key != "line"},
                           sort_keys=True) for obj in objects}
     return {"count": len(objects), "source": _json(next(iter(sources))) if len(sources) == 1 else None,
-            "values": {obj["properties"].get("sku"): obj["properties"].get("cg_price") for obj in objects}}
+            "values": {obj["properties"].get(kind.key): kind.values(_lenient(obj["properties"])) for obj in objects}}
 
 
 def main(argv=None):
@@ -353,53 +437,58 @@ def main(argv=None):
     """
     parser = argparse.ArgumentParser(
         description="Deliver the v3 a Pipeline run of this round published, located from its run receipt.")
-    parser.add_argument("--state", type=Path, required=True, help="evidence directory the lingxing smoke of this round printed")
+    parser.add_argument("--state", type=Path, required=True, help="evidence directory the smoke of this round printed")
     parser.add_argument("--dataset-base", default=os.environ.get("WP34_DVS"),
                         help="Dataset service the read-only account reads; default: WP34_DVS")
     parser.add_argument("--endpoint", required=True, help="object service base URL")
     parser.add_argument("--tenant", help="tenant to sync into or to read back; default: the organization of this round")
+    parser.add_argument("--type", choices=tuple(KINDS), default=DEFAULT,
+                        help="synced object type, which also selects the report of its smoke and the prefix of its "
+                             "files; default: ProductCost")
     parser.add_argument("--verify-only", action="store_true",
-                        help="read the tenant back against product-cost-source.json; nothing is synced and the Dataset "
+                        help="read the tenant back against <prefix>-source.json; nothing is synced and the Dataset "
                              "service is not asked")
     args = parser.parse_args(argv)
+    kind = KINDS[args.type]
     try:
-        report, receipt = this_round(args.state)
+        report, receipt = this_round(args.state, kind)
         tenant = args.tenant or report["organization"]
         if args.verify_only:
-            binding = json.loads((args.state / SOURCE_FILE).read_text())
+            binding = json.loads((args.state / kind.source_file).read_text())
             delivered = None
         else:
             if not args.dataset_base or not os.environ.get(TOKEN):
                 parser.error(f"a delivery needs --dataset-base and the bearer of a read-only account in {TOKEN}")
-            binding, raw = locate(DatasetReader(args.dataset_base, os.environ[TOKEN]), receipt)
-            (args.state / SOURCE_FILE).write_text(json.dumps(binding, indent=2) + "\n")
-            (args.state / DOWNLOADED_FILE).write_bytes(raw)
-            delivered = deliver(args.endpoint, tenant, source_of(binding), raw)
-        store = read_back(args.endpoint, tenant)
+            binding, raw = locate(DatasetReader(args.dataset_base, os.environ[TOKEN]), receipt, kind)
+            (args.state / kind.source_file).write_text(json.dumps(binding, indent=2) + "\n")
+            (args.state / kind.downloaded_file).write_bytes(raw)
+            delivered = deliver(args.endpoint, tenant, source_of(binding), raw, kind)
+        store = read_back(args.endpoint, tenant, kind)
     except (ReceiptError, SyncError, OSError, ValueError, KeyError, TypeError, IndexError) as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         return 1
-    problems = differences(binding, tenant, store)
+    problems = differences(binding, tenant, store, kind)
     print(json.dumps({"revision": report["revision"], "tenant": tenant, "source": source_of(binding), "lines": binding["lines"],
                       "receipt": {name: binding[name] for name in binding if name not in SOURCE_ATTRIBUTES and name != "lines"},
                       "delivered": delivered, "store": store, "problems": problems, "accepted": not problems}, indent=2))
     return 0 if not problems else 1
 
 
-def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
+def run(state, report, *, dataset, reader, bin_dir, pull="missing", type_id=DEFAULT):
     """This round's v3 delivered to a Cassandra store, and three other sources refused by the same assertion.
 
-    Called by the lingxing smoke while its Dataset service is up: ``dataset`` is the base
-    URL of that service and ``reader`` the bearer of its read-only account. The store is
-    the Compose stack of ``ontology_sync_replay.py``, started with the object service
-    binary of ``bin_dir`` and stopped before returning. The delivery entry is run twice,
-    by two processes with the same command, as a downstream consumer runs it again after a
-    restart: the first creates the three objects, the second none, and each reads the
-    tenant back on its own. Each process prints a report; each report is kept as its own
-    file and the whole evidence is written to product-cost-downstream.json. The returned
-    summary is what the product report keeps. An AssertionError is raised when a check
-    failed, after the evidence was written.
+    Called by the lingxing smoke, or by the noon smoke with ``type_id="OrderLinePrice"``, while
+    its Dataset service is up: ``dataset`` is the base URL of that service and ``reader`` the
+    bearer of its read-only account. The store is the Compose stack of
+    ``ontology_sync_replay.py``, started with the object service binary of ``bin_dir`` and
+    stopped before returning. The delivery entry is run twice, by two processes with the same
+    command, as a downstream consumer runs it again after a restart: the first creates the three
+    objects, the second none, and each reads the tenant back on its own. Each process prints a
+    report; each report is kept as its own file and the whole evidence is written to
+    ``<prefix>-downstream.json``. The returned summary is what the smoke's report keeps. An
+    AssertionError is raised when a check failed, after the evidence was written.
     """
+    kind = KINDS[type_id]
     state = Path(state)
     build = build_of(report, VERSION)
     tenant = report["organization"]
@@ -413,14 +502,14 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
         evidence["checks"].append({"name": label, "passed": bool(condition), "detail": detail})
 
     def command(script, name, *arguments):
-        """One entry of this directory run as a process. Its report is kept as product-cost-<name>.json."""
+        """One entry of this directory run as a process. Its report is kept as <prefix>-<name>.json."""
         argv = [sys.executable, "-I", str(HERE / script), *map(str, arguments)]
         done = subprocess.run(argv, capture_output=True, text=True, env=env)
         printed = _json(done.stdout)
         if printed is not None:
-            (state / f"product-cost-{name}.json").write_text(json.dumps(printed, indent=2) + "\n")
+            (state / f"{kind.prefix}-{name}.json").write_text(json.dumps(printed, indent=2) + "\n")
         return {"command": argv, "exit": done.returncode, "stderr": done.stderr.strip(), "report": printed,
-                "evidence": f"product-cost-{name}.json" if printed is not None else None}
+                "evidence": f"{kind.prefix}-{name}.json" if printed is not None else None}
 
     try:
         args = argparse.Namespace(bin_dir=bin_dir, project=f"of-ontology-sync-{os.getpid()}", pull=pull, startup_timeout=240)
@@ -428,16 +517,18 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
             endpoint = evidence["endpoint"] = stack.endpoint
             evidence["stack"], evidence["backend"] = stack.describe(), backend_is_cassandra(endpoint, tenant)
 
+            # The default type is named by no argument, so the commands of #95 are unchanged.
+            typed = () if kind is PRODUCT_COST else ("--type", kind.type_id)
             # This round's v3, delivered by the entry: the same command, run by two processes.
-            delivery_command = ("--state", state, "--dataset-base", dataset, "--endpoint", endpoint)
+            delivery_command = ("--state", state, "--dataset-base", dataset, "--endpoint", endpoint, *typed)
             first = command("ontology_sync_published.py", "delivery-1", *delivery_command)
             second = command("ontology_sync_published.py", "delivery-2", *delivery_command)
             deliveries = evidence["deliveries"] = [first, second]
-            binding = _json((state / SOURCE_FILE).read_text())
+            binding = _json((state / kind.source_file).read_text())
             if not (first["report"] and second["report"] and binding):
                 raise AssertionError("a delivery printed no report:\n" + first["stderr"] + second["stderr"])
             check("this round's v3 is delivered by the entry, which creates three objects and is accepted, exit 0",
-                  first["exit"] == 0 and first["report"]["accepted"] and first["report"]["delivered"]["created"] == len(EXPECTED_COSTS),
+                  first["exit"] == 0 and first["report"]["accepted"] and first["report"]["delivered"]["created"] == len(kind.expected),
                   first["stderr"] + json.dumps(first["report"]["problems"]))
             check("the same command run again by another process creates nothing, reads the same three objects back "
                   "and is accepted, exit 0",
@@ -451,7 +542,7 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
                   == [item["object_id"] for item in second["report"]["delivered"]["results"]])
             differing = receipt_differs(binding, report, build)
             check("the run receipt the entry followed names the v3 the smoke recorded", not differing, "; ".join(differing))
-            downloaded = (state / DOWNLOADED_FILE).read_bytes()
+            downloaded = (state / kind.downloaded_file).read_bytes()
             check("the read-only account downloaded the bytes the smoke's reader downloaded, and the hash is of those bytes",
                   downloaded == (state / build["artifact"]).read_bytes()
                   and hashlib.sha256(downloaded).hexdigest() == binding["sha256"] == build["sha256"],
@@ -469,24 +560,25 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
                 entry = refused[name] = {"tenant": other_tenant, "expected_differs_in": list(differs)}
                 if version is None:
                     # The default call of ontology_sync.py delivers the embedded copy of the archived v3.
-                    _, _, intended, raw = archived_transaction()
-                    done = command("ontology_sync.py", f"refused-{name}-delivered", endpoint, "--tenant", other_tenant)
+                    _, _, intended, raw = archived_transaction(None, kind.type_id)
+                    done = command("ontology_sync.py", f"refused-{name}-delivered", endpoint, "--tenant", other_tenant, *typed)
                     default = done["report"] or {}
                     entry["delivered"] = {"command": done["command"], "exit": done["exit"], "evidence": done["evidence"],
                                           "source": default.get("source"), "created": default.get("created")}
                 else:
                     intended, raw = locate(DatasetReader(dataset, reader),
-                                           json.loads((state / f"pipeline-{build_of(report, version)['ordinal']}-run.json").read_text()))
-                    results = sync_product_costs(endpoint, other_tenant, rows_of(raw, source_of(intended)))
+                                           json.loads((state / f"pipeline-{build_of(report, version)['ordinal']}-run.json").read_text()),
+                                           kind)
+                    results = kind.sync(endpoint, other_tenant, rows_of(raw, source_of(intended)))
                     entry["delivered"] = {"source": source_of(intended), "created": sum(result.created for result in results)}
-                lines, values = lines_and_values([json.loads(line) for line in raw.splitlines()])
+                lines, values = lines_and_values([json.loads(line) for line in raw.splitlines()], kind)
                 entry["intended"] = {"source": source_of(intended), "rows": len(values), "values": values}
                 judged = entry["judged"] = command("ontology_sync_published.py", f"refused-{name}", "--state", state, "--endpoint",
-                                                   endpoint, "--tenant", other_tenant, "--verify-only")
+                                                   endpoint, "--tenant", other_tenant, "--verify-only", *typed)
                 verdict = judged["report"] or {}
                 store = verdict.get("store") or {}
-                entry["held"] = _held(store)
-                own = row_differences(source_of(intended), lines, values, other_tenant, store)
+                entry["held"] = _held(store, kind)
+                own = row_differences(source_of(intended), lines, values, other_tenant, store, kind)
                 entry["holds_its_own_source"] = not own
                 # The archived source is delivered by a process of its own, the two others in this one.
                 delivered_ok = version is not None or entry["delivered"]["exit"] == 0
@@ -497,7 +589,7 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
                                                for attribute in expected}
                 entry["differs_in"] = [attribute for attribute, same in entry["same_as_this_round"].items() if not same]
                 entry.update(expected="refused, exit 1", problems=verdict.get("problems") or [],
-                             same_values_as_this_round=entry["held"]["values"] == EXPECTED_COSTS)
+                             same_values_as_this_round=entry["held"]["values"] == kind.expected)
                 # The refusal must be for the identity alone: the assertion names each attribute that
                 # differs and nothing else of the _source, and the id set. The archived transaction and
                 # the v1 hold the values of this round; only the v2 holds others.
@@ -510,16 +602,16 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
                       judged["stderr"] + json.dumps(verdict.get("store")))
 
             again = evidence["readback"] = command("ontology_sync_published.py", "readback", "--state", state, "--endpoint",
-                                                   endpoint, "--tenant", tenant, "--verify-only")
+                                                   endpoint, "--tenant", tenant, "--verify-only", *typed)
             check("this round's tenant still holds the same three objects after the other sources were delivered, exit 0",
                   again["exit"] == 0 and (again["report"] or {}).get("store") == first["report"]["store"], again["stderr"])
     except Exception as error:  # recorded, so that the evidence is written whatever happened
         evidence["error"] = f"{type(error).__name__}: {error}"
     evidence["passed"] = "error" not in evidence and all(check["passed"] for check in evidence["checks"])
-    (state / DOWNSTREAM_FILE).write_text(json.dumps(evidence, indent=2) + "\n")
+    (state / kind.downstream_file).write_text(json.dumps(evidence, indent=2) + "\n")
     failed = [check["name"] + ": " + check["detail"] for check in evidence["checks"] if not check["passed"]]
     assert evidence["passed"], "; ".join([evidence.get("error", "")] + failed)
-    return {"evidence": DOWNSTREAM_FILE, "source": first["report"]["source"],
+    return {"evidence": kind.downstream_file, "source": first["report"]["source"],
             "deliveries": [{"exit": delivery["exit"], "created": delivery["report"]["delivered"]["created"],
                             "count": delivery["report"]["store"]["total"], "evidence": delivery["evidence"]}
                            for delivery in (first, second)],
