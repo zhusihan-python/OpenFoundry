@@ -18,3 +18,30 @@ Every product snapshot is published with one formal input contract: the fields `
 A batch published before the contract existed was sent without a schema, and that request is not rewritten. The Dataset service fingerprints the exact request, so the request a batch is delivered with follows its first publication. The test publishes the first batch to a separate dataset as it was sent then: the same request replays to the original receipt, and the same batch key sent with the contract schema is refused with 409 `IDEMPOTENCY_KEY_CONFLICT` and creates no version. That version keeps its rows readable by version and answers no versioned schema, 422 `dataset_schema_format_unsupported`, so it cannot be bound to the contract. To bind it, publish the batch again under the contract as a new version.
 
 The evidence directory contains product-report.json, both source batch files, two downloaded product files, each versioned schema answer, the saved graph and run of each Pipeline run, three downloaded cost files, the graph and run of each refused input, the refused replay of the earlier batch and its unsupported schema answer, binary checksums and Compose image IDs. The Docker project and its temporary identities are isolated. The report records each upstream batch, both Dataset transactions and, for each Pipeline run, its input version and transaction, the schema hash it is bound to, output version and transaction, and the SHA256 a downstream consumer can expect. Under `schema` it lists the contract, its content hash and every schema read with its status and artifact; under `legacy` the earlier batch, its two replays and its unsupported schema read; under `pipeline.refusals` the saved input, node states and errors of the two refused runs. A real approved Lingxing export is still needed to validate source ownership and production field mapping: the source pages are simulated, and the services that carry the data are real. The browser checks of the noon case are not part of this run.
+
+## Downstream replay of the three archived transactions
+
+The downstream consumers of the three v3 outputs are the sync clients of `ontology_sync.py`. Each archived transaction is delivered twice through its client into `object-database-service` on a real Cassandra store: `ProductCost` from lingxing, `OrderLinePrice` from noon and `SettlementLine` from Amazon. The inputs are the copies embedded in `ontology_sync.py`; the evidence directory of an earlier run is not read. From a clean checkout of the revision under test, with Docker Desktop running, run from the repository root:
+
+```sh
+(
+set -e
+EVIDENCE=${EVIDENCE:-$(mktemp -d)}
+echo "evidence: $EVIDENCE"
+docker image inspect cassandra:5.0 >/dev/null 2>&1 || docker pull cassandra:5.0
+docker image inspect golang:1.26.11 >/dev/null 2>&1 || docker pull golang:1.26.11
+docker volume create of-wp2-8-downstream-gomod
+mkdir "$EVIDENCE/bin"
+docker run --rm -v "$PWD":/src:ro -w /src -v of-wp2-8-downstream-gomod:/go/pkg/mod -v "$EVIDENCE/bin":/out \
+    -e CGO_ENABLED=0 -e GOFLAGS="-trimpath -buildvcs=false" golang:1.26.11 \
+    go build -o /out/object-database-service ./services/object-database-service/cmd/object-database-service
+git rev-parse HEAD
+openssl dgst -sha256 "$EVIDENCE/bin/object-database-service"
+
+python3 tools/smoke/data-integration-wp2-8/ontology_sync_replay.py --type ProductCost --bin-dir "$EVIDENCE/bin" --output "$EVIDENCE/product-cost-replay.json"
+python3 tools/smoke/data-integration-wp2-8/ontology_sync_replay.py --type OrderLinePrice --bin-dir "$EVIDENCE/bin" --output "$EVIDENCE/order-line-price-replay.json"
+python3 tools/smoke/data-integration-wp2-8/ontology_sync_replay.py --type SettlementLine --bin-dir "$EVIDENCE/bin" --output "$EVIDENCE/settlement-line-replay.json"
+)
+```
+
+The block stops at the command that fails, so a failed build is never followed by a replay, and it prints its evidence directory first. `$EVIDENCE` is a new directory for every run; set it to keep the evidence of one run. A directory whose `bin` exists is refused, so the binary of an earlier run is never read. The two images of `ontology_sync.compose.yaml` are pulled only when they are missing, and the first build downloads the modules of `go.mod` and `go.sum` from `proxy.golang.org` into the volume `of-wp2-8-downstream-gomod`. The binary is built with the `-trimpath` of `make build-services`, statically and without VCS stamping, for Linux and the architecture of `golang:1.26.11`, arm64 on Apple Silicon. Each replay starts the Compose stack of `ontology_sync.compose.yaml` with that binary, removes it on exit and returns 0 only when every scenario passed. `revision` in each file is the revision of the archived input and not of the code under test, which is the one `git rev-parse HEAD` printed. In each of the three files expect `passed` to be true and `stack.binary_sha256` to be the SHA256 above, so all three runs are bound to one binary. Under `scenarios.replay_twice.deliveries` the first delivery holds three results with `created` true and the second the same three object ids with `created` false. The objects read back after the first delivery, after the replay and after the refused change are the same three, one per row and each with its archived value: `by_sku` in both deliveries and `after` of `other_content_is_rejected` for `ProductCost`, `by_item_nr` in both deliveries and the same `after` for `OrderLinePrice`, and `lines` in both deliveries and in `changed_total_is_rejected` for `SettlementLine`. In `settlement-line-replay.json` the second and third line are the order and the refund of order `000-0000000-0000004` and SKU `DEMO-SKU-D4`, two object ids with totals `7.44` and `-7.44`, and `total` is `59.57`, the exact decimal sum of the three lines, after each delivery and after the refusal. The evidence is in `$EVIDENCE`: the binary and the three files.
