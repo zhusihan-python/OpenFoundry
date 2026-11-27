@@ -31,6 +31,13 @@ that were already stored instead of duplicating them.
 
 ``--type OrderLinePrice`` syncs the archived noon v3 transaction of the same
 revision the same way; the order line number ``item_nr`` is its key property.
+
+``--type SettlementLine`` syncs the archived Amazon v3 transaction of the same
+revision the same way. A settlement line has no key property of its own: its second
+and third line are an order and the refund of one order id and one SKU, and only
+their place in the file tells them apart. A SettlementLine row is identified by
+``_source.file`` and ``_source.line`` next to the tenant, the type and the
+transaction.
 """
 
 import argparse
@@ -52,6 +59,9 @@ DEFAULT_OWNER = "00000000-0000-1000-8000-000000000001"
 PRODUCT_COST_KEY = ("sku",)
 # The properties that identify one OrderLinePrice row inside its source transaction.
 ORDER_LINE_PRICE_KEY = ("item_nr",)
+# What identifies one SettlementLine row inside its source transaction: two lines of one order
+# and SKU differ only by their place in the source file.
+SETTLEMENT_LINE_KEY = ("_source.file", "_source.line")
 
 _STATUS_PATH = "/api/v1/object-database/status"
 _OBJECT_PATH = "/api/v1/object-database/objects/{tenant}/{object_id}"
@@ -172,20 +182,57 @@ ARCHIVED_ORDER_LINE_PRICES = {
                 b'"order_nr":"NRPL0003","store":"RPL01-NAE","unit_price":"30"}\n',
 }
 
+# The Amazon v3 transaction of the same revision, three settlement lines: an order, and the
+# order and refund of one SKU that differ only by their line. It is the input of
+# sync_settlement_lines and of the command with ``--type SettlementLine``. The artifact holds
+# the names as UTF-8; the escapes below write the same bytes.
+ARCHIVED_SETTLEMENT_LINES = {
+    "revision": "c48a709f91408a1182b4d72cac03d21cdfa01a0b",
+    "tenant": "518e9aa4-3c4d-488f-a372-c1d5bf1b6e3c",
+    "source": {
+        "version": 3,
+        "dataset": "e5cd197b-4337-4d42-b8d2-410b3174e41e",
+        "transaction": "18b8eb56-d952-4feb-9a61-d4d06f79f296",
+        "file": "8bfb76ec-9f57-4e49-9ba5-f2f3cffdfdf3",
+        "sha256": "2adc3f19f70041f150364fa81f33d275c19667204e68efabd28389551e2ce464",
+    },
+    "artifact": (
+        '{"date/time":"Oct 2, 2026 08:05:00 AM PDT","description":"Sample item C","fba fees":0,"gift wrap '
+        'credits":3.50,"giftwrap credits tax":0.28,"marketplace withheld tax":0,"order '
+        'id":"000-0000000-0000003","other":0,"other transaction fees":0,"product sales":59.99,"product sales '
+        'tax":4.80,"promotional rebates":0,"promotional rebates tax":0,"quantity":1,"regulatory '
+        'fee":0,"selling fees":-9.00,"settlement id":1000000010,"shipping credits":0,"shipping credits '
+        'tax":0,"sku":"DEMO-SKU-C3","tax on regulatory fee":0,"total":59.57,"type":"Order"}\n'
+        '{"date/time":"Oct 12, 2026 11:20:00 AM PDT","description":"Caf\u00e9 sampler \u00e0 la carte","fba '
+        'fees":-4.10,"gift wrap credits":0,"giftwrap credits tax":0,"marketplace withheld tax":-1.20,"order '
+        'id":"000-0000000-0000004","other":0,"other transaction fees":0,"product sales":14.99,"product sales '
+        'tax":0,"promotional rebates":0,"promotional rebates tax":0,"quantity":1,"regulatory fee":0,"selling '
+        'fees":-2.25,"settlement id":1000000011,"shipping credits":0,"shipping credits '
+        'tax":0,"sku":"DEMO-SKU-D4","tax on regulatory fee":0,"total":7.44,"type":"Order"}\n'
+        '{"date/time":"Oct 25, 2026 04:00:00 PM PDT","description":"Caf\u00e9 sampler \u00e0 la carte","fba '
+        'fees":4.10,"gift wrap credits":0,"giftwrap credits tax":0,"marketplace withheld tax":1.20,"order '
+        'id":"000-0000000-0000004","other":0,"other transaction fees":0,"product sales":-14.99,"product '
+        'sales tax":0,"promotional rebates":0,"promotional rebates tax":0,"quantity":-1,"regulatory '
+        'fee":0,"selling fees":2.25,"settlement id":1000000012,"shipping credits":0,"shipping credits '
+        'tax":0,"sku":"DEMO-SKU-D4","tax on regulatory fee":0,"total":-7.44,"type":"Refund"}\n'
+    ).encode("utf-8"),
+}
+
 # The archived transaction of each synced type and, below an evidence root, the directory
 # and report that hold it.
 ARCHIVED_TRANSACTIONS = {
     "ProductCost": (ARCHIVED, "lingxing", "product-report.json"),
     "OrderLinePrice": (ARCHIVED_ORDER_LINE_PRICES, "noon", "noon-report.json"),
+    "SettlementLine": (ARCHIVED_SETTLEMENT_LINES, "amazon", "amazon-report.json"),
 }
 
 
 def archived_transaction(root=None, type_id="ProductCost"):
     """Return (revision, tenant, source, raw v3 artifact) of the archived transaction of ``type_id``.
 
-    ``type_id`` is ProductCost or OrderLinePrice. Without ``root`` the embedded copy is
-    returned. ``root`` is an evidence directory holding manifest.json, the report of the
-    type's source and the v3 artifact.
+    ``type_id`` is ProductCost, OrderLinePrice or SettlementLine. Without ``root`` the
+    embedded copy is returned. ``root`` is an evidence directory holding manifest.json, the
+    report of the type's source and the v3 artifact.
     """
     archived, directory, report_name = ARCHIVED_TRANSACTIONS[type_id]
     if root is None:
@@ -200,7 +247,7 @@ def archived_transaction(root=None, type_id="ProductCost"):
     build, = [item for item in manifest["sources"][directory]["builds"] if item["output_version"] == 3]
     source = {"version": 3, "dataset": report["pipeline"]["output_dataset"], "transaction": build["output_transaction"],
               "file": build["output_file_id"], "sha256": build["sha256"]}
-    if type_id == "ProductCost":
+    if type_id != "OrderLinePrice":
         tenant = report["organization"]
     else:  # the noon report names no organization; the tenant is the one of its archived refusal run
         tenant = report["pipeline"]["refusals"]["crossed_transaction"]["tenant"]
@@ -227,8 +274,30 @@ def sync_order_line_prices(endpoint, tenant, rows):
     return [client.sync("OrderLinePrice", row) for row in rows]
 
 
+def sync_settlement_lines(endpoint, tenant, rows):
+    """Sync archived SettlementLine rows once, in order. Returns one SyncResult per row."""
+    client = OntologySyncClient(endpoint, tenant, key_properties=SETTLEMENT_LINE_KEY)
+    return [client.sync("SettlementLine", row) for row in rows]
+
+
 # What --type selects: the property that identifies a row in the report and the entry that syncs it.
-ENTRIES = {"ProductCost": ("sku", sync_product_costs), "OrderLinePrice": ("item_nr", sync_order_line_prices)}
+# For SettlementLine that is the settlement id; the object is keyed by _source.file and _source.line.
+ENTRIES = {"ProductCost": ("sku", sync_product_costs), "OrderLinePrice": ("item_nr", sync_order_line_prices),
+           "SettlementLine": ("settlement id", sync_settlement_lines)}
+
+
+def row_key(properties, source, key_properties):
+    """Return the key of one row: the value of each key property, by name.
+
+    A key property named ``_source.<attribute>`` is read from the row's ``_source``,
+    which ``source_attributes`` has checked to be complete; any other name is a
+    property of the row.
+    """
+    missing = [name for name in key_properties if not name.startswith("_source.") and name not in properties]
+    if missing:
+        raise InvalidSourceError("row is missing key properties " + ", ".join(missing))
+    return {name: source[name[len("_source."):]] if name.startswith("_source.") else properties[name]
+            for name in key_properties}
 
 
 def _same_json(left, right):
@@ -253,7 +322,8 @@ class OntologySyncClient:
     """Sync rows of one tenant through the object service's conditional put and get.
 
     ``key_properties`` names the properties that identify a row inside one source
-    transaction. ``opener`` replaces the transport in tests: it receives the
+    transaction; a name of the form ``_source.<attribute>`` names an attribute of the
+    row's ``_source``. ``opener`` replaces the transport in tests: it receives the
     ``urllib.request.Request`` and the timeout and returns the response body.
     """
 
@@ -285,10 +355,7 @@ class OntologySyncClient:
         if not isinstance(properties, dict):
             raise InvalidSourceError("properties must be an object")
         source = source_attributes(properties)
-        missing = [name for name in self.key_properties if name not in properties]
-        if missing:
-            raise InvalidSourceError("row is missing key properties " + ", ".join(missing))
-        key = {name: properties[name] for name in self.key_properties}
+        key = row_key(properties, source, self.key_properties)
         object_id = stable_object_id(self.tenant, type_id, source["transaction"], key)
         path = _OBJECT_PATH.format(tenant=urllib.parse.quote(self.tenant, safe=""), object_id=object_id)
         self.require_cassandra_backend()
@@ -356,7 +423,7 @@ def main(argv=None):
     """The command that syncs one archived transaction once."""
     parser = argparse.ArgumentParser(
         description="Sync the archived lingxing ProductCost transaction once, or the noon OrderLinePrice "
-                    "transaction with --type.")
+                    "or Amazon SettlementLine transaction with --type.")
     parser.add_argument("endpoint", help="object service base URL, for example http://127.0.0.1:50125")
     parser.add_argument("--evidence-root", type=Path,
                         help="directory holding manifest.json and the report of the archived transaction's source")

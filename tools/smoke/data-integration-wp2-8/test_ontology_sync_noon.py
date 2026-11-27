@@ -143,7 +143,7 @@ class OrderLinePriceTests(unittest.TestCase):
     def test_a_type_that_is_not_synced_is_refused(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as stopped:
-            main([self.endpoint(), "--type", "SettlementLine"])
+            main([self.endpoint(), "--type", "SettlementReport"])
         self.assertEqual(stopped.exception.code, 2)
         self.assertEqual(self.service.requests, [])
 
