@@ -14,7 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 import ontology_sync_published as entry
 from ontology_sync import archived_transaction, rows_of, stable_object_id, sync_product_costs
 from ontology_sync_published import (DOWNLOADED_FILE, EXPECTED_COSTS, SOURCE_FILE, DatasetReader, ReceiptError,
-                                     differences, locate, main, receipt_differs, source_of)
+                                     differences, lines_and_values, locate, main, receipt_differs, row_differences,
+                                     source_of)
 from test_ontology_sync import ARCHIVED, FakeObjectService, Handler
 
 BASE = "http://dataset.test"
@@ -320,10 +321,12 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual((source["sha256"], raw), (self.source["sha256"], V3))
         problems = self.problems(stored(self.tenant, raw, source))
         self.assertEqual(named(problems, " _source."), {"dataset", "transaction", "file"})
+        # Beside the id set, the id of each of the three rows is that of another transaction.
         others = [problem for problem in problems if " _source." not in problem]
-        self.assertEqual(len(others), 1, problems)
+        self.assertEqual(len(others), 4, problems)
         self.assertIn("is not", others[0])
-        self.assertFalse(any("cg_price" in problem or "sku" in problem for problem in problems))
+        self.assertEqual([problem.rsplit("sku ", 1)[1] for problem in others[1:]], ["'0007'", "'W-2'", "'D3'"])
+        self.assertFalse(any("cg_price" in problem or "is not one of" in problem for problem in problems), problems)
         self.assertEqual(len([problem for problem in problems if " _source." in problem]), 9)
 
     def test_the_v1_file_of_this_round_is_refused_though_it_shares_dataset_bytes_and_hash(self):
@@ -354,14 +357,28 @@ class AcceptanceTests(unittest.TestCase):
         three = stored(self.tenant, V3, self.source)
         foreign = {**three["objects"][0], "id": stable_object_id(self.tenant, "ProductCost", str(uuid.uuid4()), {"sku": "0007"})}
         problems = self.problems({**three, "objects": [foreign, *three["objects"][1:]]})
-        self.assertEqual(len(problems), 1, problems)
+        self.assertEqual(len(problems), 2, problems)  # the id set, and the id of that row
         self.assertIn("is not", problems[0])
+        self.assertTrue(problems[1].endswith("is the id of another row, expected the id of sku '0007'"), problems[1])
+
+    def test_two_objects_that_swapped_their_complete_properties_are_refused(self):
+        # The id set is still the right one and each row agrees with the SKU it names, so only
+        # the id each object holds for that SKU can tell that the two rows changed places.
+        three = stored(self.tenant, V3, self.source)
+        first, second, third = three["objects"]
+        swapped = {**three, "objects": [{**first, "properties": second["properties"]},
+                                        {**second, "properties": first["properties"]}, third]}
+        problems = self.problems(swapped)
+        self.assertEqual(len(problems), 2, problems)
+        self.assertEqual([problem.split(": ")[1].split(",")[0] for problem in problems],
+                         ["is the id of another row", "is the id of another row"])
+        self.assertEqual({problem.rsplit("sku ", 1)[1] for problem in problems}, {"'0007'", "'W-2'"})
 
     def test_another_cost_a_wrong_line_or_a_boolean_line_is_refused(self):
         three = stored(self.tenant, V3, self.source)
         for change, problem in (({"cg_price": "9.99"}, "cg_price '9.99', expected '0.00'"),
-                                ({"_source": {**self.source, "line": 2}}, "_source.line: 2, this round's file reads 1"),
-                                ({"_source": {**self.source, "line": True}}, "_source.line: True, this round's file reads 1")):
+                                ({"_source": {**self.source, "line": 2}}, "_source.line: 2, its file reads 1"),
+                                ({"_source": {**self.source, "line": True}}, "_source.line: True, its file reads 1")):
             with self.subTest(change=change):
                 problems = self.problems(self.with_first_object(three, **change))
                 self.assertEqual(len(problems), 1, problems)
@@ -374,6 +391,25 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(named(problems, " _source."), {"version", "dataset", "transaction", "file", "sha256", "line"})
         other = self.problems({**three, "objects": [{**three["objects"][0], "object_type_id": "OtherCost"}, *three["objects"][1:]]})
         self.assertTrue(any("is a OtherCost" in problem for problem in other), other)
+
+    def test_a_tenant_is_judged_against_another_source_by_the_rows_of_that_source(self):
+        # What lets a refusal of another source count: the same rows, judged as that source, are accepted.
+        _, _, source, raw = archived_transaction()
+        own = stored(self.tenant, raw, source)
+        self.assertEqual(row_differences(source, *lines_and_values([json.loads(line) for line in raw.splitlines()]),
+                                         self.tenant, own), [])
+        two, = located(published(V2, version=2))
+        second = {"total": 2, "objects": [
+            {"id": stable_object_id(self.tenant, "ProductCost", two["transaction"], {"sku": row["sku"]}),
+             "object_type_id": "ProductCost", "properties": {**row, "_source": {**source_of(two), "line": number}}}
+            for number, row in enumerate((json.loads(line) for line in V2.splitlines()), 1)]}
+        self.assertEqual(row_differences(source_of(two), *lines_and_values([json.loads(line) for line in V2.splitlines()]),
+                                         self.tenant, second), [])
+        for not_held in ({"total": 0, "objects": []}, {**own, "total": 2, "objects": own["objects"][:2]}):
+            self.assertTrue(row_differences(source, *lines_and_values([json.loads(line) for line in raw.splitlines()]),
+                                            self.tenant, not_held), not_held)
+        # Judged as this round, the same tenant that holds its own source is refused.
+        self.assertTrue(self.problems(own))
 
     def test_what_the_smoke_recorded_of_the_build_is_compared_by_name(self):
         build = {"pipeline_run_id": self.binding["run_id"],

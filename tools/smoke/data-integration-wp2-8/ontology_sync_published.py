@@ -16,9 +16,11 @@ One assertion accepts or refuses what a tenant holds. It accepts a tenant that h
 exactly the three objects whose ids the client derives from the tenant, the type, the
 transaction of the receipt and each SKU, each with the cost of its row and an ``_source``
 that repeats the dataset, version, transaction, file and SHA256 of that read and the line
-of its SKU in that file. The same assertion refuses three other sources delivered the same
-way: the archived transaction, and the v1 and v2 this round published, of which v1 has the
-bytes and the hash of v3.
+of its SKU in that file. The id of an object is the one derived for the SKU it holds, so
+two objects that swapped their complete properties are refused. Given another source and
+its rows, the same assertion tells whether a tenant holds exactly that source. That must
+hold before the refusal of the three other sources counts: the archived transaction, and
+the v1 and v2 this round published, of which v1 has the bytes and the hash of v3.
 
     python3 ontology_sync_published.py --state DIR --dataset-base URL --endpoint URL [--tenant ID]
     python3 ontology_sync_published.py --state DIR --endpoint URL --tenant ID --verify-only
@@ -62,7 +64,8 @@ def _sibling(name):
 
 
 _sibling("ontology_sync"), _sibling("ontology_sync_replay")
-from ontology_sync import SOURCE_ATTRIBUTES, SyncError, rows_of, stable_object_id, sync_product_costs  # noqa: E402
+from ontology_sync import (SOURCE_ATTRIBUTES, SyncError, archived_transaction, rows_of, stable_object_id,  # noqa: E402
+                           sync_product_costs)
 from ontology_sync_replay import ROUTE, Stack, backend_is_cassandra, call  # noqa: E402
 
 # The costs this round's v3 holds, each a string: SKU and cost.
@@ -215,7 +218,7 @@ def locate(reader, receipt):
     try:
         rows = [json.loads(line) for line in raw.splitlines()]
         preview = [dict(zip(metadata["preview_columns"], values)) for values in metadata["preview_rows"]]
-        lines = {row["sku"]: number for number, row in enumerate(rows, 1)}
+        lines, _ = lines_and_values(rows)
     except (ValueError, KeyError, TypeError) as error:
         refuse(f"file {file['id']} or its transaction does not parse: {error!r}")
     if (metadata["size_bytes"], metadata["row_count"]) != (len(raw), len(rows)) or preview != rows:
@@ -239,19 +242,27 @@ def _same(left, right):
     return type(left) is type(right) and left == right
 
 
-def differences(binding, tenant, store):
-    """Where the ProductCost objects a tenant holds differ from the source ``binding`` names.
+def lines_and_values(rows):
+    """The line and the cost of each SKU in one file, by SKU."""
+    return ({row["sku"]: number for number, row in enumerate(rows, 1)},
+            {row["sku"]: row["cg_price"] for row in rows})
 
-    This is the one acceptance of a delivery. It is run against the store after each
-    delivery of this round's v3 and against a store that received another source. An
-    empty list accepts the tenant.
+
+def row_differences(source, lines, values, tenant, store):
+    """Where the ProductCost objects a tenant holds differ from the rows of one file.
+
+    ``source`` names the dataset, version, transaction, file and SHA256 of the file, ``lines``
+    the line of each SKU in it and ``values`` the cost of each SKU. The tenant holds exactly
+    that file when it holds one object per SKU and nothing else, when the id of each object is
+    the id the client derives from the tenant, the type, the transaction of the file and its
+    SKU, and when the object keeps the cost of its SKU and an ``_source`` that repeats the
+    source and the line of its SKU. An empty list accepts the tenant.
     """
-    source = source_of(binding)
     problems = []
     ids = sorted(obj["id"] for obj in store["objects"])
-    expected = sorted(stable_object_id(tenant, "ProductCost", source["transaction"], {"sku": sku}) for sku in EXPECTED_COSTS)
-    if store["total"] != len(EXPECTED_COSTS) or ids != expected:
-        problems.append(f"{store['total']} listed and {len(ids)} read back, expected the {len(EXPECTED_COSTS)} objects of "
+    expected = sorted(stable_object_id(tenant, "ProductCost", source["transaction"], {"sku": sku}) for sku in values)
+    if store["total"] != len(values) or ids != expected:
+        problems.append(f"{store['total']} listed and {len(ids)} read back, expected the {len(values)} objects of "
                         f"transaction {source['transaction']}: {ids} is not {expected}")
     for obj in store["objects"]:
         properties = obj["properties"]
@@ -259,18 +270,32 @@ def differences(binding, tenant, store):
         if obj["object_type_id"] != "ProductCost":
             problems.append(f"{where} is a {obj['object_type_id']}")
         sku = properties.get("sku")
-        if sku not in EXPECTED_COSTS or sku not in binding["lines"]:
-            problems.append(f"{where}: sku {sku!r} is not one of {sorted(EXPECTED_COSTS)}")
+        if sku not in values:
+            problems.append(f"{where}: sku {sku!r} is not one of {sorted(values)}")
             continue
-        if properties.get("cg_price") != EXPECTED_COSTS[sku]:
-            problems.append(f"{where}: cg_price {properties.get('cg_price')!r}, expected {EXPECTED_COSTS[sku]!r}")
-        want = {**source, "line": binding["lines"][sku]}
+        # The row agrees with the SKU it names, so the id is what places it: without this a
+        # tenant that swapped the complete properties of two objects would be accepted.
+        if obj["id"] != stable_object_id(tenant, "ProductCost", source["transaction"], {"sku": sku}):
+            problems.append(f"{where}: is the id of another row, expected the id of sku {sku!r}")
+        if properties.get("cg_price") != values[sku]:
+            problems.append(f"{where}: cg_price {properties.get('cg_price')!r}, expected {values[sku]!r}")
+        want = {**source, "line": lines[sku]}
         got = properties.get("_source")
         for name in SOURCE_ATTRIBUTES:
             if not isinstance(got, dict) or not _same(got.get(name), want[name]):
                 problems.append(f"{where} _source.{name}: {got.get(name) if isinstance(got, dict) else got!r}, "
-                                f"this round's file reads {want[name]!r}")
+                                f"its file reads {want[name]!r}")
     return problems
+
+
+def differences(binding, tenant, store):
+    """Where the ProductCost objects a tenant holds differ from the rows of the source ``binding`` names.
+
+    This is the one acceptance of a delivery: ``row_differences`` for the three costs this
+    round's v3 holds. It is run against the store after each delivery of this round's v3 and
+    against a store that received another source. An empty list accepts the tenant.
+    """
+    return row_differences(source_of(binding), binding["lines"], EXPECTED_COSTS, tenant, store)
 
 
 def deliver(endpoint, tenant, source, raw):
@@ -432,28 +457,42 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
                   and hashlib.sha256(downloaded).hexdigest() == binding["sha256"] == build["sha256"],
                   f"{len(downloaded)} bytes, hash {hashlib.sha256(downloaded).hexdigest()}")
 
-            # Three other sources, each delivered the same way into a tenant of its own
-            # and read back through the same assertion.
+            # Three other sources, each delivered the same way into a tenant of its own and
+            # read back through the same assertion. A refusal counts only after the tenant is
+            # shown to hold exactly that source: delivered without error, one object per row of
+            # its file with its identity, file and SHA256, and nothing else.
             expected = source_of(binding)
             refused = evidence["refused"] = {}
             for name, version, differs in OTHER_SOURCES:
+                label = name.replace("_", " ")
                 other_tenant = str(uuid.uuid4())
                 entry = refused[name] = {"tenant": other_tenant, "expected_differs_in": list(differs)}
                 if version is None:
                     # The default call of ontology_sync.py delivers the embedded copy of the archived v3.
+                    _, _, intended, raw = archived_transaction()
                     done = command("ontology_sync.py", f"refused-{name}-delivered", endpoint, "--tenant", other_tenant)
                     default = done["report"] or {}
                     entry["delivered"] = {"command": done["command"], "exit": done["exit"], "evidence": done["evidence"],
                                           "source": default.get("source"), "created": default.get("created")}
                 else:
-                    other, raw = locate(DatasetReader(dataset, reader),
-                                        json.loads((state / f"pipeline-{build_of(report, version)['ordinal']}-run.json").read_text()))
-                    results = sync_product_costs(endpoint, other_tenant, rows_of(raw, source_of(other)))
-                    entry["delivered"] = {"source": source_of(other), "created": sum(result.created for result in results)}
+                    intended, raw = locate(DatasetReader(dataset, reader),
+                                           json.loads((state / f"pipeline-{build_of(report, version)['ordinal']}-run.json").read_text()))
+                    results = sync_product_costs(endpoint, other_tenant, rows_of(raw, source_of(intended)))
+                    entry["delivered"] = {"source": source_of(intended), "created": sum(result.created for result in results)}
+                lines, values = lines_and_values([json.loads(line) for line in raw.splitlines()])
+                entry["intended"] = {"source": source_of(intended), "rows": len(values), "values": values}
                 judged = entry["judged"] = command("ontology_sync_published.py", f"refused-{name}", "--state", state, "--endpoint",
                                                    endpoint, "--tenant", other_tenant, "--verify-only")
                 verdict = judged["report"] or {}
-                entry["held"] = _held(verdict.get("store") or {})
+                store = verdict.get("store") or {}
+                entry["held"] = _held(store)
+                own = row_differences(source_of(intended), lines, values, other_tenant, store)
+                entry["holds_its_own_source"] = not own
+                # The archived source is delivered by a process of its own, the two others in this one.
+                delivered_ok = version is not None or entry["delivered"]["exit"] == 0
+                check(f"the {label} is delivered and its tenant holds exactly its {len(values)} objects of that source, "
+                      "each with its file and SHA256, and nothing else",
+                      delivered_ok and entry["delivered"]["created"] == len(values) and not own, "; ".join(own))
                 entry["same_as_this_round"] = {attribute: (entry["held"]["source"] or {}).get(attribute) == expected[attribute]
                                                for attribute in expected}
                 entry["differs_in"] = [attribute for attribute, same in entry["same_as_this_round"].items() if not same]
@@ -463,7 +502,7 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
                 # differs and nothing else of the _source, and the id set. The archived transaction and
                 # the v1 hold the values of this round; only the v2 holds others.
                 named = {problem.split(" _source.")[1].split(":")[0] for problem in entry["problems"] if " _source." in problem}
-                check(f"the {name.replace('_', ' ')} delivered into a tenant of its own is refused by the same assertion "
+                check(f"the {label} delivered into a tenant of its own is refused by the same assertion "
                       f"because {', '.join(differs)} differ, exit 1",
                       judged["exit"] == 1 and not verdict.get("accepted") and tuple(entry["differs_in"]) == differs
                       and named == set(differs) and any("is not" in problem for problem in entry["problems"])
@@ -484,7 +523,8 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
             "deliveries": [{"exit": delivery["exit"], "created": delivery["report"]["delivered"]["created"],
                             "count": delivery["report"]["store"]["total"], "evidence": delivery["evidence"]}
                            for delivery in (first, second)],
-            "refused": {name: {"exit": entry["judged"]["exit"], "differs_in": entry["differs_in"],
+            "refused": {name: {"held": entry["held"]["count"], "holds_its_own_source": entry["holds_its_own_source"],
+                               "exit": entry["judged"]["exit"], "differs_in": entry["differs_in"],
                                "same_as_this_round": entry["same_as_this_round"]}
                         for name, entry in evidence["refused"].items()}}
 
