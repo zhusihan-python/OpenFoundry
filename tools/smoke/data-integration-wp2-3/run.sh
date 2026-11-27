@@ -92,6 +92,8 @@ fi
 build=(./services/{dataset-versioning-service,pipeline-build-service,connector-management-service}/cmd/...)
 if (( gateway )); then build+=(./services/edge-gateway-service/cmd/edge-gateway-service); fi
 if (( page_downloads )); then build+=(./tools/smoke/data-integration-wp2-3/loopback-forwarder); fi
+# The lingxing smoke delivers its v3 to an object service of its own.
+if [[ "$source_type" == lingxing ]]; then build+=(./services/object-database-service/cmd/object-database-service); fi
 docker run --rm -v "$root:/src:ro" -v "$BIN_DIR:/out" \
   -v "${WP23_GO_MOD_CACHE:-wp23-go-mod}:/go/pkg/mod" \
   -v "${WP23_GO_BUILD_CACHE:-wp23-go-build}:/root/.cache/go-build" \
