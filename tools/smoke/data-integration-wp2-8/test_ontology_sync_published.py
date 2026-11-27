@@ -19,7 +19,8 @@ from ontology_sync_published import (DOWNLOADED_FILE, EXPECTED_COSTS, SOURCE_FIL
 from test_ontology_sync import ARCHIVED, FakeObjectService, Handler
 
 BASE = "http://dataset.test"
-ROUTE = "/api/v1/ontology/types/ProductCost/objects/"
+# The list route of an ontology type and, after it, one object by its id.
+ONTOLOGY = re.compile(r"^/api/v1/ontology/types/([^/]+)/objects/?([^/]*)$")
 # The v1 and the v3 of one round: the same bytes and the same hash. V2 is another snapshot.
 V1 = V3 = b'{"cg_price":"0.00","sku":"0007"}\n{"cg_price":"9.25","sku":"W-2"}\n{"cg_price":"17.40","sku":"D3"}\n'
 V2 = b'{"cg_price":"2.50","sku":"0007"}\n{"cg_price":"10.75","sku":"N4"}\n'
@@ -106,13 +107,13 @@ def located(*pairs):
     return [locate(reader, receipt)[0] for receipt, _ in pairs]
 
 
-def stored(tenant, raw, source):
+def stored(tenant, raw, source, kind=entry.PRODUCT_COST):
     """The readback of a tenant that holds one object per line of ``raw``, each with its complete ``_source``."""
     objects = []
     for number, line in enumerate(raw.splitlines(), 1):
         row = json.loads(line)
-        objects.append({"id": stable_object_id(tenant, "ProductCost", source["transaction"], {"sku": row["sku"]}),
-                        "object_type_id": "ProductCost", "properties": {**row, "_source": {**source, "line": number}}})
+        objects.append({"id": stable_object_id(tenant, kind.type_id, source["transaction"], {kind.key: row[kind.key]}),
+                        "object_type_id": kind.type_id, "properties": {**row, "_source": {**source, "line": number}}})
     return {"total": len(objects), "objects": objects}
 
 
@@ -127,16 +128,18 @@ def wire(obj):
 
 
 class StoreHandler(Handler):
-    """The object service with the list and the detail route of the ontology type the readback uses."""
+    """The object service with the list and the detail route of each ontology type the readback uses."""
 
     def do_GET(self):
-        path = urlsplit(self.path).path
-        if not path.startswith(ROUTE):
+        match = ONTOLOGY.match(urlsplit(self.path).path)
+        if not match:
             return super().do_GET()
         self.server.requests.append(("GET", self.path))
-        tenant, object_id = self.headers.get("x-of-tenant"), path[len(ROUTE):]
+        type_id, object_id = match.groups()
+        tenant = self.headers.get("x-of-tenant")
         with self.server.lock:
-            held = sorted((key[1], obj) for key, obj in self.server.objects.items() if key[0] == tenant)
+            held = sorted((key[1], obj) for key, obj in self.server.objects.items()
+                          if key[0] == tenant and obj["type_id"] == type_id)
         if object_id:
             found = [obj for _, obj in held if obj["id"] == object_id]
             return self.reply(wire(found[0]) if found else {"error": "not found"}, 200 if found else 404)
