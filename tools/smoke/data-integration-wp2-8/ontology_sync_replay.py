@@ -120,7 +120,11 @@ def replay_twice(endpoint, tenant, rows, deliveries=2):
 
 
 def other_content_is_rejected(endpoint, tenant, rows):
-    """A row that carries the key of a stored row with any other content is rejected."""
+    """A row that carries the key of a stored row with any other content is rejected.
+
+    The store is read again after the last attempt. ``count_after`` and ``after`` come
+    from that readback, not from the snapshot taken before the attempts.
+    """
     client = client_for(endpoint, tenant)
     row = rows[0]
     before = snapshot(endpoint, tenant)
@@ -138,8 +142,9 @@ def other_content_is_rejected(endpoint, tenant, rows):
             rejected.append({"changed": changed, "error": str(error)})
         else:
             raise AssertionError(f"a row with another {changed} was accepted")
-    assert snapshot(endpoint, tenant) == before
-    return {"passed": True, "tenant": tenant, "rejected": rejected, "count_after": counted(before)}
+    after = snapshot(endpoint, tenant)
+    assert after == before, after
+    return {"passed": True, "tenant": tenant, "rejected": rejected, "count_after": counted(after), "after": after}
 
 
 def incomplete_source_is_refused(endpoint, tenant, row):
