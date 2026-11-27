@@ -78,9 +78,11 @@ RECORDED = {"run_id": "pipeline_run_id", "pipeline_output_transaction_rid": "pip
             "content_hash": "pipeline_content_hash", "dataset": "output_dataset", "version": "output_version",
             "transaction": "output_transaction", "file": "output_file_id", "sha256": "sha256",
             "size_bytes": "size_bytes", "row_count": "row_count"}
-# The other sources the assertion must refuse: by the output version this round published,
-# or None for the archived transaction.
-OTHER_SOURCES = (("archived_transaction", None), ("first_output", 1), ("second_output", 2))
+# The other sources the assertion must refuse, each with the attributes in which it differs
+# from this round: by the output version this round published, or None for the archived transaction.
+OTHER_SOURCES = (("archived_transaction", None, ("dataset", "transaction", "file")),
+                 ("first_output", 1, ("version", "transaction", "file")),
+                 ("second_output", 2, ("version", "transaction", "file", "sha256")))
 
 
 class ReceiptError(Exception):
@@ -434,12 +436,15 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
             # and read back through the same assertion.
             expected = source_of(binding)
             refused = evidence["refused"] = {}
-            for name, version in OTHER_SOURCES:
+            for name, version, differs in OTHER_SOURCES:
                 other_tenant = str(uuid.uuid4())
-                entry = refused[name] = {"tenant": other_tenant}
+                entry = refused[name] = {"tenant": other_tenant, "expected_differs_in": list(differs)}
                 if version is None:
                     # The default call of ontology_sync.py delivers the embedded copy of the archived v3.
-                    entry["delivered"] = command("ontology_sync.py", f"refused-{name}-delivered", endpoint, "--tenant", other_tenant)
+                    done = command("ontology_sync.py", f"refused-{name}-delivered", endpoint, "--tenant", other_tenant)
+                    default = done["report"] or {}
+                    entry["delivered"] = {"command": done["command"], "exit": done["exit"], "evidence": done["evidence"],
+                                          "source": default.get("source"), "created": default.get("created")}
                 else:
                     other, raw = locate(DatasetReader(dataset, reader),
                                         json.loads((state / f"pipeline-{build_of(report, version)['ordinal']}-run.json").read_text()))
@@ -452,9 +457,17 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing"):
                 entry["same_as_this_round"] = {attribute: (entry["held"]["source"] or {}).get(attribute) == expected[attribute]
                                                for attribute in expected}
                 entry["differs_in"] = [attribute for attribute, same in entry["same_as_this_round"].items() if not same]
-                entry.update(expected="refused, exit 1", problems=verdict.get("problems"))
-                check(f"the {name.replace('_', ' ')} delivered into a tenant of its own is refused by the same assertion, exit 1",
-                      judged["exit"] == 1 and not verdict.get("accepted") and bool(verdict.get("problems")),
+                entry.update(expected="refused, exit 1", problems=verdict.get("problems") or [],
+                             same_values_as_this_round=entry["held"]["values"] == EXPECTED_COSTS)
+                # The refusal must be for the identity alone: the assertion names each attribute that
+                # differs and nothing else of the _source, and the id set. The archived transaction and
+                # the v1 hold the values of this round; only the v2 holds others.
+                named = {problem.split(" _source.")[1].split(":")[0] for problem in entry["problems"] if " _source." in problem}
+                check(f"the {name.replace('_', ' ')} delivered into a tenant of its own is refused by the same assertion "
+                      f"because {', '.join(differs)} differ, exit 1",
+                      judged["exit"] == 1 and not verdict.get("accepted") and tuple(entry["differs_in"]) == differs
+                      and named == set(differs) and any("is not" in problem for problem in entry["problems"])
+                      and entry["same_values_as_this_round"] == (version in (None, 1)),
                       judged["stderr"] + json.dumps(verdict.get("store")))
 
             again = evidence["readback"] = command("ontology_sync_published.py", "readback", "--state", state, "--endpoint",
