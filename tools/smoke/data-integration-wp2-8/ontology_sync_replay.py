@@ -5,7 +5,9 @@ same tenant, source transaction and SKUs delivered twice through
 ``POST /api/v1/ontology/types/ProductCost/objects/`` grew three objects into six.
 Every scenario below runs against the object service unchanged. Business callers
 sync the transaction once with ``python3 ontology_sync.py ENDPOINT``; this script
-is the regression and runs every scenario.
+is the regression and runs every scenario. ``--type OrderLinePrice`` replays the
+archived noon transaction instead; its scenarios are in ``ontology_sync_noon.py``
+and use the same stack.
 
     python3 ontology_sync_replay.py --output FILE [--bin-dir DIR]
     python3 ontology_sync_replay.py --output FILE --evidence-root DIR
@@ -274,7 +276,8 @@ class Stack:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--evidence-root", type=Path, help="directory holding manifest.json and lingxing/product-report.json")
+    parser.add_argument("--evidence-root", type=Path,
+                        help="directory holding manifest.json and the report of the archived transaction's source")
     parser.add_argument("--output", type=Path, required=True, help="file to write the JSON evidence to")
     parser.add_argument("--endpoint", help="object service of a stack that is already running")
     parser.add_argument("--bin-dir", default=str(HERE.parents[2] / "bin"), help="directory holding object-database-service")
@@ -283,7 +286,12 @@ def main():
     parser.add_argument("--startup-timeout", type=int, default=240)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--type", choices=("ProductCost", "OrderLinePrice"), default="ProductCost",
+                        help="archived transaction to replay; default: ProductCost")
     args = parser.parse_args()
+    if args.type == "OrderLinePrice":
+        from ontology_sync_noon import replay  # imported here: that module imports this one
+        return replay(args)
 
     revision, tenant, source, raw = archived_transaction(args.evidence_root)
     rows = rows_of(raw, source)

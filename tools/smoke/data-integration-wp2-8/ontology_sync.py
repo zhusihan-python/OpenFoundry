@@ -28,6 +28,9 @@ The lingxing v3 transaction of revision c48a709f9 is embedded below;
 syncs each row through this client and prints one JSON report. A failing row
 stops the delivery with exit code 1; running it again then confirms the rows
 that were already stored instead of duplicating them.
+
+``--type OrderLinePrice`` syncs the archived noon v3 transaction of the same
+revision the same way; the order line number ``item_nr`` is its key property.
 """
 
 import argparse
@@ -47,6 +50,8 @@ SOURCE_ATTRIBUTES = ("version", "dataset", "transaction", "file", "sha256", "lin
 DEFAULT_OWNER = "00000000-0000-1000-8000-000000000001"
 # The properties that identify one ProductCost row inside its source transaction.
 PRODUCT_COST_KEY = ("sku",)
+# The properties that identify one OrderLinePrice row inside its source transaction.
+ORDER_LINE_PRICE_KEY = ("item_nr",)
 
 _STATUS_PATH = "/api/v1/object-database/status"
 _OBJECT_PATH = "/api/v1/object-database/objects/{tenant}/{object_id}"
@@ -146,26 +151,60 @@ ARCHIVED = {
                 b'{"cg_price":"17.40","sku":"D3"}\n',
 }
 
+# The noon v3 transaction of the same revision, three order lines. It is the input of
+# sync_order_line_prices and of the command with ``--type OrderLinePrice``. The noon
+# report names no organization; the tenant is the one of its archived refusal run.
+ARCHIVED_ORDER_LINE_PRICES = {
+    "revision": "c48a709f91408a1182b4d72cac03d21cdfa01a0b",
+    "tenant": "015cae6e-495e-4027-aa74-5e5acc8b09b2",
+    "source": {
+        "version": 3,
+        "dataset": "016dbd77-fe2e-4d60-a434-f34647e95e28",
+        "transaction": "1f600730-d3f1-4ffe-8cd0-c4058d27ced0",
+        "file": "a155352f-77b2-4e7c-af98-8e988f9e1b9b",
+        "sha256": "2ce181d593a204b707822233a69835875ac0aa74acce5e9176393b18e43529fd",
+    },
+    "artifact": b'{"currency":"AED","item_nr":"NRPL0001-1","market":"AE",'
+                b'"order_nr":"NRPL0001","store":"RPL01-NAE","unit_price":"49"}\n'
+                b'{"currency":"AED","item_nr":"NRPL0002-1","market":"AE",'
+                b'"order_nr":"NRPL0002","store":"RPL01-NAE","unit_price":"120"}\n'
+                b'{"currency":"AED","item_nr":"NRPL0003-1","market":"AE",'
+                b'"order_nr":"NRPL0003","store":"RPL01-NAE","unit_price":"30"}\n',
+}
 
-def archived_transaction(root=None):
-    """Return (revision, tenant, source, raw v3 artifact) of the archived ProductCost transaction.
+# The archived transaction of each synced type and, below an evidence root, the directory
+# and report that hold it.
+ARCHIVED_TRANSACTIONS = {
+    "ProductCost": (ARCHIVED, "lingxing", "product-report.json"),
+    "OrderLinePrice": (ARCHIVED_ORDER_LINE_PRICES, "noon", "noon-report.json"),
+}
 
-    Without ``root`` the embedded copy is returned. ``root`` is an evidence directory
-    holding manifest.json, lingxing/product-report.json and the v3 artifact.
+
+def archived_transaction(root=None, type_id="ProductCost"):
+    """Return (revision, tenant, source, raw v3 artifact) of the archived transaction of ``type_id``.
+
+    ``type_id`` is ProductCost or OrderLinePrice. Without ``root`` the embedded copy is
+    returned. ``root`` is an evidence directory holding manifest.json, the report of the
+    type's source and the v3 artifact.
     """
+    archived, directory, report_name = ARCHIVED_TRANSACTIONS[type_id]
     if root is None:
-        return ARCHIVED["revision"], ARCHIVED["tenant"], ARCHIVED["source"], ARCHIVED["artifact"]
+        return archived["revision"], archived["tenant"], archived["source"], archived["artifact"]
     root = Path(root)
     manifest = json.loads((root / "manifest.json").read_text())
-    report = json.loads((root / "lingxing/product-report.json").read_text())
+    report = json.loads((root / directory / report_name).read_text())
     if report["revision"] != manifest["revision"]:
         raise InvalidSourceError(
             f"manifest revision {manifest['revision']} differs from the report revision {report['revision']}"
         )
-    build, = [item for item in manifest["sources"]["lingxing"]["builds"] if item["output_version"] == 3]
+    build, = [item for item in manifest["sources"][directory]["builds"] if item["output_version"] == 3]
     source = {"version": 3, "dataset": report["pipeline"]["output_dataset"], "transaction": build["output_transaction"],
               "file": build["output_file_id"], "sha256": build["sha256"]}
-    return report["revision"], report["organization"], source, (root / "lingxing" / build["artifact"]).read_bytes()
+    if type_id == "ProductCost":
+        tenant = report["organization"]
+    else:  # the noon report names no organization; the tenant is the one of its archived refusal run
+        tenant = report["pipeline"]["refusals"]["crossed_transaction"]["tenant"]
+    return report["revision"], tenant, source, (root / directory / build["artifact"]).read_bytes()
 
 
 def rows_of(raw, source):
@@ -180,6 +219,16 @@ def sync_product_costs(endpoint, tenant, rows):
     """Sync archived ProductCost rows once, in order. Returns one SyncResult per row."""
     client = OntologySyncClient(endpoint, tenant, key_properties=PRODUCT_COST_KEY)
     return [client.sync("ProductCost", row) for row in rows]
+
+
+def sync_order_line_prices(endpoint, tenant, rows):
+    """Sync archived OrderLinePrice rows once, in order. Returns one SyncResult per row."""
+    client = OntologySyncClient(endpoint, tenant, key_properties=ORDER_LINE_PRICE_KEY)
+    return [client.sync("OrderLinePrice", row) for row in rows]
+
+
+# What --type selects: the property that identifies a row in the report and the entry that syncs it.
+ENTRIES = {"ProductCost": ("sku", sync_product_costs), "OrderLinePrice": ("item_nr", sync_order_line_prices)}
 
 
 def _same_json(left, right):
@@ -304,24 +353,30 @@ class OntologySyncClient:
 
 
 def main(argv=None):
-    """The command that syncs the archived ProductCost transaction once."""
-    parser = argparse.ArgumentParser(description="Sync the archived ProductCost transaction once.")
+    """The command that syncs one archived transaction once."""
+    parser = argparse.ArgumentParser(
+        description="Sync the archived lingxing ProductCost transaction once, or the noon OrderLinePrice "
+                    "transaction with --type.")
     parser.add_argument("endpoint", help="object service base URL, for example http://127.0.0.1:50125")
-    parser.add_argument("--evidence-root", type=Path, help="directory holding manifest.json and lingxing/product-report.json")
+    parser.add_argument("--evidence-root", type=Path,
+                        help="directory holding manifest.json and the report of the archived transaction's source")
     parser.add_argument("--tenant", help="tenant to sync into; default: the tenant of the archived report")
+    parser.add_argument("--type", choices=tuple(ENTRIES), default="ProductCost",
+                        help="object type of the archived transaction; default: ProductCost")
     args = parser.parse_args(argv)
+    key, sync = ENTRIES[args.type]
     try:
-        revision, tenant, source, raw = archived_transaction(args.evidence_root)
+        revision, tenant, source, raw = archived_transaction(args.evidence_root, args.type)
         tenant = args.tenant or tenant
         rows = rows_of(raw, source)
-        results = sync_product_costs(args.endpoint.rstrip("/"), tenant, rows)
+        results = sync(args.endpoint.rstrip("/"), tenant, rows)
     except (SyncError, OSError, ValueError) as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         return 1
     created = sum(result.created for result in results)
     print(json.dumps({
         "revision": revision, "tenant": tenant, "source": source,
-        "results": [{"line": row["_source"]["line"], "sku": row["sku"], "object_id": result.object_id,
+        "results": [{"line": row["_source"]["line"], key: row[key], "object_id": result.object_id,
                      "created": result.created} for row, result in zip(rows, results)],
         "created": created, "existing": len(results) - created,
     }, indent=2))
