@@ -1,0 +1,40 @@
+# Object store for ontology_sync_replay.py: one Cassandra node and the
+# object-database-service binary found in OBJECT_BIN_DIR (default: the repository's
+# bin/, where make build-services writes it).
+#
+# The service applies cql/*/000_keyspace.cql at startup, which declares
+# NetworkTopologyStrategy for dc1, dc2 and dc3. Cassandra 5.0 rejects datacenters
+# the cluster does not have, so on this one-node store the service exits before
+# it serves. The `keyspaces` one-shot therefore creates both keyspaces with one
+# replica first; the service's `CREATE KEYSPACE IF NOT EXISTS` is then a no-op.
+services:
+  db:
+    image: cassandra:5.0
+    environment:
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 96M
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' > /dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 40
+      start_period: 20s
+  keyspaces:
+    image: cassandra:5.0
+    # The host is a positional argument: `cqlsh -h` prints the help and exits 0.
+    entrypoint: ["cqlsh", "db", "-e", "CREATE KEYSPACE IF NOT EXISTS ontology_objects WITH replication = {'class': 'NetworkTopologyStrategy', 'datacenter1': 1}; CREATE KEYSPACE IF NOT EXISTS ontology_indexes WITH replication = {'class': 'NetworkTopologyStrategy', 'datacenter1': 1};"]
+    depends_on:
+      db:
+        condition: service_healthy
+  objects:
+    image: golang:1.26.11
+    entrypoint: /binwork/object-database-service
+    environment:
+      CASSANDRA_CONTACT_POINTS: db
+    volumes:
+      - ${OBJECT_BIN_DIR:-../../../bin}:/binwork:ro
+    ports:
+      - "127.0.0.1::50125"
+    depends_on:
+      keyspaces:
+        condition: service_completed_successfully
