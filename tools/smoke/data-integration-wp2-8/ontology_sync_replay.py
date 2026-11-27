@@ -7,7 +7,8 @@ Every scenario below runs against the object service unchanged. Business callers
 sync the transaction once with ``python3 ontology_sync.py ENDPOINT``; this script
 is the regression and runs every scenario. ``--type OrderLinePrice`` replays the
 archived noon transaction instead; its scenarios are in ``ontology_sync_noon.py``
-and use the same stack.
+and use the same stack. ``--type SettlementLine`` replays the archived Amazon
+transaction the same way from ``ontology_sync_amazon.py``.
 
     python3 ontology_sync_replay.py --output FILE [--bin-dir DIR]
     python3 ontology_sync_replay.py --output FILE --evidence-root DIR
@@ -286,11 +287,14 @@ def main():
     parser.add_argument("--startup-timeout", type=int, default=240)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--rounds", type=int, default=3)
-    parser.add_argument("--type", choices=("ProductCost", "OrderLinePrice"), default="ProductCost",
+    parser.add_argument("--type", choices=("ProductCost", "OrderLinePrice", "SettlementLine"), default="ProductCost",
                         help="archived transaction to replay; default: ProductCost")
     args = parser.parse_args()
     if args.type == "OrderLinePrice":
         from ontology_sync_noon import replay  # imported here: that module imports this one
+        return replay(args)
+    if args.type == "SettlementLine":
+        from ontology_sync_amazon import replay  # imported here: that module imports this one
         return replay(args)
 
     revision, tenant, source, raw = archived_transaction(args.evidence_root)
