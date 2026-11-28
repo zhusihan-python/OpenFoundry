@@ -10,6 +10,13 @@ bounded-context service. Stateless Go service rooted at
   done by an upstream LB.
 - **Validates** JWTs (HS256 / RS256) optionally. Anonymous traffic is
   fine — downstream services enforce auth where they need it.
+- **Gates the object adapter's routes**
+  (`/api/v1/ontology/types/{type_id}/objects…`): they need a verified
+  identity that names an organization its session scope allows, and the
+  gateway binds them to that organization with `x-of-tenant`, replacing
+  any tenant the client sent. Reads (GET, `POST …/query`) need no
+  permission; every other method needs `ontology:write`
+  (`internal/proxy/object_adapter.go`).
 - **Enforces zero-trust scope**: 403 with `scoped_session_method_denied`
   / `scoped_session_path_denied` when the token's `session_scope`
   forbids the method/path.
@@ -57,6 +64,10 @@ Stable codes (do **not** rename — frontend branches on them):
 - `scoped_session_path_denied` → 403
 - `upstream_unavailable` → 502
 - `proxy_response_build_failed` → 500
+- `authentication_required` → 401 (object adapter's routes, no verified identity)
+- `organization_required` → 403 (identity without an organization)
+- `scoped_session_org_denied` → 403 (organization outside the session scope)
+- `object_write_forbidden` → 403 (write without `ontology:write`)
 
 ## Configuration
 
