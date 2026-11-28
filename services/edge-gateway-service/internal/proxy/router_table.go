@@ -8,15 +8,26 @@ import (
 
 // SelectUpstream picks the upstream URL for a given request path.
 //
+// Returns "" when no rule matches; the caller should respond 404 with
+// the `unknown_service_route` error code.
+func SelectUpstream(path string, u config.UpstreamURLs) string {
+	upstream, _ := selectRoute(path, u)
+	return upstream
+}
+
+// selectRoute is the route table: where the gateway sends a request, and
+// whether that is the object adapter's branch. The flag is the branch's
+// alone — it does not depend on the addresses the upstreams are given, so
+// services that share one keep their own routes.
+//
 // The decision tree mirrors Rust `proxy::service_router::proxy_handler`
 // rule for rule. Order matters — earlier branches win, since some
 // rules rely on a more specific suffix match before a broad prefix
 // catches the path. Comments tag each rule with the Rust block it
 // corresponds to so future edits can be cross-referenced.
 //
-// Returns "" when no rule matches; the caller should respond 404 with
-// the `unknown_service_route` error code.
-func SelectUpstream(path string, u config.UpstreamURLs) string {
+// Returns "" when no rule matches.
+func selectRoute(path string, u config.UpstreamURLs) (upstream string, objectAdapter bool) {
 	switch {
 	// ── identity & auth (S8/B16: SSO + api-keys + oauth-clients merged in) ──
 	case strings.HasPrefix(path, "/api/v1/auth/sso"),
@@ -24,7 +35,7 @@ func SelectUpstream(path string, u config.UpstreamURLs) string {
 		strings.HasPrefix(path, "/api/v1/applications"),
 		strings.HasPrefix(path, "/api/v1/oauth/clients"),
 		strings.HasPrefix(path, "/api/v1/external-integrations"):
-		return u.IdentityFederation
+		return u.IdentityFederation, false
 
 	case strings.HasPrefix(path, "/api/v1/auth/register"),
 		strings.HasPrefix(path, "/api/v1/auth/login"),
@@ -33,18 +44,18 @@ func SelectUpstream(path string, u config.UpstreamURLs) string {
 		strings.HasPrefix(path, "/api/v1/auth/sessions"),
 		path == "/api/v1/users/me",
 		path == "/api/v2/admin/users/me":
-		return u.IdentityFederation
+		return u.IdentityFederation, false
 
 	case strings.HasPrefix(path, "/api/v1/auth/cipher"):
-		return u.Cipher
+		return u.Cipher, false
 
 	case strings.HasPrefix(path, "/api/v1/control-panel"),
 		strings.HasPrefix(path, "/api/v2/admin/control-panel"):
-		return u.IdentityFederation
+		return u.IdentityFederation, false
 
 	case strings.HasPrefix(path, "/api/v1/users/") &&
 		(strings.Contains(path, "/roles") || strings.Contains(path, "/groups")):
-		return u.AuthorizationPolicy
+		return u.AuthorizationPolicy, false
 
 	case strings.HasPrefix(path, "/api/v1/roles"),
 		strings.HasPrefix(path, "/api/v1/permissions"),
@@ -56,27 +67,27 @@ func SelectUpstream(path string, u config.UpstreamURLs) string {
 		strings.HasPrefix(path, "/api/v2/admin/groups"),
 		strings.HasPrefix(path, "/api/v2/admin/policies"),
 		strings.HasPrefix(path, "/api/v2/admin/restricted-views"):
-		return u.AuthorizationPolicy
+		return u.AuthorizationPolicy, false
 
 	case strings.HasPrefix(path, "/api/v1/security-governance"),
 		path == "/api/v1/audit/classifications",
 		strings.HasPrefix(path, "/api/v1/audit/governance/"),
 		path == "/api/v1/audit/compliance/posture":
-		return u.SecurityGovernance
+		return u.SecurityGovernance, false
 
 	// ── network boundaries (precedes connector-management) ──
 	case strings.HasPrefix(path, "/api/v1/network-boundaries"),
 		strings.HasPrefix(path, "/api/v1/network-boundary"),
 		strings.HasPrefix(path, "/api/v1/data-connection/egress-policies"):
-		return u.NetworkBoundary
+		return u.NetworkBoundary, false
 
 	case strings.HasPrefix(path, "/api/v1/data-connection"),
 		strings.HasPrefix(path, "/api/v1/webhooks"),
 		strings.HasPrefix(path, "/api/v1/listeners"):
-		return u.ConnectorManagement
+		return u.ConnectorManagement, false
 
 	case strings.HasPrefix(path, "/api/v1/checkpoints-purpose"):
-		return u.CheckpointsPurpose
+		return u.CheckpointsPurpose, false
 
 	// ── retention + lineage deletion (S8/B15: merged into audit-compliance) ──
 	case strings.HasPrefix(path, "/api/v1/retention"),
@@ -84,11 +95,11 @@ func SelectUpstream(path string, u config.UpstreamURLs) string {
 		(strings.Contains(path, "/transactions/") && strings.HasSuffix(path, "/retention")),
 		strings.HasSuffix(path, "/applicable-policies"),
 		strings.HasSuffix(path, "/retention-preview"):
-		return u.AuditCompliance
+		return u.AuditCompliance, false
 
 	case strings.HasPrefix(path, "/api/v1/lineage-deletions"),
 		path == "/api/v1/audit/gdpr/erase":
-		return u.AuditCompliance
+		return u.AuditCompliance, false
 
 	case path == "/api/v1/audit/overview",
 		path == "/api/v1/audit/events",
@@ -100,7 +111,7 @@ func SelectUpstream(path string, u config.UpstreamURLs) string {
 		path == "/api/v1/audit/policies",
 		strings.HasPrefix(path, "/api/v1/audit/policies/"),
 		path == "/api/v1/audit/gdpr/export":
-		return u.AuditCompliance
+		return u.AuditCompliance, false
 
 	// ── tenancy ──
 	case strings.HasPrefix(path, "/api/v1/tenancy"),
@@ -111,70 +122,70 @@ func SelectUpstream(path string, u config.UpstreamURLs) string {
 		strings.HasPrefix(path, "/api/v1/workspace"),
 		strings.HasPrefix(path, "/api/v1/nexus/spaces"),
 		strings.HasPrefix(path, "/api/v1/ontology/projects"):
-		return u.TenancyOrganizations
+		return u.TenancyOrganizations, false
 
 	// ── catch-all auth/users (after the more specific rules above) ──
 	case strings.HasPrefix(path, "/api/v1/auth"),
 		strings.HasPrefix(path, "/api/v1/users"),
 		strings.HasPrefix(path, "/api/v2/admin"):
-		return u.IdentityFederation
+		return u.IdentityFederation, false
 
 	// ── connectors ──
 	case strings.HasPrefix(path, "/api/v1/connector-agents"),
 		(strings.HasPrefix(path, "/api/v1/connections/") &&
 			(strings.HasSuffix(path, "/sync") || strings.HasSuffix(path, "/sync-jobs"))):
-		return u.IngestionReplication
+		return u.IngestionReplication, false
 
 	case strings.HasPrefix(path, "/api/v1/connections/") &&
 		(strings.HasSuffix(path, "/discover") ||
 			strings.Contains(path, "/registrations") ||
 			strings.HasSuffix(path, "/virtual-tables/query")):
-		return u.ConnectorManagement
+		return u.ConnectorManagement, false
 
 	case strings.HasPrefix(path, "/api/v1/connections/") && strings.Contains(path, "/hyperauto/"):
-		return u.ConnectorManagement
+		return u.ConnectorManagement, false
 
 	case strings.HasPrefix(path, "/api/v1/connectors/catalog"),
 		strings.HasPrefix(path, "/api/v1/connections"):
-		return u.ConnectorManagement
+		return u.ConnectorManagement, false
 
 	// ── datasets quality (S8: merged into dataset-versioning) ──
 	case strings.HasPrefix(path, "/api/v1/datasets/") &&
 		(strings.HasSuffix(path, "/quality") ||
 			strings.Contains(path, "/quality/") ||
 			strings.HasSuffix(path, "/lint")):
-		return u.DatasetVersioning
+		return u.DatasetVersioning, false
 
 	// ── iceberg catalog (admin + spec endpoints) ──
 	case strings.HasPrefix(path, "/api/v1/iceberg-tables"),
 		strings.HasPrefix(path, "/iceberg/v1/"),
 		path == "/iceberg/v1",
 		strings.HasPrefix(path, "/v1/iceberg-clients"):
-		return u.IcebergCatalog
+		return u.IcebergCatalog, false
 
 	// ── dataset versioning (versions, transactions, branches, views, files) ──
 	case strings.HasPrefix(path, "/api/v1/datasets/") && datasetVersioningPath(path):
-		return u.DatasetVersioning
+		return u.DatasetVersioning, false
 
 	// ── catalog/legacy filesystem (S8: merged into dataset-versioning) ──
 	case strings.HasPrefix(path, "/api/v1/datasets"),
 		strings.HasPrefix(path, "/api/v2/filesystem"):
-		return u.DatasetVersioning
+		return u.DatasetVersioning, false
 
 	case strings.HasPrefix(path, "/api/v1/queries"):
-		return u.Query
+		return u.Query, false
 
 	// ── pipelines (S8: schedule + authoring → pipeline-build) ──
 	case strings.HasPrefix(path, "/api/v1/pipelines/triggers/cron/"):
-		return u.PipelineBuild
+		return u.PipelineBuild, false
 	case strings.HasPrefix(path, "/api/v1/pipelines/") &&
 		(strings.HasSuffix(path, "/run") || strings.Contains(path, "/runs/") || strings.HasSuffix(path, "/runs")):
-		return u.PipelineBuild
+		return u.PipelineBuild, false
 	case strings.HasPrefix(path, "/api/v1/pipelines"):
-		return u.PipelineBuild
+		return u.PipelineBuild, false
 
 	case strings.HasPrefix(path, "/api/v1/lineage"):
-		return u.Lineage
+		return u.Lineage, false
 
 	// ── ontology actions/funnel/functions/rules (S8.1) ──
 	case strings.HasPrefix(path, "/api/v1/ontology/functions"),
@@ -189,121 +200,121 @@ func SelectUpstream(path string, u config.UpstreamURLs) string {
 			(strings.Contains(path, "/inline-edit/") || strings.HasSuffix(path, "/inline-edit"))),
 		(strings.HasPrefix(path, "/api/v1/ontology/types/") && strings.HasSuffix(path, "/rules")),
 		(strings.HasPrefix(path, "/api/v1/ontology/objects/") && strings.HasSuffix(path, "/rule-runs")):
-		return u.OntologyActions
+		return u.OntologyActions, false
 
 	case strings.HasPrefix(path, "/api/v1/ontology/search"),
 		strings.HasPrefix(path, "/api/v1/ontology/graph"),
 		strings.HasPrefix(path, "/api/v1/ontology/quiver"),
 		strings.HasPrefix(path, "/api/v1/ontology/object-sets"),
 		(strings.HasPrefix(path, "/api/v1/ontology/types/") && strings.HasSuffix(path, "/objects/knn")):
-		return u.OntologyQuery
+		return u.OntologyQuery, false
 
 	case strings.HasPrefix(path, "/api/v1/ontology/links/") && strings.Contains(path, "/instances"):
-		return u.ObjectDatabase
+		return u.ObjectDatabase, false
 	// `/objects/query` goes to ObjectDatabase (filter pushdown over the same
 	// store the dashboard reads). The historical OntologyQuery target had its
 	// own storage backend; keeping reads + queries co-located prevents the
 	// split-brain we hit during the PoC. `/objects/knn` stays on OntologyQuery
 	// since the vector index lives there.
 	case strings.HasPrefix(path, "/api/v1/ontology/types/") && strings.Contains(path, "/objects"):
-		return u.ObjectDatabase
+		return u.ObjectDatabase, true
 
 	case strings.HasPrefix(path, "/api/v1/ontology/interfaces"),
 		strings.HasPrefix(path, "/api/v1/ontology/shared-property-types"),
 		strings.HasPrefix(path, "/api/v1/ontology/links"),
 		strings.HasPrefix(path, "/api/v1/ontology/types"):
-		return u.OntologyDefinition
+		return u.OntologyDefinition, false
 	case strings.HasPrefix(path, "/api/v1/ontology"):
-		return u.OntologyDefinition
+		return u.OntologyDefinition, false
 
 	case strings.HasPrefix(path, "/api/v1/workflows/approvals"),
 		strings.HasPrefix(path, "/api/v1/approvals"):
-		return u.Approvals
+		return u.Approvals, false
 	case strings.HasPrefix(path, "/api/v1/workflows"):
-		return u.Workflow
+		return u.Workflow, false
 
 	case strings.HasPrefix(path, "/api/v1/notebooks"),
 		strings.HasPrefix(path, "/api/v1/notepad"):
-		return u.Notebook
+		return u.Notebook, false
 
 	case strings.HasPrefix(path, "/api/v1/notifications"):
-		return u.Notification
+		return u.Notification, false
 
 	case strings.HasPrefix(path, "/api/v1/monitoring/"),
 		strings.HasPrefix(path, "/api/v1/monitoring-views"),
 		strings.HasPrefix(path, "/api/v1/monitor-rules"):
-		return u.TelemetryGovernance
+		return u.TelemetryGovernance, false
 
 	// ── ML ──
 	case strings.HasPrefix(path, "/api/v1/ml/experiments"),
 		strings.HasPrefix(path, "/api/v1/ml/runs"):
-		return u.ModelCatalog
+		return u.ModelCatalog, false
 	case strings.HasPrefix(path, "/api/v1/ml/models"),
 		strings.HasPrefix(path, "/api/v1/ml/model-versions"):
-		return u.ModelCatalog
+		return u.ModelCatalog, false
 	case strings.HasPrefix(path, "/api/v1/ml/deployments/") && strings.HasSuffix(path, "/drift"):
-		return u.ModelDeployment
+		return u.ModelDeployment, false
 	case strings.HasPrefix(path, "/api/v1/ml/deployments/") && strings.HasSuffix(path, "/predict"):
-		return u.ModelDeployment
+		return u.ModelDeployment, false
 	case strings.HasPrefix(path, "/api/v1/ml/batch-predictions"):
-		return u.ModelDeployment
+		return u.ModelDeployment, false
 	case strings.HasPrefix(path, "/api/v1/ml/deployments"):
-		return u.ModelDeployment
+		return u.ModelDeployment, false
 	case strings.HasPrefix(path, "/api/v1/ml"):
-		return u.ML
+		return u.ML, false
 
 	// ── AI ──
 	case strings.HasPrefix(path, "/api/v1/ai/guardrails/evaluate"),
 		strings.HasPrefix(path, "/api/v1/ai/evaluations"):
-		return u.AIEvaluation
+		return u.AIEvaluation, false
 	case strings.HasPrefix(path, "/api/v1/ai/providers"):
-		return u.LLMCatalog
+		return u.LLMCatalog, false
 	case strings.HasPrefix(path, "/api/v1/ai/prompts"):
-		return u.PromptWorkflow
+		return u.PromptWorkflow, false
 	case strings.HasPrefix(path, "/api/v1/ai/knowledge-bases/") && strings.HasSuffix(path, "/search"):
-		return u.RetrievalContext
+		return u.RetrievalContext, false
 	case strings.HasPrefix(path, "/api/v1/ai/knowledge-bases"):
-		return u.KnowledgeIndex
+		return u.KnowledgeIndex, false
 	case strings.HasPrefix(path, "/api/v1/ai/conversations"):
-		return u.ConversationState
+		return u.ConversationState, false
 	case strings.HasPrefix(path, "/api/v1/ai/tools"):
-		return u.AI
+		return u.AI, false
 	case strings.HasPrefix(path, "/api/v1/ai"):
-		return u.AI
+		return u.AI, false
 
 	case strings.HasPrefix(path, "/api/v1/entity-resolution"),
 		strings.HasPrefix(path, "/api/v1/fusion"):
-		return u.EntityResolution
+		return u.EntityResolution, false
 
 	case strings.HasPrefix(path, "/api/v1/streaming"):
-		return u.Streaming
+		return u.Streaming, false
 	case strings.HasPrefix(path, "/api/v1/reports"):
-		return u.Report
+		return u.Report, false
 	case strings.HasPrefix(path, "/api/v1/geospatial"):
-		return u.GeospatialIntelligence
+		return u.GeospatialIntelligence, false
 
 	case strings.HasPrefix(path, "/api/v1/code-repos/repositories/") &&
 		strings.HasSuffix(path, "/branches"):
-		return u.GlobalBranch
+		return u.GlobalBranch, false
 	case strings.HasPrefix(path, "/api/v1/code-repos"):
-		return u.CodeRepo
+		return u.CodeRepo, false
 
 	case strings.HasPrefix(path, "/api/v1/federation-product-exchange"),
 		strings.HasPrefix(path, "/api/v1/nexus"),
 		path == "/api/v1/marketplace/installs",
 		path == "/api/v1/marketplace/devops/branches":
-		return u.FederationProductExchange
+		return u.FederationProductExchange, false
 	case strings.HasPrefix(path, "/api/v1/marketplace/devops"),
 		strings.HasPrefix(path, "/api/v1/marketplace"):
-		return u.FederationProductExchange
+		return u.FederationProductExchange, false
 
 	case strings.HasPrefix(path, "/api/v1/audit/sds"):
-		return u.AuditCompliance
+		return u.AuditCompliance, false
 	case strings.HasPrefix(path, "/api/v1/audit"):
-		return u.AuditCompliance
+		return u.AuditCompliance, false
 
 	case strings.HasPrefix(path, "/api/v1/widgets"):
-		return u.ApplicationComposition
+		return u.ApplicationComposition, false
 
 	// ── apps (curation/composition split) ──
 	case strings.HasPrefix(path, "/api/v1/apps/public/"),
@@ -314,11 +325,11 @@ func SelectUpstream(path string, u config.UpstreamURLs) string {
 		(strings.HasPrefix(path, "/api/v1/apps/") && strings.HasSuffix(path, "/slate-package")),
 		(strings.HasPrefix(path, "/api/v1/apps/") && strings.HasSuffix(path, "/versions")),
 		(strings.HasPrefix(path, "/api/v1/apps/") && strings.HasSuffix(path, "/publish")):
-		return u.ApplicationComposition
+		return u.ApplicationComposition, false
 	case strings.HasPrefix(path, "/api/v1/apps"):
-		return u.AppBuilder
+		return u.AppBuilder, false
 	}
-	return ""
+	return "", false
 }
 
 // datasetVersioningPath captures the long suffix-or-contains rule the

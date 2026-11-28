@@ -74,6 +74,12 @@ func objectAccessOf(path, method string) objectAccess {
 // ontology objects to the object adapter, and returns the organization the
 // request is bound to.
 //
+// objectAdapter is the route table's answer that the request goes down the
+// object adapter's branch ([selectRoute]), whatever addresses the upstreams
+// are given. Of the paths that branch takes, the adapter's own routes alone
+// are gated: objectAccessOf tells them from the rest and says whether the
+// request reads or writes.
+//
 // The request gets through only with a verified identity that names an
 // organization — the all-zero UUID included — which its session scope allows.
 // That organization is the partition the adapter reads and writes in; a
@@ -83,9 +89,12 @@ func objectAccessOf(path, method string) objectAccess {
 // The second result is true when the gateway denied the request and wrote
 // the answer itself. Both results are zero for a request that is not the
 // object adapter's.
-func (h *Handler) authorizeObjectAdapter(w http.ResponseWriter, r *http.Request, claims *authmw.Claims, upstreamBase string) (*uuid.UUID, bool) {
+func authorizeObjectAdapter(w http.ResponseWriter, r *http.Request, claims *authmw.Claims, objectAdapter bool) (*uuid.UUID, bool) {
+	if !objectAdapter {
+		return nil, false
+	}
 	access := objectAccessOf(r.URL.Path, r.Method)
-	if access == notObjectAdapter || upstreamBase != h.Cfg.Upstream.ObjectDatabase {
+	if access == notObjectAdapter {
 		return nil, false
 	}
 	if claims == nil {

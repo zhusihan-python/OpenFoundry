@@ -15,7 +15,7 @@
 // The object adapter's routes (…/ontology/types/{type_id}/objects…) are the
 // exception to step 1: they take a verified identity of an organization, which
 // becomes the tenant the adapter partitions by, and writes on them take
-// ontology:write — see [Handler.authorizeObjectAdapter].
+// ontology:write — see [authorizeObjectAdapter].
 //
 // Error codes / status codes match the Rust gateway 1:1 — see
 // `internal/errs/errs.go` for the wire shape.
@@ -85,7 +85,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tenant = authmw.TenantContextFromClaims(claims)
 	}
 
-	upstreamBase := SelectUpstream(r.URL.Path, h.Cfg.Upstream)
+	upstreamBase, objectAdapter := selectRoute(r.URL.Path, h.Cfg.Upstream)
 	if upstreamBase == "" {
 		errs.Write(w, http.StatusNotFound,
 			errs.CodeUnknownServiceRoute, "unknown service route")
@@ -94,7 +94,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// The object adapter is gated here, before anything of the request is read
 	// or forwarded; org is the organization it is bound to, when it is one.
-	org, denied := h.authorizeObjectAdapter(w, r, claims, upstreamBase)
+	org, denied := authorizeObjectAdapter(w, r, claims, objectAdapter)
 	if denied {
 		return
 	}

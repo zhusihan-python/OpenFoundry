@@ -97,19 +97,22 @@ type objectGateway struct {
 
 func newObjectGateway(t *testing.T) *objectGateway {
 	t.Helper()
+	return newObjectGatewayAt(t, newRecordingUpstream(t), newRecordingUpstream(t))
+}
+
+// newObjectGatewayAt wires the object adapter's upstream and every other ontology
+// upstream the route table can pick; the two may be the same server.
+func newObjectGatewayAt(t *testing.T, objects, others *recordingUpstream) *objectGateway {
+	t.Helper()
 	cfg := &config.Config{}
 	cfg.Service.Name = "edge-gateway-service"
 	cfg.JWT.Secret = "test-secret-32bytes-test-secret-3"
-	gw := &objectGateway{
-		jwt:     authmw.NewJWTConfig(cfg.JWT.Secret),
-		objects: newRecordingUpstream(t),
-		others:  newRecordingUpstream(t),
-	}
+	gw := &objectGateway{jwt: authmw.NewJWTConfig(cfg.JWT.Secret), objects: objects, others: others}
 	cfg.Upstream = config.UpstreamURLs{
-		ObjectDatabase:     gw.objects.URL,
-		OntologyActions:    gw.others.URL,
-		OntologyQuery:      gw.others.URL,
-		OntologyDefinition: gw.others.URL,
+		ObjectDatabase:     objects.URL,
+		OntologyActions:    others.URL,
+		OntologyQuery:      others.URL,
+		OntologyDefinition: others.URL,
 	}
 	gw.Server = httptest.NewServer(proxy.NewHandler(cfg, gw.jwt))
 	t.Cleanup(gw.Close)
@@ -438,4 +441,47 @@ func TestObjectAdapterBoundaryLeavesOtherRoutesAlone(t *testing.T) {
 	for _, f := range append(gw.others.requests(), gw.objects.requests()...) {
 		assert.Empty(t, f.Tenants, "%s %s", f.Method, f.Path)
 	}
+}
+
+func TestObjectAdapterBoundaryFollowsTheRouteNotTheAddress(t *testing.T) {
+	t.Parallel()
+	// The object database and the services whose routes only look like objects may share
+	// one address. What decides is the route table's branch: the neighbors keep what they
+	// had — no identity asked for, no tenant set — and the adapter's own routes behind the
+	// same address are gated as before.
+	shared := newRecordingUpstream(t)
+	gw := newObjectGatewayAt(t, shared, shared)
+	org := uuid.New()
+	reader := gw.sign(t, gw.jwt, memberClaims(&org))
+
+	neighbors := []route{
+		{http.MethodPost, objectCollection + "/knn"},
+		{http.MethodPost, objectCollection + "/" + objectID + "/inline-edit"},
+		{http.MethodPatch, objectCollection + "/" + objectID + "/inline-edit"},
+		{http.MethodPost, objectCollection + "/" + objectID + "/inline-edit/"},
+		{http.MethodPost, objectCollection + "/inline-edit-batch"},
+		{http.MethodPost, "/api/v1/ontology/types/ProductCost/rules"},
+	}
+	for _, r := range neighbors {
+		assert.Equal(t, answer{Status: http.StatusOK, Forwarded: true}, gw.ask(t, r.method, r.path, "", nil),
+			"anonymous %s %s", r.method, r.path)
+		assert.Equal(t, answer{Status: http.StatusOK, Forwarded: true}, gw.ask(t, r.method, r.path, reader, nil),
+			"reader %s %s", r.method, r.path)
+	}
+	sent := shared.requests()
+	require.Len(t, sent, 2*len(neighbors))
+	for _, f := range sent {
+		assert.Empty(t, f.Tenants, "%s %s", f.Method, f.Path)
+	}
+
+	// The adapter's own routes, behind that same address.
+	assert.Equal(t, answer{Status: http.StatusUnauthorized, Code: "authentication_required"},
+		gw.ask(t, http.MethodGet, objectCollection, "", nil), "anonymous GET of the collection")
+	assert.Equal(t, answer{Status: http.StatusForbidden, Code: "object_write_forbidden"},
+		gw.ask(t, http.MethodPost, objectCollection, reader, nil), "reader POST to the collection")
+	assert.Equal(t, answer{Status: http.StatusOK, Forwarded: true},
+		gw.ask(t, http.MethodGet, objectCollection, reader, nil), "reader GET of the collection")
+	sent = shared.requests()
+	require.Len(t, sent, 2*len(neighbors)+1)
+	assert.Equal(t, []string{org.String()}, sent[len(sent)-1].Tenants, "bound to the verified organization")
 }
