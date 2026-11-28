@@ -33,6 +33,12 @@ const (
 	HdrGuestAccess             = "x-openfoundry-guest-access"
 )
 
+// HdrObjectTenant is the tenant the object adapter partitions objects by
+// (object-database-service, internal/handlers/objects_bridge.go:
+// tenantFromRequest). The gateway sets it on the object adapter's routes
+// only, from the verified organization.
+const HdrObjectTenant = "x-of-tenant"
+
 // ApplyTenantHeaders sets the per-tenant headers on the upstream request.
 func ApplyTenantHeaders(req *http.Request, t *authmw.TenantContext) {
 	if t == nil {

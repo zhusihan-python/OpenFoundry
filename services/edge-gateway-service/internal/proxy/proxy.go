@@ -12,6 +12,11 @@
 //  8. Forward via http.Client.
 //  9. Stream response status + headers + body back to client.
 //
+// The object adapter's routes (…/ontology/types/{type_id}/objects…) are the
+// exception to step 1: they take a verified identity of an organization, which
+// becomes the tenant the adapter partitions by, and writes on them take
+// ontology:write — see [Handler.authorizeObjectAdapter].
+//
 // Error codes / status codes match the Rust gateway 1:1 — see
 // `internal/errs/errs.go` for the wire shape.
 package proxy
@@ -87,6 +92,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The object adapter is gated here, before anything of the request is read
+	// or forwarded; org is the organization it is bound to, when it is one.
+	org, denied := h.authorizeObjectAdapter(w, r, claims, upstreamBase)
+	if denied {
+		return
+	}
+
 	// Build the outbound URL by joining base + rewritten path/query.
 	target, err := buildUpstreamURL(upstreamBase, r.URL)
 	if err != nil {
@@ -115,6 +127,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ApplyTenantHeaders(out, &tenant)
 	if claims != nil {
 		ApplyAuthContextHeaders(out, claims)
+	}
+	if org != nil {
+		// The adapter partitions by this header: it is the verified organization,
+		// whatever tenant the client sent.
+		out.Header.Set(HdrObjectTenant, org.String())
 	}
 
 	resp, err := h.Client.Do(out)

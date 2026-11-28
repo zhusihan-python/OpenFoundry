@@ -36,6 +36,15 @@ const (
 	CodeProxyResponseBuildFailed  = "proxy_response_build_failed"
 )
 
+// Codes of the object adapter's boundary (…/ontology/types/{type_id}/objects…),
+// which the gateway gates rather than downstream.
+const (
+	CodeAuthenticationRequired = "authentication_required"
+	CodeOrganizationRequired   = "organization_required"
+	CodeScopedSessionOrgDenied = "scoped_session_org_denied"
+	CodeObjectWriteForbidden   = "object_write_forbidden"
+)
+
 // Write serialises the envelope and emits status + JSON to w.
 func Write(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
