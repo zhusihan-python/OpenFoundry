@@ -16,4 +16,6 @@ The evidence directory contains synthetic source files, downloaded snapshots, th
 
 [Fixture storage identity and policy model](https://docs.rustfs.com/en/security-compliance/iam/sts)
 
+`lingxing`, `noon` and `amazon` run the three source handoffs of `tools/smoke/data-integration-wp2-8` through this entry, and `lingxing-gateway`, `noon-gateway` and `amazon-gateway` the same rounds with their objects also accepted through the edge gateway; the [README of that directory](../data-integration-wp2-8/README.md) holds both.
+
 Set `WP23_VERIFY_UI=1` to verify the gallery and the configured source in ego-browser with the installed web workspace dependencies. The Vite bootstrap and profile responses are fixtures; catalog and per-source capabilities come from the real connector service.

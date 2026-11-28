@@ -112,6 +112,8 @@ The evidence of this step is in the same directory. order-line-price-downstream.
 
 `main()` alone remains the entry of `noon-preview`, which runs the handoff above and no delivery: it needs no object service, and `run.sh` builds none for it.
 
+`bash tools/smoke/data-integration-wp2-3/run.sh noon-gateway` runs this round and then accepts the three order lines through the edge gateway, in the same stack and against the same objects: the [README of this directory](../README.md#the-three-objects-through-the-edge-gateway) holds the scenarios. A row is named by `item_nr`, and `order-line-price-gateway.json` is the record.
+
 ## Version comparison preview
 
 The optional `noon-preview` case runs the checks above in the same stack, then compares the three published output versions of that one Pipeline dataset by `item_nr`:
