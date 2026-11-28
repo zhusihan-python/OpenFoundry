@@ -56,7 +56,7 @@ def located(*pairs):
 
 
 class Kinds(unittest.TestCase):
-    """What differs between the two types is held by the kind; ``--type`` chooses one of two."""
+    """What differs between the types is held by the kind; ``--type`` chooses one of them."""
 
     def test_the_noon_kind_names_its_key_its_entry_its_route_and_its_files(self):
         self.assertEqual((ORDER_LINE_PRICE.key, ORDER_LINE_PRICE.sync, ORDER_LINE_PRICE.expected),
@@ -74,13 +74,13 @@ class Kinds(unittest.TestCase):
                           PRODUCT_COST.downstream_file),
                          ("product-report.json", "product-cost-source.json", "product-cost-v3.ndjson",
                           "product-cost-downstream.json"))
-        self.assertEqual((KINDS, entry.DEFAULT), ({"ProductCost": PRODUCT_COST, "OrderLinePrice": ORDER_LINE_PRICE},
-                                                  "ProductCost"))
+        self.assertEqual((KINDS, entry.DEFAULT), ({"ProductCost": PRODUCT_COST, "OrderLinePrice": ORDER_LINE_PRICE,
+                                                   "SettlementLine": entry.SETTLEMENT_LINE}, "ProductCost"))
 
     def test_a_type_that_is_not_synced_is_refused(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as stopped:
-            main(["--state", ".", "--endpoint", "http://objects.test", "--type", "SettlementLine"])
+            main(["--state", ".", "--endpoint", "http://objects.test", "--type", "Invoice"])
         self.assertEqual((stopped.exception.code, out.getvalue()), (2, ""))
 
 

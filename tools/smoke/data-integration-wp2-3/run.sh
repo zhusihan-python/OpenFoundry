@@ -92,8 +92,8 @@ fi
 build=(./services/{dataset-versioning-service,pipeline-build-service,connector-management-service}/cmd/...)
 if (( gateway )); then build+=(./services/edge-gateway-service/cmd/edge-gateway-service); fi
 if (( page_downloads )); then build+=(./tools/smoke/data-integration-wp2-3/loopback-forwarder); fi
-# The lingxing and noon smokes deliver their v3 to an object service of their own.
-if [[ "$source_type" == lingxing || "$source_type" == noon ]]; then
+# The lingxing, noon and amazon smokes deliver their v3 to an object service of their own.
+if [[ "$source_type" == lingxing || "$source_type" == noon || "$source_type" == amazon ]]; then
   build+=(./services/object-database-service/cmd/object-database-service)
 fi
 docker run --rm -v "$root:/src:ro" -v "$BIN_DIR:/out" \

@@ -32,16 +32,25 @@ creates the three objects; the same command run again, after a restart of the do
 creates none and is accepted the same way, because a redelivery of the same key and content
 succeeds by #90. The second form reads a tenant back and judges it against the source file:
 nothing is synced and the Dataset service is not asked. Both print one JSON report with the
-readback and return 0 only when the assertion accepts the tenant. ``run.sh lingxing`` and
-``run.sh noon`` run the first form twice, as two processes with the same command, and the second
-on three tenants that received the other sources, against a Cassandra store each smoke starts and
-stops itself.
+readback and return 0 only when the assertion accepts the tenant. ``run.sh lingxing``,
+``run.sh noon`` and ``run.sh amazon`` run the first form twice, as two processes with the same
+command, and the second on three tenants that received the other sources, against a Cassandra
+store each smoke starts and stops itself.
 
 ``--type`` selects the synced type and with it the smoke whose report names the round, the key
 and the values of its rows and the prefix of its files: ``ProductCost``, the default, is a SKU
-and its cost under ``product-cost``, and ``OrderLinePrice`` an order line number with its
-currency and unit price under ``order-line-price``. ``Kind`` holds what differs between the two;
-every function below is theirs in common.
+and its cost under ``product-cost``, ``OrderLinePrice`` an order line number with its currency
+and unit price under ``order-line-price``, and ``SettlementLine`` a settlement line, which has
+no key property of its own, with its settlement id, type, order id, SKU and total under
+``settlement-line``. ``Kind`` holds what differs between the types; every function below is
+theirs in common.
+
+A settlement line is identified as ``ontology_sync.py`` identifies it: by ``_source.file`` and
+``_source.line`` next to the tenant, the type and the transaction, so the order and the refund of
+one order id and one SKU hold two objects. Its amounts are exact decimals: the answers of the
+object service are read with every fraction a ``Decimal``, and the totals the tenant holds are
+compared with the ``EXPECTED_LINES`` of ``ontology_sync_amazon.py`` and, as a whole, by its
+``checked``.
 """
 
 import argparse
@@ -57,6 +66,8 @@ import uuid
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+from functools import partial
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -72,8 +83,10 @@ def _sibling(name):
 
 
 _sibling("ontology_sync"), _sibling("ontology_sync_replay"), _sibling("ontology_sync_noon")
-from ontology_sync import (ENTRIES, SOURCE_ATTRIBUTES, SyncError, archived_transaction, rows_of,  # noqa: E402
-                           stable_object_id)
+_sibling("ontology_sync_amazon")
+from ontology_sync import (ENTRIES, SETTLEMENT_LINE_KEY, SOURCE_ATTRIBUTES, SyncError, archived_transaction,  # noqa: E402
+                           rows_of, stable_object_id)
+from ontology_sync_amazon import EXPECTED_LINES, EXPECTED_TOTAL, checked, plain, read  # noqa: E402
 from ontology_sync_noon import EXPECTED_VALUES  # noqa: E402
 from ontology_sync_replay import Stack, backend_is_cassandra, call  # noqa: E402
 
@@ -94,16 +107,32 @@ OTHER_SOURCES = (("archived_transaction", None, ("dataset", "transaction", "file
                  ("second_output", 2, ("version", "transaction", "file", "sha256")))
 
 
+def _get(endpoint, path, tenant):
+    """One GET as ``ontology_sync_replay.py`` makes it: every fraction of the answer a float."""
+    return call(endpoint, "GET", path, tenant)
+
+
 @dataclass(frozen=True)
 class Kind:
-    """One synced type: what differs between the ProductCost rows of lingxing and the
-    OrderLinePrice rows of noon. Everything else in this module is theirs in common.
+    """One synced type: what differs between the ProductCost rows of lingxing, the OrderLinePrice
+    rows of noon and the SettlementLine rows of amazon. Everything else in this module is theirs
+    in common.
 
     A row of the file is named by ``key`` and known by the values ``values`` reads beside that
-    key: a cost, or a currency and a unit price. ``expected`` holds them for each key of the v3
+    name: a cost, or a currency and a unit price. ``expected`` holds them for each name of the v3
     this round published and ``value_name`` is how a problem names them. ``report`` is the report
     of that round, whose ``organization``, the publisher of the round, is the tenant of the
     delivery. The evidence of a run is written to ``<prefix>-<name>`` in its state directory.
+
+    ``key_properties`` are the key of an object, named as ``ontology_sync.py`` names key
+    properties. By default it is the one ``key`` names and the value of that property is the
+    name of a row. When every one is an attribute of the row's ``_source``, as for a settlement
+    line, the row is named by its line: ``_source.line`` is the name, and every other attribute
+    comes from the source judged against, which names a file and holds no line. ``row`` reads one
+    row of a file and ``get`` one answer of the object service; a settlement line reads the
+    fractions of both as exact decimals. ``whole``, for a type whose rows are also checked as a
+    whole, is the sentence the rows must satisfy and the function of the first readback that
+    raises AssertionError when they do not.
     """
 
     type_id: str
@@ -112,11 +141,49 @@ class Kind:
     value_name: str
     report: str
     prefix: str
+    key_properties: tuple = ()
+    row: Callable[[str], dict] = json.loads
+    get: Callable[[str, str, str], dict] = _get
+    whole: tuple | None = None
 
     @property
     def key(self):
-        """The property that identifies one row of this type in its transaction."""
+        """The property that names a row of this type in the reports of its sync entry."""
         return ENTRIES[self.type_id][0]
+
+    @property
+    def keys(self):
+        """The properties that are the key of one object of this type."""
+        return self.key_properties or (self.key,)
+
+    @property
+    def by_line(self):
+        """Whether a row is named by its line: every key property is an attribute of its ``_source``."""
+        return all(name.startswith("_source.") for name in self.keys)
+
+    @property
+    def name_property(self):
+        """The property whose value in a read-back object names the row it holds."""
+        return "line" if self.by_line else self.key
+
+    def name(self, number, row):
+        """What names one row of a file: its line, or the value of the property that is its key."""
+        return number if self.by_line else row[self.key]
+
+    def held_name(self, properties):
+        """The name of the row a read-back object claims to hold: its ``_source.line``, or its key property.
+        An object whose ``_source`` is no object claims no line."""
+        return (held_source(properties) or {}).get("line") if self.by_line else properties.get(self.key)
+
+    def key_of(self, source, name):
+        """The key of the object that holds the row ``name`` names in the source ``source`` names.
+
+        ``source`` names a file and holds no line, so the line of the key is the name of the row,
+        as the one property that names the rows of the other types is; every other attribute of
+        the key comes from ``source``.
+        """
+        return {prop: source[prop[len("_source."):]] if prop.startswith("_source.") and prop != "_source.line" else name
+                for prop in self.keys}
 
     @property
     def sync(self):
@@ -151,11 +218,57 @@ def _price(row):
     return [row["currency"], row["unit_price"]]
 
 
+# What names a settlement line beside its total.
+LINE_FIELDS = ("settlement id", "type", "order id", "sku")
+
+
+def _exact(amount):
+    """An amount as the exact decimal of its digits: the Decimal of a readback, or the digits its JSON
+    evidence keeps. A float, a boolean or text that is no number is returned as it is, so that it
+    equals no expected amount."""
+    if isinstance(amount, Decimal):
+        return amount
+    if isinstance(amount, (str, int)) and not isinstance(amount, bool):
+        try:
+            return Decimal(amount)
+        except InvalidOperation:
+            return amount
+    return amount
+
+
+def _line(row):
+    """The values of a SettlementLine row beside its line: its settlement id, type, order id, SKU and total."""
+    return [*(row[name] for name in LINE_FIELDS), _exact(row["total"])]
+
+
+def expected_lines():
+    """What the settlement lines of this round's v3 hold, by their line in the file: the ``EXPECTED_LINES``
+    of ``ontology_sync_amazon.py``, each total an exact decimal."""
+    return {number: [*(line[name] for name in LINE_FIELDS), Decimal(line["total"])]
+            for number, line in enumerate(EXPECTED_LINES, 1)}
+
+
+def _lines_held(store):
+    """``checked`` of ``ontology_sync_amazon.py`` over the settlement lines a readback holds, in file order."""
+    lines = [{"line": obj["properties"]["_source"]["line"], "object_id": obj["id"],
+              **{name: obj["properties"][name] for name in LINE_FIELDS},
+              "total": str(obj["properties"]["total"])} for obj in store["objects"]]
+    return checked(sorted(lines, key=lambda line: line["line"]))
+
+
+LINES_HELD = ("the three settlement lines the tenant holds are the expected three in file order: the order and the "
+              f"refund of one order and SKU hold different ids, and their totals are exact decimals adding up to "
+              f"{EXPECTED_TOTAL}", _lines_held)
+
 PRODUCT_COST = Kind(type_id="ProductCost", expected={"0007": "0.00", "W-2": "9.25", "D3": "17.40"},
                     values=_cost, value_name="cg_price", report="product-report.json", prefix="product-cost")
 ORDER_LINE_PRICE = Kind(type_id="OrderLinePrice", expected=EXPECTED_VALUES, values=_price,
                         value_name="currency and unit_price", report="noon-report.json", prefix="order-line-price")
-KINDS = {kind.type_id: kind for kind in (PRODUCT_COST, ORDER_LINE_PRICE)}
+SETTLEMENT_LINE = Kind(type_id="SettlementLine", expected=expected_lines(), values=_line,
+                       value_name="settlement id, type, order id, sku and total", report="amazon-report.json",
+                       prefix="settlement-line", key_properties=SETTLEMENT_LINE_KEY,
+                       row=partial(json.loads, parse_float=Decimal), get=read, whole=LINES_HELD)
+KINDS = {kind.type_id: kind for kind in (PRODUCT_COST, ORDER_LINE_PRICE, SETTLEMENT_LINE)}
 # The lingxing evidence keeps the names of #95: what this round's v3 holds, each a string, and its files.
 EXPECTED_COSTS = PRODUCT_COST.expected
 SOURCE_FILE = PRODUCT_COST.source_file
@@ -309,9 +422,9 @@ def locate(reader, receipt, kind=PRODUCT_COST):
 def read_back(endpoint, tenant, kind=PRODUCT_COST):
     """The objects of one type that one tenant holds: the list, then each listed object by id."""
     route = kind.route
-    listed = call(endpoint, "GET", route + "?per_page=50", tenant)
+    listed = kind.get(endpoint, route + "?per_page=50", tenant)
     return {"total": listed["total"],
-            "objects": [call(endpoint, "GET", route + item["id"], tenant) for item in listed["data"]]}
+            "objects": [kind.get(endpoint, route + item["id"], tenant) for item in listed["data"]]}
 
 
 def _same(left, right):
@@ -320,9 +433,9 @@ def _same(left, right):
 
 
 def lines_and_values(rows, kind=PRODUCT_COST):
-    """The line and the values of each key in one file, by key."""
-    return ({row[kind.key]: number for number, row in enumerate(rows, 1)},
-            {row[kind.key]: kind.values(row) for row in rows})
+    """The line and the values of each name in one file, by name."""
+    return ({kind.name(number, row): number for number, row in enumerate(rows, 1)},
+            {kind.name(number, row): kind.values(row) for number, row in enumerate(rows, 1)})
 
 
 def _lenient(properties):
@@ -330,20 +443,28 @@ def _lenient(properties):
     return defaultdict(lambda: None, properties)
 
 
+def held_source(properties):
+    """The ``_source`` a read-back object holds, or None when it holds none or holds one that is no object."""
+    source = properties.get("_source")
+    return source if isinstance(source, dict) else None
+
+
 def row_differences(source, lines, values, tenant, store, kind=PRODUCT_COST):
     """Where the objects a tenant holds differ from the rows of one file.
 
     ``source`` names the dataset, version, transaction, file and SHA256 of the file, ``lines``
-    the line of each key in it and ``values`` the values of each key. The tenant holds exactly
-    that file when it holds one object per key and nothing else, when the id of each object is
+    the line of each name in it and ``values`` the values of each name. The tenant holds exactly
+    that file when it holds one object per name and nothing else, when the id of each object is
     the id the client derives from the tenant, the type, the transaction of the file and the key
-    it holds, and when the object keeps the values of its row and an ``_source`` that repeats
-    the source and the line of its key. An empty list accepts the tenant.
+    of the name it holds, and when the object keeps the values of its row and an ``_source`` that
+    repeats the source and the line of its name. An empty list accepts the tenant. An object
+    whose ``_source`` is no object is refused for that, whatever else it holds.
     """
     problems = []
-    key, type_id = kind.key, kind.type_id
+    type_id = kind.type_id
     ids = sorted(obj["id"] for obj in store["objects"])
-    expected = sorted(stable_object_id(tenant, type_id, source["transaction"], {key: name}) for name in values)
+    expected = sorted(stable_object_id(tenant, type_id, source["transaction"], kind.key_of(source, name))
+                      for name in values)
     if store["total"] != len(values) or ids != expected:
         problems.append(f"{store['total']} listed and {len(ids)} read back, expected the {len(values)} objects of "
                         f"transaction {source['transaction']}: {ids} is not {expected}")
@@ -352,19 +473,24 @@ def row_differences(source, lines, values, tenant, store, kind=PRODUCT_COST):
         where = f"object {obj['id']}"
         if obj["object_type_id"] != type_id:
             problems.append(f"{where} is a {obj['object_type_id']}")
-        name = properties.get(key)
-        if name not in values:
-            problems.append(f"{where}: {key} {name!r} is not one of {sorted(values)}")
+        got = properties.get("_source")
+        if kind.by_line and not isinstance(got, dict):
+            # The line that names the row is read from its _source: an object whose _source is no object names no row.
+            problems.append(f"{where} _source: {got!r}, expected an object naming its line")
             continue
-        # The row agrees with the key it names, so the id is what places it: without this a
+        name = kind.held_name(properties)
+        # A key property is a string or an integer, as stable_object_id requires; a boolean is neither.
+        if isinstance(name, bool) or not isinstance(name, (str, int)) or name not in values:
+            problems.append(f"{where}: {kind.name_property} {name!r} is not one of {sorted(values)}")
+            continue
+        # The row agrees with the name it claims, so the id is what places it: without this a
         # tenant that swapped the complete properties of two objects would be accepted.
-        if obj["id"] != stable_object_id(tenant, type_id, source["transaction"], {key: name}):
-            problems.append(f"{where}: is the id of another row, expected the id of {key} {name!r}")
+        if obj["id"] != stable_object_id(tenant, type_id, source["transaction"], kind.key_of(source, name)):
+            problems.append(f"{where}: is the id of another row, expected the id of {kind.name_property} {name!r}")
         held = kind.values(_lenient(properties))
         if held != values[name]:
             problems.append(f"{where}: {kind.value_name} {held!r}, expected {values[name]!r}")
-        want = {**source, "line": lines[name]}
-        got = properties.get("_source")
+        want = {**source, "line": name if kind.by_line else lines[name]}
         for attribute in SOURCE_ATTRIBUTES:
             if not isinstance(got, dict) or not _same(got.get(attribute), want[attribute]):
                 problems.append(f"{where} _source.{attribute}: {got.get(attribute) if isinstance(got, dict) else got!r}, "
@@ -420,12 +546,16 @@ def _json(text):
 
 
 def _held(store, kind=PRODUCT_COST):
-    """What the objects of a readback hold: their count, the ``_source`` they share and each key's values."""
+    """What the objects of a readback hold: their count, the ``_source`` they share and each name's values.
+
+    An object whose ``_source`` is no object holds none of its attributes.
+    """
     objects = store.get("objects") or []
-    sources = {json.dumps({key: value for key, value in (obj["properties"].get("_source") or {}).items() if key != "line"},
-                          sort_keys=True) for obj in objects}
-    return {"count": len(objects), "source": _json(next(iter(sources))) if len(sources) == 1 else None,
-            "values": {obj["properties"].get(kind.key): kind.values(_lenient(obj["properties"])) for obj in objects}}
+    sources = {json.dumps({key: value for key, value in source.items() if key != "line"}, sort_keys=True)
+               for source in (held_source(obj["properties"]) or {} for obj in objects)}
+    source = _json(next(iter(sources))) if len(sources) == 1 else None
+    return {"count": len(objects), "source": source if isinstance(source, dict) else None,
+            "values": {kind.held_name(obj["properties"]): kind.values(_lenient(obj["properties"])) for obj in objects}}
 
 
 def main(argv=None):
@@ -470,23 +600,23 @@ def main(argv=None):
     problems = differences(binding, tenant, store, kind)
     print(json.dumps({"revision": report["revision"], "tenant": tenant, "source": source_of(binding), "lines": binding["lines"],
                       "receipt": {name: binding[name] for name in binding if name not in SOURCE_ATTRIBUTES and name != "lines"},
-                      "delivered": delivered, "store": store, "problems": problems, "accepted": not problems}, indent=2))
+                      "delivered": delivered, "store": plain(store), "problems": problems, "accepted": not problems}, indent=2))
     return 0 if not problems else 1
 
 
 def run(state, report, *, dataset, reader, bin_dir, pull="missing", type_id=DEFAULT):
     """This round's v3 delivered to a Cassandra store, and three other sources refused by the same assertion.
 
-    Called by the lingxing smoke, or by the noon smoke with ``type_id="OrderLinePrice"``, while
-    its Dataset service is up: ``dataset`` is the base URL of that service and ``reader`` the
-    bearer of its read-only account. The store is the Compose stack of
-    ``ontology_sync_replay.py``, started with the object service binary of ``bin_dir`` and
-    stopped before returning. The delivery entry is run twice, by two processes with the same
-    command, as a downstream consumer runs it again after a restart: the first creates the three
-    objects, the second none, and each reads the tenant back on its own. Each process prints a
-    report; each report is kept as its own file and the whole evidence is written to
-    ``<prefix>-downstream.json``. The returned summary is what the smoke's report keeps. An
-    AssertionError is raised when a check failed, after the evidence was written.
+    Called by the lingxing smoke, by the noon smoke with ``type_id="OrderLinePrice"`` or by the
+    amazon smoke with ``type_id="SettlementLine"``, while its Dataset service is up: ``dataset``
+    is the base URL of that service and ``reader`` the bearer of its read-only account. The store
+    is the Compose stack of ``ontology_sync_replay.py``, started with the object service binary
+    of ``bin_dir`` and stopped before returning. The delivery entry is run twice, by two
+    processes with the same command, as a downstream consumer runs it again after a restart:
+    the first creates the three objects, the second none, and each reads the tenant back on its
+    own. Each process prints a report; each report is kept as its own file and the whole evidence
+    is written to ``<prefix>-downstream.json``. The returned summary is what the smoke's report
+    keeps. An AssertionError is raised when a check failed, after the evidence was written.
     """
     kind = KINDS[type_id]
     state = Path(state)
@@ -540,6 +670,15 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing", type_id=DEFA
                   first["command"] == second["command"] and first["report"]["source"] == second["report"]["source"]
                   and [item["object_id"] for item in first["report"]["delivered"]["results"]]
                   == [item["object_id"] for item in second["report"]["delivered"]["results"]])
+            if kind.whole is not None:
+                # The rows as a whole, as the kind states them; its function raises AssertionError.
+                sentence, judge = kind.whole
+                try:
+                    judge(first["report"]["store"])
+                    detail = ""
+                except (AssertionError, KeyError, TypeError) as wrong:
+                    detail = str(wrong)
+                check(sentence, not detail, detail)
             differing = receipt_differs(binding, report, build)
             check("the run receipt the entry followed names the v3 the smoke recorded", not differing, "; ".join(differing))
             downloaded = (state / kind.downloaded_file).read_bytes()
@@ -571,13 +710,14 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing", type_id=DEFA
                                            kind)
                     results = kind.sync(endpoint, other_tenant, rows_of(raw, source_of(intended)))
                     entry["delivered"] = {"source": source_of(intended), "created": sum(result.created for result in results)}
-                lines, values = lines_and_values([json.loads(line) for line in raw.splitlines()], kind)
-                entry["intended"] = {"source": source_of(intended), "rows": len(values), "values": values}
+                lines, values = lines_and_values([kind.row(line) for line in raw.splitlines()], kind)
+                entry["intended"] = {"source": source_of(intended), "rows": len(values), "values": plain(values)}
                 judged = entry["judged"] = command("ontology_sync_published.py", f"refused-{name}", "--state", state, "--endpoint",
                                                    endpoint, "--tenant", other_tenant, "--verify-only", *typed)
                 verdict = judged["report"] or {}
                 store = verdict.get("store") or {}
-                entry["held"] = _held(store, kind)
+                held = _held(store, kind)
+                entry["held"] = plain(held)
                 own = row_differences(source_of(intended), lines, values, other_tenant, store, kind)
                 entry["holds_its_own_source"] = not own
                 # The archived source is delivered by a process of its own, the two others in this one.
@@ -585,11 +725,11 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing", type_id=DEFA
                 check(f"the {label} is delivered and its tenant holds exactly its {len(values)} objects of that source, "
                       "each with its file and SHA256, and nothing else",
                       delivered_ok and entry["delivered"]["created"] == len(values) and not own, "; ".join(own))
-                entry["same_as_this_round"] = {attribute: (entry["held"]["source"] or {}).get(attribute) == expected[attribute]
+                entry["same_as_this_round"] = {attribute: (held["source"] or {}).get(attribute) == expected[attribute]
                                                for attribute in expected}
                 entry["differs_in"] = [attribute for attribute, same in entry["same_as_this_round"].items() if not same]
                 entry.update(expected="refused, exit 1", problems=verdict.get("problems") or [],
-                             same_values_as_this_round=entry["held"]["values"] == kind.expected)
+                             same_values_as_this_round=held["values"] == kind.expected)
                 # The refusal must be for the identity alone: the assertion names each attribute that
                 # differs and nothing else of the _source, and the id set. The archived transaction and
                 # the v1 hold the values of this round; only the v2 holds others.

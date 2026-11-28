@@ -783,5 +783,23 @@ def main(state):
     return dict(reader=reader, other=foreign, p1=p1)
 
 
+def downstream(state, handles):
+    """This round's v3, located from its run receipt by the read-only reader and delivered to a Cassandra store.
+
+    Only the command of ``run.sh amazon`` runs this, after the handoff and while its Dataset
+    service is up. ``main`` alone is the entry of ``amazon-preview`` and needs no object service.
+    The three settlement lines are delivered twice, by two processes running the same entry, and
+    three other sources are refused by the same assertion; the summary goes under
+    ``downstream`` in amazon-report.json. An AssertionError is raised when a check failed, after
+    the evidence was written.
+    """
+    published = s3.module("amazon_published", SMOKE / "data-integration-wp2-8/ontology_sync_published.py")
+    report = json.loads((state / "amazon-report.json").read_text())
+    report["downstream"] = published.run(state, report, dataset=os.environ["WP23_DVS"], reader=handles["reader"],
+                                         bin_dir=os.environ["BIN_DIR"], type_id="SettlementLine")
+    s3.write_json(state / "amazon-report.json", report)
+
+
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    state = Path(sys.argv[1])
+    downstream(state, main(state))
