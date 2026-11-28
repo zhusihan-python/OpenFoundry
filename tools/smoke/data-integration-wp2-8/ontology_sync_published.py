@@ -35,7 +35,10 @@ nothing is synced and the Dataset service is not asked. Both print one JSON repo
 readback and return 0 only when the assertion accepts the tenant. ``run.sh lingxing``,
 ``run.sh noon`` and ``run.sh amazon`` run the first form twice, as two processes with the same
 command, and the second on three tenants that received the other sources, against a Cassandra
-store each smoke starts and stops itself.
+store each smoke starts and stops itself. While that stack is still up and holds the three
+objects, ``run.sh <source>-gateway`` has ``run`` also accept the object adapter's boundary at an
+edge gateway built from the checkout: ``ontology_sync_gateway.py`` holds it, and the evidence is
+``<prefix>-gateway.json``.
 
 ``--type`` selects the synced type and with it the smoke whose report names the round, the key
 and the values of its rows and the prefix of its files: ``ProductCost``, the default, is a SKU
@@ -94,6 +97,7 @@ from ontology_sync_replay import Stack, backend_is_cassandra, call  # noqa: E402
 # the noon smoke the order lines of its v1, v2 and v1 again.
 VERSION = 3
 TOKEN = "WP34_TOKEN"  # the bearer of the read-only account
+GATEWAY = "WP23_OBJECT_GATEWAY"  # "1" when run.sh named a -gateway source: the round is also accepted at an edge gateway
 DEFAULT = "ProductCost"  # the type of the commands that name none
 # What the smoke recorded of one build, by the name of the source the reader located.
 RECORDED = {"run_id": "pipeline_run_id", "pipeline_output_transaction_rid": "pipeline_output_transaction_rid",
@@ -617,6 +621,10 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing", type_id=DEFA
     own. Each process prints a report; each report is kept as its own file and the whole evidence
     is written to ``<prefix>-downstream.json``. The returned summary is what the smoke's report
     keeps. An AssertionError is raised when a check failed, after the evidence was written.
+
+    With ``WP23_OBJECT_GATEWAY`` set to 1, the three objects are then read and written through an
+    edge gateway in the same stack by ``ontology_sync_gateway.accept``: its evidence is
+    ``<prefix>-gateway.json``, its outcome one more check here and ``gateway`` in the summary.
     """
     kind = KINDS[type_id]
     state = Path(state)
@@ -745,20 +753,35 @@ def run(state, report, *, dataset, reader, bin_dir, pull="missing", type_id=DEFA
                                                    endpoint, "--tenant", tenant, "--verify-only", *typed)
             check("this round's tenant still holds the same three objects after the other sources were delivered, exit 0",
                   again["exit"] == 0 and (again["report"] or {}).get("store") == first["report"]["store"], again["stderr"])
+            if os.environ.get(GATEWAY) == "1":
+                # The same stack and the same three objects, through an edge gateway: the object adapter's boundary.
+                accepted = _sibling("ontology_sync_gateway").accept(
+                    endpoint, kind, tenant, first["report"], args=args, bin_dir=bin_dir,
+                    output=state / f"{kind.prefix}-gateway.json")
+                evidence["gateway"] = {"evidence": f"{kind.prefix}-gateway.json", "passed": accepted["passed"],
+                                       "checks": f"{sum(item['passed'] for item in accepted['checks'])}/{len(accepted['checks'])}",
+                                       "requests": len(accepted["gateway_requests"]),
+                                       **({"error": accepted["error"]} if "error" in accepted else {})}
+                check("the object adapter's boundary at the edge gateway holds, A1 to A5: every check of "
+                      f"{kind.prefix}-gateway.json passed", accepted["passed"], accepted.get("error", ""))
     except Exception as error:  # recorded, so that the evidence is written whatever happened
         evidence["error"] = f"{type(error).__name__}: {error}"
     evidence["passed"] = "error" not in evidence and all(check["passed"] for check in evidence["checks"])
     (state / kind.downstream_file).write_text(json.dumps(evidence, indent=2) + "\n")
     failed = [check["name"] + ": " + check["detail"] for check in evidence["checks"] if not check["passed"]]
     assert evidence["passed"], "; ".join([evidence.get("error", "")] + failed)
-    return {"evidence": kind.downstream_file, "source": first["report"]["source"],
-            "deliveries": [{"exit": delivery["exit"], "created": delivery["report"]["delivered"]["created"],
-                            "count": delivery["report"]["store"]["total"], "evidence": delivery["evidence"]}
-                           for delivery in (first, second)],
-            "refused": {name: {"held": entry["held"]["count"], "holds_its_own_source": entry["holds_its_own_source"],
-                               "exit": entry["judged"]["exit"], "differs_in": entry["differs_in"],
-                               "same_as_this_round": entry["same_as_this_round"]}
-                        for name, entry in evidence["refused"].items()}}
+    summary = {"evidence": kind.downstream_file, "source": first["report"]["source"],
+               "deliveries": [{"exit": delivery["exit"], "created": delivery["report"]["delivered"]["created"],
+                               "count": delivery["report"]["store"]["total"], "evidence": delivery["evidence"]}
+                              for delivery in (first, second)],
+               "refused": {name: {"held": entry["held"]["count"], "holds_its_own_source": entry["holds_its_own_source"],
+                                  "exit": entry["judged"]["exit"], "differs_in": entry["differs_in"],
+                                  "same_as_this_round": entry["same_as_this_round"]}
+                           for name, entry in evidence["refused"].items()}}
+    if "gateway" in evidence:  # what the smoke's report keeps of it: the outcome, not the requests
+        summary["gateway"] = {name: evidence["gateway"][name]
+                              for name in ("evidence", "passed", "checks", "requests", "error") if name in evidence["gateway"]}
+    return summary
 
 
 if __name__ == "__main__":

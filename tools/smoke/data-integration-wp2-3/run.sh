@@ -14,6 +14,11 @@ orders_script="$here/orders.py"
 table_fixture=""
 gateway=0
 page_downloads=0
+# A -gateway source is its source, the round's three objects also accepted at an edge gateway.
+export WP23_OBJECT_GATEWAY=0
+case "$source_type" in
+  lingxing-gateway|noon-gateway|amazon-gateway) source_type=${source_type%-gateway}; WP23_OBJECT_GATEWAY=1 ;;
+esac
 case "$source_type" in
   s3) ;;
   noon) orders_script="$here/../data-integration-wp2-8/noon/smoke.py" ;;
@@ -23,7 +28,7 @@ case "$source_type" in
   lingxing) orders_script="$here/../data-integration-wp2-8/smoke.py" ;;
   postgresql) table_fixture="$here/../data-integration-wp2-5" ;;
   mysql) table_fixture="$here/../data-integration-wp2-4" ;;
-  *) echo "usage: $0 [s3|postgresql|mysql|lingxing|noon|amazon|noon-preview|amazon-preview]" >&2; exit 2 ;;
+  *) echo "usage: $0 [s3|postgresql|mysql|lingxing|noon|amazon|noon-preview|amazon-preview|lingxing-gateway|noon-gateway|amazon-gateway]" >&2; exit 2 ;;
 esac
 if (( gateway )); then
   command -v ego-browser >/dev/null || { echo "$source_type needs ego-browser on PATH" >&2; exit 2; }
@@ -90,7 +95,8 @@ CERT
   chmod 644 "$WP25_TLS/server.crt"
 fi
 build=(./services/{dataset-versioning-service,pipeline-build-service,connector-management-service}/cmd/...)
-if (( gateway )); then build+=(./services/edge-gateway-service/cmd/edge-gateway-service); fi
+# The gateway binary serves the web page of a -preview source and the object adapter of a -gateway source.
+if (( gateway || WP23_OBJECT_GATEWAY )); then build+=(./services/edge-gateway-service/cmd/edge-gateway-service); fi
 if (( page_downloads )); then build+=(./tools/smoke/data-integration-wp2-3/loopback-forwarder); fi
 # The lingxing, noon and amazon smokes deliver their v3 to an object service of their own.
 if [[ "$source_type" == lingxing || "$source_type" == noon || "$source_type" == amazon ]]; then

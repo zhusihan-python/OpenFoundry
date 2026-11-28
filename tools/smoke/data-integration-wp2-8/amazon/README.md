@@ -222,6 +222,8 @@ The evidence of this step is in the same directory. settlement-line-downstream.j
 
 `main()` alone remains the entry of `amazon-preview`, which runs the handoff above and no delivery: it needs no object service, and `run.sh` builds none for it.
 
+`bash tools/smoke/data-integration-wp2-3/run.sh amazon-gateway` runs this round and then accepts the three settlement lines through the edge gateway, in the same stack and against the same objects: the [README of this directory](../README.md#the-three-objects-through-the-edge-gateway) holds the scenarios. A row is named by its line in the file, the order and the refund of one order and SKU being two rows, and every amount is held to the direct read as the exact decimal the gateway answered; `settlement-line-gateway.json` is the record.
+
 ## Version comparison in a browser
 
 The optional `amazon-preview` case runs the handoff and the checks above in the same stack, then works on
